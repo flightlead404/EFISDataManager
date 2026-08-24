@@ -1,0 +1,32 @@
+[build-system]
+requires = ["setuptools>=68.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "efis-data-manager"
+version = "0.1.0"
+description = "GRT HXr EFIS Ground Support Automation"
+requires-python = ">=3.11"
+dependencies = [
+    "rumps>=0.4.0",
+    "requests>=2.31.0",
+    "beautifulsoup4>=4.12.0",
+    "playwright>=1.40.0",
+    "pyzipper>=0.3.6",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=7.0",
+    "ruff>=0.1.0",
+]
+
+[project.scripts]
+efis-data-manager = "efis_data_manager.app:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"
