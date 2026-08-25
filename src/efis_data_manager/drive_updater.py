@@ -42,7 +42,22 @@ def check_drive_currency(mount_point: str) -> dict:
 
     stale_items = []
 
+    # ChartData: compare ScannedCharts.sqlite mtime (local vs USB)
+    local_sqlite = os.path.join(usb_image_path, "ChartData", "ScannedCharts.sqlite")
+    usb_sqlite = os.path.join(mount_point, "ChartData", "ScannedCharts.sqlite")
+    if os.path.exists(local_sqlite) and os.path.exists(usb_sqlite):
+        local_mtime = os.path.getmtime(local_sqlite)
+        usb_mtime = os.path.getmtime(usb_sqlite)
+        if local_mtime > usb_mtime:
+            stale_items.append("ChartData (local is newer)")
+    elif os.path.exists(local_sqlite) and not os.path.exists(usb_sqlite):
+        stale_items.append("ChartData (missing from drive)")
+
     for item in SYNC_ITEMS:
+        # ChartData handled above via ScannedCharts.sqlite mtime
+        if item == "ChartData":
+            continue
+
         local_path = os.path.join(usb_image_path, item)
         usb_path = os.path.join(mount_point, item)
 

@@ -584,6 +584,10 @@ def download_charts(entries: list[dict], progress_callback=None) -> dict:
         try:
             zip_path = download_chart(session, entry, download_cache,
                                       progress_callback=progress_callback)
+
+            # Capture mtime immediately after download (before extraction/deletion)
+            download_mtime = str(Path(zip_path).stat().st_mtime)
+
             target_dir = _determine_extract_dir(entry["description"], usb_image_path)
             extract_chart(zip_path, entry, target_dir)
             results["downloaded"] += 1
@@ -593,7 +597,7 @@ def download_charts(entries: list[dict], progress_callback=None) -> dict:
                 "description": entry["description"],
                 "valid_dates": entry["valid_dates"],
                 "password": entry["password"],
-                "last_downloaded": str(Path(zip_path).stat().st_mtime) if os.path.exists(zip_path) else "",
+                "last_downloaded": download_mtime,
             }
             save_cycle_metadata(metadata)
 
@@ -653,6 +657,10 @@ def update_charts(force: bool = False) -> dict:
     for entry in to_download:
         try:
             zip_path = download_chart(session, entry, download_cache)
+
+            # Capture mtime immediately after download (before extraction/deletion)
+            download_mtime = str(Path(zip_path).stat().st_mtime)
+
             target_dir = _determine_extract_dir(entry["description"], usb_image_path)
             extract_chart(zip_path, entry, target_dir)
             results["downloaded"] += 1
@@ -662,7 +670,7 @@ def update_charts(force: bool = False) -> dict:
                 "description": entry["description"],
                 "valid_dates": entry["valid_dates"],
                 "password": entry["password"],
-                "last_downloaded": str(Path(zip_path).stat().st_mtime),
+                "last_downloaded": download_mtime,
             }
             save_cycle_metadata(metadata)
 
@@ -731,9 +739,11 @@ with sync_playwright() as p:
     print(page.content())
     browser.close()
 '''
+    env = dict(os.environ)
+    env["PLAYWRIGHT_BROWSERS_PATH"] = os.path.expanduser("~/Library/Caches/ms-playwright")
     result = _sp.run(
         [sys.executable, "-c", script],
-        capture_output=True, text=True, timeout=120
+        capture_output=True, text=True, timeout=120, env=env
     )
     if result.returncode != 0:
         raise PageLayoutChangedError(f"Playwright fetch failed: {result.stderr[:200]}")
@@ -787,9 +797,11 @@ with sync_playwright() as p:
     print(os.path.getsize("{dest_path}"))
     browser.close()
 """
+    env = dict(os.environ)
+    env["PLAYWRIGHT_BROWSERS_PATH"] = os.path.expanduser("~/Library/Caches/ms-playwright")
     result = _sp.run(
         [sys.executable, "-c", script],
-        capture_output=True, text=True, timeout=180
+        capture_output=True, text=True, timeout=180, env=env
     )
     if result.returncode != 0:
         if "LINK_NOT_FOUND" in result.stderr:
@@ -1010,9 +1022,11 @@ with sync_playwright() as p:
     browser.close()
     print(json.dumps(result))
 '''
+    env = dict(os.environ)
+    env["PLAYWRIGHT_BROWSERS_PATH"] = os.path.expanduser("~/Library/Caches/ms-playwright")
     result = _sp.run(
         [sys.executable, "-c", script],
-        capture_output=True, text=True, timeout=120
+        capture_output=True, text=True, timeout=120, env=env
     )
     if result.returncode != 0:
         raise PageLayoutChangedError(f"Failed to fetch GRT page: {result.stderr[:200]}")

@@ -41,7 +41,8 @@ class EFISDataManagerApp(rumps.App):
         self._charts_running = False
         self._nav_running = False
         self._software_running = False
-        self._startup_complete = False
+        self._charts_first_tick_skipped = False
+        self._nav_first_tick_skipped = False
         self._pending_chart_downloads = None
         self._usb_monitor = None
 
@@ -103,6 +104,18 @@ class EFISDataManagerApp(rumps.App):
         self._set_status("EFIS drive detected")
         rumps.notification("EFIS Data Manager", "EFIS Drive Detected",
                            f"Drive mounted at {mount_point}. Starting archive...")
+
+        # Check if a previous sync was interrupted for this mount point
+        sync_state_file = os.path.expanduser("~/EFIS/DataManagerLogs/.sync_in_progress")
+        if os.path.exists(sync_state_file):
+            try:
+                with open(sync_state_file) as f:
+                    prev_mount = f.read().strip()
+                if prev_mount == mount_point:
+                    logger.info("Previous sync was interrupted — re-triggering update after archive.")
+            except OSError:
+                pass
+
         # Start archive in background thread
         threading.Thread(target=self._run_archive, args=(mount_point,), daemon=True).start()
 
@@ -219,6 +232,7 @@ class EFISDataManagerApp(rumps.App):
         from efis_data_manager.drive_updater import check_drive_currency, update_drive
 
         self._set_status("Checking drive currency...")
+        sync_state_file = os.path.expanduser("~/EFIS/DataManagerLogs/.sync_in_progress")
 
         try:
             currency = check_drive_currency(mount_point)
@@ -238,10 +252,19 @@ class EFISDataManagerApp(rumps.App):
             rumps.notification("EFIS Data Manager", "Updating Drive",
                                f"{len(currency['stale_items'])} item(s) to update: {stale_summary}")
 
+            # Write sync-in-progress state file
+            os.makedirs(os.path.dirname(sync_state_file), exist_ok=True)
+            with open(sync_state_file, "w") as f:
+                f.write(mount_point)
+
             def on_progress(msg):
                 self._set_status(msg)
 
             results = update_drive(mount_point, progress_callback=on_progress)
+
+            # Sync complete — remove state file
+            if os.path.exists(sync_state_file):
+                os.remove(sync_state_file)
 
             if results["errors"]:
                 rumps.notification("EFIS Data Manager", "Drive Update Complete (errors)",
@@ -255,6 +278,7 @@ class EFISDataManagerApp(rumps.App):
 
         except Exception as e:
             logger.error(f"Drive update failed: {e}")
+            # Don't remove sync state file on failure — will retry on next mount
             rumps.notification("EFIS Data Manager", "Drive Update Failed", str(e)[:100])
             self._set_status("Update failed")
 
@@ -264,8 +288,8 @@ class EFISDataManagerApp(rumps.App):
 
     @rumps.timer(43200)
     def _check_charts_timer(self, _):
-        if not self._startup_complete:
-            self._startup_complete = True
+        if not self._charts_first_tick_skipped:
+            self._charts_first_tick_skipped = True
             logger.info("Skipping first chart timer tick (startup delay).")
             return
         if not self._charts_running:
@@ -274,7 +298,8 @@ class EFISDataManagerApp(rumps.App):
 
     @rumps.timer(86400)
     def _check_nav_db_timer(self, _):
-        if not self._startup_complete:
+        if not self._nav_first_tick_skipped:
+            self._nav_first_tick_skipped = True
             logger.info("Skipping first nav DB timer tick (startup delay).")
             return
         if not self._nav_running:
@@ -287,7 +312,7 @@ class EFISDataManagerApp(rumps.App):
         timer.stop()  # Only run once
         logger.info("Startup check: running all currency checks...")
         if not self._charts_running:
-            threading.Thread(target=self._run_chart_check_manual, daemon=True).start()
+            threading.Thread(target=self._run_chart_check_auto, daemon=True).start()
         if not self._nav_running:
             threading.Thread(target=self._run_nav_db_check, daemon=True).start()
         if not self._software_running:
