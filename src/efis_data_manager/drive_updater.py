@@ -134,11 +134,14 @@ def update_drive(mount_point: str, progress_callback: Optional[Callable] = None)
             cmd = [
                 "rsync", "-rc", "--delete",
                 "--exclude", ".DS_Store",
+                "--exclude", "._*",
                 "--exclude", "E:ChartData",
                 f"{local_chartdata}/",
                 f"{usb_chartdata}/",
             ]
-            proc = subprocess.run(cmd, capture_output=True, text=True, timeout=3600)
+            env = dict(os.environ)
+            env["COPYFILE_DISABLE"] = "1"
+            proc = subprocess.run(cmd, capture_output=True, text=True, timeout=3600, env=env)
             if proc.returncode == 0:
                 # Count updated files from rsync output (verbose would give this,
                 # but we use -c without -v for speed; just mark as updated)
