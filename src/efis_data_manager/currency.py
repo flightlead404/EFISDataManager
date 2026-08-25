@@ -412,16 +412,16 @@ def download_chart(session: requests.Session, entry: dict, download_dir: str,
 def extract_chart(zip_path: str, entry: dict, target_dir: str) -> int:
     """Extract a chart zip into the target directory.
 
-    Handles MultiDiskImg zips specially — they contain both LO and SEC tiles
-    mixed together with a cycle-number prefix directory. Files are routed to
-    LO/ or SEC/ subdirectories based on their filename pattern (.LO. or .SEC.).
-
-    Tries standard zipfile first (ZipCrypto), falls back to pyzipper (AES) if needed.
+    Handles different zip types:
+    - MultiDiskImg: Routes files to LO/ or SEC/ subdirs based on filename.
+    - Plates PNG: Routes to country subdirs (US/, MM/, etc.) using unzip command.
+    - Plates GEO: Extracts metadata files to Plates root using unzip command.
+    - Other: Standard extraction via zipfile/pyzipper, falling back to unzip.
 
     Args:
         zip_path: Path to the downloaded zip file.
         entry: Chart entry dict (for password).
-        target_dir: Base directory to extract into (e.g. ChartData root).
+        target_dir: Base directory to extract into (e.g. ChartData root or Plates).
 
     Returns:
         Number of files extracted.
@@ -431,16 +431,27 @@ def extract_chart(zip_path: str, entry: dict, target_dir: str) -> int:
     """
     os.makedirs(target_dir, exist_ok=True)
     pwd = entry["password"].encode() if entry["password"] else None
-    is_multidisk = "multidiskimg" in os.path.basename(zip_path).lower()
+    pwd_str = entry["password"] if entry["password"] else None
+    basename = os.path.basename(zip_path).lower()
+    is_multidisk = "multidiskimg" in basename
+    is_plates_png = "plates" in basename and "geo" not in basename and "png" in basename
+    is_plates_geo = "plates" in basename and "geo" in basename
 
     if is_multidisk:
         return _extract_multidisk(zip_path, pwd, target_dir)
+    elif is_plates_png:
+        return _extract_plates_png(zip_path, pwd_str, target_dir)
+    elif is_plates_geo:
+        return _extract_with_unzip(zip_path, pwd_str, target_dir)
     else:
         return _extract_simple(zip_path, pwd, target_dir)
 
 
 def _extract_simple(zip_path: str, pwd: Optional[bytes], target_dir: str) -> int:
-    """Standard extraction — extract all files directly into target_dir."""
+    """Standard extraction — extract all files directly into target_dir.
+
+    Tries zipfile, then pyzipper, then falls back to system unzip command.
+    """
     # Try standard zipfile first
     try:
         with zipfile.ZipFile(zip_path) as zf:
@@ -454,6 +465,10 @@ def _extract_simple(zip_path: str, pwd: Optional[bytes], target_dir: str) -> int
     except (NotImplementedError, RuntimeError):
         logger.info(f"Standard zipfile can't handle {zip_path}, trying pyzipper (AES)...")
         pass
+    except zipfile.BadZipFile as e:
+        logger.info(f"zipfile reports bad zip ({e}), will try unzip command...")
+        pwd_str = pwd.decode() if pwd else None
+        return _extract_with_unzip(zip_path, pwd_str, target_dir)
 
     # Fallback: pyzipper for AES
     try:
@@ -469,7 +484,117 @@ def _extract_simple(zip_path: str, pwd: Optional[bytes], target_dir: str) -> int
             f"Run: pip install pyzipper"
         )
     except Exception as e:
-        raise CurrencyError(f"Extraction failed for {zip_path}: {e}")
+        # Last resort: try system unzip
+        logger.info(f"pyzipper failed ({e}), falling back to unzip command...")
+        pwd_str = pwd.decode() if pwd else None
+        return _extract_with_unzip(zip_path, pwd_str, target_dir)
+
+
+def _extract_with_unzip(zip_path: str, pwd_str: Optional[str], target_dir: str) -> int:
+    """Extract a zip using the system unzip command.
+
+    Handles zips with non-standard preambles (e.g. 2MB headers from Seattle
+    Avionics) that Python's zipfile/pyzipper can't process.
+
+    Args:
+        zip_path: Path to the zip file.
+        pwd_str: Password as string (or None).
+        target_dir: Directory to extract into.
+
+    Returns:
+        Number of files extracted.
+    """
+    os.makedirs(target_dir, exist_ok=True)
+
+    cmd = ["unzip", "-o", "-q"]
+    if pwd_str:
+        cmd.extend(["-P", pwd_str])
+    cmd.extend([zip_path, "-d", target_dir])
+
+    result = subprocess.run(cmd, capture_output=True, text=True, timeout=3600)
+
+    # unzip exit codes: 0=success, 1=finished with warnings, 2=preamble/offset warnings
+    # Only codes >= 3 are actual extraction failures
+    if result.returncode >= 3:
+        raise CurrencyError(
+            f"unzip failed for {zip_path} (exit {result.returncode}): "
+            f"{result.stderr.strip()[:200]}"
+        )
+
+    # Count extracted files
+    n_files = sum(1 for line in result.stdout.splitlines() if "inflating:" in line or "extracting:" in line)
+    if n_files == 0:
+        # Fallback: count files in target_dir
+        n_files = sum(1 for _, _, files in os.walk(target_dir) for _ in files)
+
+    logger.info(f"Extracted {n_files} file(s) via unzip to {target_dir}")
+    return n_files
+
+
+# ICAO region prefixes for international plates (Central America/Mexico/Caribbean)
+_PLATES_INTL_PREFIXES = ("MG", "MH", "MM", "MN", "MR", "MS", "MZ")
+
+
+def _extract_plates_png(zip_path: str, pwd_str: Optional[str], plates_dir: str) -> int:
+    """Extract Plates PNG zip, routing files to country subdirectories.
+
+    The Plates PNG zip contains all files flat at the root. Files are routed to:
+    - Plates/US/ for US plates (filenames starting with digits or non-ICAO prefixes)
+    - Plates/<CC>/ for international plates (filenames starting with ICAO region prefix)
+
+    Uses the system unzip command to handle non-standard zip preambles.
+
+    Args:
+        zip_path: Path to the plates PNG zip.
+        pwd_str: Password as string.
+        plates_dir: Target Plates directory (e.g. .../ChartData/Plates).
+
+    Returns:
+        Number of files extracted and routed.
+    """
+    import shutil
+    import tempfile
+
+    # Extract to a temp directory first, then route
+    tmp_dir = tempfile.mkdtemp(prefix="plates_extract_")
+
+    try:
+        cmd = ["unzip", "-o", "-q"]
+        if pwd_str:
+            cmd.extend(["-P", pwd_str])
+        cmd.extend([zip_path, "-d", tmp_dir])
+
+        result = subprocess.run(cmd, capture_output=True, text=True, timeout=3600)
+        if result.returncode >= 3:
+            raise CurrencyError(
+                f"unzip failed for plates: {result.stderr.strip()[:200]}"
+            )
+
+        # Route files to country subdirectories
+        n_files = 0
+        for name in os.listdir(tmp_dir):
+            src_path = os.path.join(tmp_dir, name)
+            if not os.path.isfile(src_path):
+                continue
+
+            if name[:2] in _PLATES_INTL_PREFIXES:
+                subdir = name[:2]
+            else:
+                subdir = "US"
+
+            dest_dir = os.path.join(plates_dir, subdir)
+            os.makedirs(dest_dir, exist_ok=True)
+            shutil.move(src_path, os.path.join(dest_dir, name))
+            n_files += 1
+
+        logger.info(
+            f"Extracted and routed {n_files} plate PNG(s) to country subdirs in {plates_dir}"
+        )
+        return n_files
+
+    finally:
+        # Clean up temp directory
+        shutil.rmtree(tmp_dir, ignore_errors=True)
 
 
 def _extract_multidisk(zip_path: str, pwd: Optional[bytes], chartdata_dir: str) -> int:
