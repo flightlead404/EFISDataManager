@@ -54,7 +54,7 @@ def archive_efis_drive(mount_point: str, progress_callback: Optional[Callable] =
 
     results = {
         "fdl_moved": 0, "demo_moved": 0, "snap_moved": 0,
-        "logbook_copied": 0, "settings_copied": 0,
+        "logbook_copied": 0, "settings_copied": 0, "fdl_imported": 0,
         "errors": [], "skipped": 0, "cleaned": [],
     }
 
@@ -69,10 +69,13 @@ def archive_efis_drive(mount_point: str, progress_callback: Optional[Callable] =
 
     # FDL CSV files
     fdl_dest = archive_root / "FDL" / today
+    fdl_archived_paths = []
     for f in _find_files(mount_point, "GRT FDL*.csv"):
         result = _move_file(f, fdl_dest, mount_point, archive_root)
         if result == "moved":
             results["fdl_moved"] += 1
+            # Track archived path for database import
+            fdl_archived_paths.append(fdl_dest / os.path.basename(f))
         elif result == "skipped":
             results["skipped"] += 1
         else:
@@ -154,6 +157,12 @@ def archive_efis_drive(mount_point: str, progress_callback: Optional[Callable] =
             results["errors"].append(f"Remove E:ChartData: {e}")
 
     _status("Archive complete.")
+
+    # --- Phase 3: Import FDL data into analysis database ---
+    if fdl_archived_paths:
+        _status("Importing FDL data to database...")
+        _import_fdl_to_database(fdl_archived_paths, results)
+
     return results
 
 
@@ -260,3 +269,28 @@ def _copy_with_datestamp(src: str, dest_dir: Path, date_str: str) -> str:
         return "copied"
     except OSError as e:
         return f"Copy failed {dated_name}: {e}"
+
+
+def _import_fdl_to_database(fdl_paths: list[Path], results: dict):
+    """Parse archived FDL files and import into the analysis database.
+
+    Non-fatal: errors here don't affect the archive results, just logged.
+    """
+    from efis_data_manager.fdl_parser import parse_fdl_file
+    from efis_data_manager.database import import_fdl_file
+
+    imported = 0
+    for path in fdl_paths:
+        try:
+            fdl = parse_fdl_file(str(path))
+            op_id = import_fdl_file(fdl)
+            if op_id is not None:
+                imported += 1
+                logger.info(f"Imported to DB: {path.name} (op_id={op_id}, "
+                           f"flight={fdl.has_flight})")
+        except Exception as e:
+            logger.error(f"FDL database import failed for {path.name}: {e}")
+
+    results["fdl_imported"] = imported
+    if imported:
+        logger.info(f"Imported {imported} FDL file(s) to analysis database.")
