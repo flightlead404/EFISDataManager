@@ -381,6 +381,7 @@ class Anomaly:
     message: str
     value: Optional[float] = None
     threshold: Optional[float] = None
+    timestamp: Optional[str] = None  # ISO 8601 timestamp of the exceedance
 
 
 def detect_anomalies(window_hours: float = 25.0) -> list[Anomaly]:
@@ -408,54 +409,65 @@ def detect_anomalies(window_hours: float = 25.0) -> list[Anomaly]:
                ORDER BY f.date DESC""",
         ).fetchall()
     finally:
-        conn.close()
+        pass  # Keep conn open for timestamp lookups below
 
     trends = compute_trends(window_hours)
 
     for flight in flights:
         fid = flight["id"]
         fdate = flight["date"]
+        op_id = flight["operation_id"]
 
-        # --- Absolute exceedances ---
+        # --- Absolute exceedances (with timestamp lookup) ---
         if flight["max_cht"] and flight["max_cht"] >= thresholds["cht_redline"]:
+            ts = _find_exceedance_timestamp(conn, op_id, "cht", thresholds["cht_redline"])
             anomalies.append(Anomaly(
                 flight_id=fid, date=fdate, parameter="CHT",
                 severity="warning",
                 message=f"CHT reached {flight['max_cht']:.0f}°F (redline {thresholds['cht_redline']}°F)",
                 value=flight["max_cht"], threshold=thresholds["cht_redline"],
+                timestamp=ts,
             ))
         elif flight["max_cht"] and flight["max_cht"] >= thresholds["cht_caution"]:
+            ts = _find_exceedance_timestamp(conn, op_id, "cht", thresholds["cht_caution"])
             anomalies.append(Anomaly(
                 flight_id=fid, date=fdate, parameter="CHT",
                 severity="caution",
                 message=f"CHT reached {flight['max_cht']:.0f}°F (caution {thresholds['cht_caution']}°F)",
                 value=flight["max_cht"], threshold=thresholds["cht_caution"],
+                timestamp=ts,
             ))
 
         if flight["max_egt"] and flight["max_egt"] >= thresholds["egt_redline"]:
+            ts = _find_exceedance_timestamp(conn, op_id, "egt", thresholds["egt_redline"])
             anomalies.append(Anomaly(
                 flight_id=fid, date=fdate, parameter="EGT",
                 severity="warning",
                 message=f"EGT reached {flight['max_egt']:.0f}°F (redline {thresholds['egt_redline']}°F)",
                 value=flight["max_egt"], threshold=thresholds["egt_redline"],
+                timestamp=ts,
             ))
 
         if flight["max_oil_temp"] and flight["max_oil_temp"] >= thresholds["oil_temp_caution"]:
             sev = "warning" if flight["max_oil_temp"] >= thresholds["oil_temp_redline"] else "caution"
+            ts = _find_exceedance_timestamp(conn, op_id, "oil_temp", thresholds["oil_temp_caution"])
             anomalies.append(Anomaly(
                 flight_id=fid, date=fdate, parameter="Oil Temp",
                 severity=sev,
                 message=f"Oil temp reached {flight['max_oil_temp']:.0f}°F",
                 value=flight["max_oil_temp"], threshold=thresholds["oil_temp_caution"],
+                timestamp=ts,
             ))
 
         if flight["min_oil_pressure"] and flight["min_oil_pressure"] < thresholds["oil_pressure_low_cruise"]:
             sev = "warning" if flight["min_oil_pressure"] < thresholds["oil_pressure_low"] else "caution"
+            ts = _find_min_timestamp(conn, op_id, "oil_pressure", thresholds["oil_pressure_low_cruise"])
             anomalies.append(Anomaly(
                 flight_id=fid, date=fdate, parameter="Oil Pressure",
                 severity=sev,
                 message=f"Oil pressure dropped to {flight['min_oil_pressure']:.0f} psi in cruise",
                 value=flight["min_oil_pressure"], threshold=thresholds["oil_pressure_low_cruise"],
+                timestamp=ts,
             ))
 
     # --- Trend anomalies ---
@@ -515,6 +527,7 @@ def detect_anomalies(window_hours: float = 25.0) -> list[Anomaly]:
     # Re-sort after adding oil entries
     anomalies.sort(key=lambda a: (a.date, severity_order.get(a.severity, 2)), reverse=True)
 
+    conn.close()
     return anomalies
 
 
@@ -598,6 +611,50 @@ def _max_spread(rows: list, fields: list[str], min_valid: float = 0) -> Optional
             if spread > max_spread:
                 max_spread = spread
     return max_spread if max_spread > 0 else None
+
+
+def _find_exceedance_timestamp(conn, operation_id: int, param_type: str,
+                                threshold: float) -> Optional[str]:
+    """Find the first timestamp where a parameter exceeded a threshold.
+
+    For multi-cylinder params (cht, egt), checks all cylinder columns.
+    """
+    from efis_data_manager.config import load_config
+    num_cyl = load_config().get("num_cylinders", 4)
+
+    if param_type == "cht":
+        cols = [f"cht{i}" for i in range(1, num_cyl + 1)]
+    elif param_type == "egt":
+        cols = [f"egt{i}" for i in range(1, num_cyl + 1)]
+    else:
+        cols = [param_type]
+
+    # Build WHERE clause: any column >= threshold
+    conditions = " OR ".join(f"{c} >= ?" for c in cols)
+    params = [threshold] * len(cols)
+
+    row = conn.execute(
+        f"""SELECT timestamp FROM fdl_data
+            WHERE operation_id = ? AND ({conditions})
+            ORDER BY timestamp LIMIT 1""",
+        [operation_id] + params,
+    ).fetchone()
+
+    return row["timestamp"] if row else None
+
+
+def _find_min_timestamp(conn, operation_id: int, column: str,
+                         threshold: float) -> Optional[str]:
+    """Find the first timestamp where a parameter dropped below a threshold."""
+    row = conn.execute(
+        f"""SELECT timestamp FROM fdl_data
+            WHERE operation_id = ? AND {column} IS NOT NULL
+                  AND {column} > 0 AND {column} < ?
+            ORDER BY timestamp LIMIT 1""",
+        (operation_id, threshold),
+    ).fetchone()
+
+    return row["timestamp"] if row else None
 
 
 # ---------------------------------------------------------------------------

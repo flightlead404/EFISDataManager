@@ -7,9 +7,11 @@
         <thead>
             <tr>
                 <th>Date</th>
+                <th>Time</th>
                 <th>Severity</th>
                 <th>Parameter</th>
                 <th>Details</th>
+                <th>Flight</th>
             </tr>
         </thead>
         <tbody></tbody>
@@ -29,11 +31,17 @@ fetch('/api/alerts')
         }
         alerts.forEach(a => {
             const cls = a.severity === 'warning' ? 'badge-warning' : 'badge-caution';
+            const time = a.timestamp ? a.timestamp.split('T')[1] || a.timestamp.split(' ')[1] || '' : '';
+            const flightLink = a.flight_id > 0
+                ? `<a href="/flight/${a.flight_id}" class="flight-link">View</a>`
+                : '';
             tbody.innerHTML += `<tr>
                 <td>${a.date}</td>
+                <td>${time}</td>
                 <td><span class="badge ${cls}">${a.severity.toUpperCase()}</span></td>
                 <td>${a.parameter}</td>
                 <td>${a.message}</td>
+                <td>${flightLink}</td>
             </tr>`;
         });
     });

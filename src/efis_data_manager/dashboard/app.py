@@ -229,7 +229,8 @@ def api_alerts():
     return jsonify([
         {"flight_id": a.flight_id, "date": a.date, "parameter": a.parameter,
          "severity": a.severity, "message": a.message,
-         "value": a.value, "threshold": a.threshold}
+         "value": a.value, "threshold": a.threshold,
+         "timestamp": a.timestamp}
         for a in anomalies
     ])
 
