@@ -129,7 +129,9 @@ def api_flight_detail(flight_id):
 def api_flight_data(flight_id):
     """Get time-series data for a flight's dual charts.
 
-    Downsamples to ~1500 points max for responsive chart rendering.
+    Supports progressive resolution:
+    - Without time range params: returns downsampled overview (~1500 points)
+    - With ?start=ISO&end=ISO: returns full resolution for that window
     """
     conn = get_db_connection()
     try:
@@ -140,33 +142,54 @@ def api_flight_data(flight_id):
         if not flight:
             return jsonify({"error": "Flight not found"}), 404
 
-        rows = conn.execute(
-            """SELECT timestamp, indicated_airspeed, true_airspeed, ground_speed,
-                      pressure_altitude, gps_altitude, density_altitude,
-                      vertical_speed, oat, g_load,
-                      rpm1, cht1, cht2, cht3, cht4,
-                      egt1, egt2, egt3, egt4,
-                      fuel_flow, oil_temp, oil_pressure, eis_volts,
-                      internal_map
-               FROM fdl_data
-               WHERE operation_id = ?
-               ORDER BY timestamp""",
-            (flight["operation_id"],)
-        ).fetchall()
+        # Check for time range params (full resolution zoom)
+        start = request.args.get("start")
+        end = request.args.get("end")
 
-        # Downsample if needed (target ~1500 points for smooth charts)
-        max_points = 1500
-        if len(rows) > max_points:
-            step = len(rows) / max_points
-            indices = [int(i * step) for i in range(max_points)]
-            # Always include first and last
-            if indices[-1] != len(rows) - 1:
-                indices.append(len(rows) - 1)
-            rows = [rows[i] for i in indices]
+        if start and end:
+            # Full resolution for zoomed window
+            rows = conn.execute(
+                """SELECT timestamp, indicated_airspeed, true_airspeed, ground_speed,
+                          pressure_altitude, gps_altitude, density_altitude,
+                          vertical_speed, oat, g_load,
+                          rpm1, cht1, cht2, cht3, cht4,
+                          egt1, egt2, egt3, egt4,
+                          fuel_flow, oil_temp, oil_pressure, eis_volts,
+                          internal_map
+                   FROM fdl_data
+                   WHERE operation_id = ? AND timestamp >= ? AND timestamp <= ?
+                   ORDER BY timestamp""",
+                (flight["operation_id"], start, end)
+            ).fetchall()
+        else:
+            # Downsampled overview
+            rows = conn.execute(
+                """SELECT timestamp, indicated_airspeed, true_airspeed, ground_speed,
+                          pressure_altitude, gps_altitude, density_altitude,
+                          vertical_speed, oat, g_load,
+                          rpm1, cht1, cht2, cht3, cht4,
+                          egt1, egt2, egt3, egt4,
+                          fuel_flow, oil_temp, oil_pressure, eis_volts,
+                          internal_map
+                   FROM fdl_data
+                   WHERE operation_id = ?
+                   ORDER BY timestamp""",
+                (flight["operation_id"],)
+            ).fetchall()
+
+            # Downsample if needed (target ~1500 points for initial view)
+            max_points = 1500
+            if len(rows) > max_points:
+                step = len(rows) / max_points
+                indices = [int(i * step) for i in range(max_points)]
+                if indices[-1] != len(rows) - 1:
+                    indices.append(len(rows) - 1)
+                rows = [rows[i] for i in indices]
 
         # Build response as column arrays
         data = {
             "timestamps": [],
+            "point_count": len(rows),
             "engine": {
                 "rpm": [], "map": [],
                 "cht1": [], "cht2": [], "cht3": [], "cht4": [],
@@ -183,7 +206,6 @@ def api_flight_data(flight_id):
 
         for row in rows:
             data["timestamps"].append(row["timestamp"])
-            # Engine
             data["engine"]["rpm"].append(row["rpm1"])
             data["engine"]["map"].append(row["internal_map"])
             data["engine"]["cht1"].append(row["cht1"])
@@ -198,7 +220,6 @@ def api_flight_data(flight_id):
             data["engine"]["oil_temp"].append(row["oil_temp"])
             data["engine"]["oil_pressure"].append(row["oil_pressure"])
             data["engine"]["eis_volts"].append(row["eis_volts"])
-            # Flight
             data["flight"]["ias"].append(row["indicated_airspeed"])
             data["flight"]["tas"].append(row["true_airspeed"])
             data["flight"]["ground_speed"].append(row["ground_speed"])

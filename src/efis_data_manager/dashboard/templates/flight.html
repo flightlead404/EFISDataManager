@@ -145,31 +145,83 @@ fetch(`/api/flight/${flightId}/data`)
             yaxis2: { overlaying: 'y', side: 'right', gridcolor: '#0f3460', title: 'ft' },
         }, { responsive: true });
 
-        // Link x-axes for synchronized zoom/pan
+        // Link x-axes for synchronized zoom/pan + progressive resolution
         const engineDiv = document.getElementById('engine-chart');
         const flightDiv = document.getElementById('flight-chart');
-        engineDiv.on('plotly_relayout', (eventData) => {
-            if (eventData['xaxis.range[0]'] && eventData['xaxis.range[1]']) {
-                Plotly.relayout(flightDiv, {
-                    'xaxis.range[0]': eventData['xaxis.range[0]'],
-                    'xaxis.range[1]': eventData['xaxis.range[1]'],
-                });
+
+        let fetchTimeout = null;
+        function onZoom(eventData) {
+            const start = eventData['xaxis.range[0]'];
+            const end = eventData['xaxis.range[1]'];
+
+            // Sync the other chart
+            if (start && end) {
+                const other = (this === engineDiv) ? flightDiv : engineDiv;
+                Plotly.relayout(other, { 'xaxis.range[0]': start, 'xaxis.range[1]': end });
+
+                // Debounce: fetch full-resolution data after 300ms of no further zoom
+                clearTimeout(fetchTimeout);
+                fetchTimeout = setTimeout(() => {
+                    fetchFullResolution(start, end);
+                }, 300);
             }
             if (eventData['xaxis.autorange']) {
-                Plotly.relayout(flightDiv, { 'xaxis.autorange': true });
+                const other = (this === engineDiv) ? flightDiv : engineDiv;
+                Plotly.relayout(other, { 'xaxis.autorange': true });
+                // Reset to overview data
+                clearTimeout(fetchTimeout);
+                fetchTimeout = setTimeout(() => {
+                    fetchOverviewData();
+                }, 300);
             }
-        });
-        flightDiv.on('plotly_relayout', (eventData) => {
-            if (eventData['xaxis.range[0]'] && eventData['xaxis.range[1]']) {
-                Plotly.relayout(engineDiv, {
-                    'xaxis.range[0]': eventData['xaxis.range[0]'],
-                    'xaxis.range[1]': eventData['xaxis.range[1]'],
+        }
+
+        engineDiv.on('plotly_relayout', onZoom.bind(engineDiv));
+        flightDiv.on('plotly_relayout', onZoom.bind(flightDiv));
+
+        function fetchFullResolution(start, end) {
+            fetch(`/api/flight/${flightId}/data?start=${encodeURIComponent(start)}&end=${encodeURIComponent(end)}`)
+                .then(r => r.json())
+                .then(newData => {
+                    updateCharts(newData, start, end);
                 });
+        }
+
+        function fetchOverviewData() {
+            fetch(`/api/flight/${flightId}/data`)
+                .then(r => r.json())
+                .then(newData => {
+                    updateCharts(newData, null, null);
+                });
+        }
+
+        function updateCharts(newData, start, end) {
+            const newTs = newData.timestamps;
+            // Update engine traces
+            const engineUpdate = {
+                x: [newTs, newTs, newTs, newTs, newTs, newTs, newTs, newTs, newTs, newTs, newTs, newTs, newTs, newTs],
+                y: [newData.engine.rpm, newData.engine.map,
+                    newData.engine.cht1, newData.engine.cht2, newData.engine.cht3, newData.engine.cht4,
+                    newData.engine.egt1, newData.engine.egt2, newData.engine.egt3, newData.engine.egt4,
+                    newData.engine.fuel_flow, newData.engine.oil_temp, newData.engine.oil_pressure, newData.engine.eis_volts],
+            };
+            Plotly.restyle(engineDiv, engineUpdate);
+
+            // Update flight traces
+            const flightUpdate = {
+                x: [newTs, newTs, newTs, newTs, newTs, newTs, newTs, newTs, newTs],
+                y: [newData.flight.ias, newData.flight.tas, newData.flight.ground_speed,
+                    newData.flight.pressure_alt, newData.flight.gps_alt, newData.flight.density_alt,
+                    newData.flight.vertical_speed, newData.flight.oat, newData.flight.g_load],
+            };
+            Plotly.restyle(flightDiv, flightUpdate);
+
+            // Maintain zoom range
+            if (start && end) {
+                Plotly.relayout(engineDiv, { 'xaxis.range': [start, end] });
+                Plotly.relayout(flightDiv, { 'xaxis.range': [start, end] });
             }
-            if (eventData['xaxis.autorange']) {
-                Plotly.relayout(engineDiv, { 'xaxis.autorange': true });
-            }
-        });
+        }
     });
 
 // Jump to alert timestamp: zoom both charts to a 2-minute window and add vertical marker
