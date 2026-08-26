@@ -401,3 +401,100 @@ def _compute_flight_summary(conn: sqlite3.Connection, operation_id: int,
             fuel_used, avg_ff_cruise, hm_start, hm_end,
         )
     )
+
+
+# ---------------------------------------------------------------------------
+# Logbook import
+# ---------------------------------------------------------------------------
+
+def import_logbook_csv(filepath: str) -> dict:
+    """Import a GRT Logbook.csv file into the database.
+
+    Handles duplicate prevention via (date, departure_time, origin) unique constraint.
+
+    Args:
+        filepath: Path to Logbook.csv file.
+
+    Returns:
+        Dict with {"imported": int, "skipped": int, "errors": list[str]}
+    """
+    import csv
+
+    results = {"imported": 0, "skipped": 0, "errors": []}
+    conn = get_db_connection()
+    now = datetime.now().isoformat()
+
+    try:
+        with open(filepath, "r", newline="") as f:
+            reader = csv.DictReader(f)
+            for row_num, row in enumerate(reader, start=2):
+                try:
+                    date = row.get("Date", "").strip()
+                    if not date:
+                        continue
+
+                    origin = row.get("Origin", "").strip() or None
+                    destination = row.get("Destination", "").strip() or None
+                    duration_str = row.get("Length", "").strip() or None
+                    departure_time = row.get("Departure", "").strip() or None
+                    arrival_time = row.get("Arrival", "").strip() or None
+                    flight_type = row.get("Type", "").strip() or None
+
+                    # Parse numeric fields
+                    duration_hours = _parse_float(row.get("Length (hours)", ""))
+                    fuel_used = _parse_float(row.get("Fuel Used", ""))
+                    hourmeter = _parse_float(row.get("Hourmeter", ""))
+                    passengers = _parse_int(row.get("Passengers", ""))
+                    fuel_added = _parse_float(row.get("Fuel Added", ""))
+                    oil_added = _parse_float(row.get("Oil Added", ""))
+
+                    conn.execute(
+                        """INSERT OR IGNORE INTO logbook
+                           (date, origin, destination, duration_str, duration_hours,
+                            fuel_used, departure_time, arrival_time, hourmeter,
+                            flight_type, passengers, fuel_added, oil_added, imported_at)
+                           VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                        (date, origin, destination, duration_str, duration_hours,
+                         fuel_used, departure_time, arrival_time, hourmeter,
+                         flight_type, passengers, fuel_added, oil_added, now)
+                    )
+                    if conn.total_changes:
+                        results["imported"] += 1
+                    else:
+                        results["skipped"] += 1
+
+                except Exception as e:
+                    results["errors"].append(f"Row {row_num}: {e}")
+
+        conn.commit()
+        logger.info(
+            f"Logbook import: {results['imported']} new, "
+            f"{results['skipped']} skipped"
+        )
+    except Exception as e:
+        conn.rollback()
+        results["errors"].append(str(e))
+    finally:
+        conn.close()
+
+    return results
+
+
+def _parse_float(val: str) -> Optional[float]:
+    """Parse a string to float, returning None for empty/invalid."""
+    if not val or not val.strip():
+        return None
+    try:
+        return float(val.strip())
+    except ValueError:
+        return None
+
+
+def _parse_int(val: str) -> Optional[int]:
+    """Parse a string to int, returning None for empty/invalid."""
+    if not val or not val.strip():
+        return None
+    try:
+        return int(val.strip())
+    except ValueError:
+        return None

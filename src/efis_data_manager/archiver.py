@@ -105,12 +105,16 @@ def archive_efis_drive(mount_point: str, progress_callback: Optional[Callable] =
 
     # Logbook CSV files (copy, don't delete from USB)
     logbook_dest = archive_root / "Logbook"
+    logbook_paths = []
     for f in _find_files(mount_point, "Logbook*.csv"):
         result = _copy_file(f, logbook_dest)
         if result == "copied":
             results["logbook_copied"] += 1
+            logbook_paths.append(logbook_dest / os.path.basename(f))
         elif result == "skipped":
             results["skipped"] += 1
+            # Still import to DB even if file copy was skipped (might have new entries)
+            logbook_paths.append(logbook_dest / os.path.basename(f))
         else:
             results["errors"].append(result)
 
@@ -162,6 +166,10 @@ def archive_efis_drive(mount_point: str, progress_callback: Optional[Callable] =
     if fdl_archived_paths:
         _status("Importing FDL data to database...")
         _import_fdl_to_database(fdl_archived_paths, results)
+
+    # --- Phase 4: Import logbook into analysis database ---
+    if logbook_paths:
+        _import_logbook_to_database(logbook_paths, results)
 
     return results
 
@@ -294,3 +302,21 @@ def _import_fdl_to_database(fdl_paths: list[Path], results: dict):
     results["fdl_imported"] = imported
     if imported:
         logger.info(f"Imported {imported} FDL file(s) to analysis database.")
+
+
+def _import_logbook_to_database(logbook_paths: list[Path], results: dict):
+    """Import logbook CSV files into the analysis database.
+
+    Non-fatal: errors logged but don't affect archive pipeline.
+    """
+    from efis_data_manager.database import import_logbook_csv
+
+    for path in logbook_paths:
+        if not path.exists():
+            continue
+        try:
+            result = import_logbook_csv(str(path))
+            if result["imported"] > 0:
+                logger.info(f"Logbook DB import: {result['imported']} new entries from {path.name}")
+        except Exception as e:
+            logger.error(f"Logbook database import failed for {path.name}: {e}")

@@ -491,6 +491,27 @@ def detect_anomalies(window_hours: float = 25.0) -> list[Anomaly]:
     severity_order = {"warning": 0, "caution": 1}
     anomalies.sort(key=lambda a: (a.date, severity_order.get(a.severity, 2)), reverse=True)
 
+    # --- Oil consumption anomalies ---
+    oil_rolling = compute_oil_consumption_rolling(window_hours)
+    if oil_rolling:
+        threshold = thresholds.get("trend_oil_consumption_high", 0.15)
+        for entry in oil_rolling:
+            if entry["rate"] > threshold:
+                anomalies.append(Anomaly(
+                    flight_id=0,  # Not tied to a specific flight
+                    date=entry["date"],
+                    parameter="Oil Consumption",
+                    severity="caution",
+                    message=(f"Oil consumption {entry['rate']:.3f} qt/hr "
+                             f"({entry['oil_added']} qt over {entry['hours_since_last']:.1f} hr) "
+                             f"exceeds threshold ({threshold} qt/hr)"),
+                    value=entry["rate"],
+                    threshold=threshold,
+                ))
+
+    # Re-sort after adding oil entries
+    anomalies.sort(key=lambda a: (a.date, severity_order.get(a.severity, 2)), reverse=True)
+
     return anomalies
 
 
@@ -574,3 +595,111 @@ def _max_spread(rows: list, fields: list[str], min_valid: float = 0) -> Optional
             if spread > max_spread:
                 max_spread = spread
     return max_spread if max_spread > 0 else None
+
+
+# ---------------------------------------------------------------------------
+# Oil consumption tracking
+# ---------------------------------------------------------------------------
+
+@dataclass
+class OilConsumptionPeriod:
+    """One oil consumption measurement period (between two oil additions)."""
+    start_date: str
+    end_date: str
+    start_hourmeter: float
+    end_hourmeter: float
+    hours_between: float
+    oil_added_quarts: float
+    rate_quarts_per_hour: float
+
+
+def compute_oil_consumption() -> list[OilConsumptionPeriod]:
+    """Compute oil consumption rate between each oil addition.
+
+    Uses logbook entries where Oil Added > 0. The consumption rate for each
+    period is: quarts_added / hours_flown_since_last_addition.
+
+    Returns:
+        List of OilConsumptionPeriod sorted by date.
+    """
+    conn = get_db_connection()
+    try:
+        # Get all logbook entries with oil additions, ordered by hourmeter
+        oil_entries = conn.execute(
+            """SELECT date, hourmeter, oil_added
+               FROM logbook
+               WHERE oil_added IS NOT NULL AND oil_added > 0
+                     AND hourmeter IS NOT NULL
+               ORDER BY hourmeter""",
+        ).fetchall()
+    finally:
+        conn.close()
+
+    if len(oil_entries) < 2:
+        return []
+
+    periods = []
+    for i in range(1, len(oil_entries)):
+        prev = oil_entries[i - 1]
+        curr = oil_entries[i]
+
+        hours_between = curr["hourmeter"] - prev["hourmeter"]
+        if hours_between <= 0:
+            continue
+
+        # The oil added at 'curr' is what was consumed since 'prev'
+        rate = curr["oil_added"] / hours_between
+
+        periods.append(OilConsumptionPeriod(
+            start_date=prev["date"],
+            end_date=curr["date"],
+            start_hourmeter=prev["hourmeter"],
+            end_hourmeter=curr["hourmeter"],
+            hours_between=hours_between,
+            oil_added_quarts=curr["oil_added"],
+            rate_quarts_per_hour=rate,
+        ))
+
+    return periods
+
+
+def compute_oil_consumption_rolling(window_hours: float = 25.0) -> list[dict]:
+    """Compute rolling average oil consumption rate.
+
+    Args:
+        window_hours: Rolling window in engine hours.
+
+    Returns:
+        List of dicts with {"date", "hourmeter", "rate", "rolling_avg_rate"}.
+    """
+    periods = compute_oil_consumption()
+    if not periods:
+        return []
+
+    results = []
+    for i, p in enumerate(periods):
+        # Find all periods within window
+        window_rates = []
+        window_hours_total = 0
+        window_oil_total = 0
+        for j in range(i, -1, -1):
+            pj = periods[j]
+            if p.end_hourmeter - pj.start_hourmeter > window_hours:
+                break
+            window_rates.append(pj.rate_quarts_per_hour)
+            window_hours_total += pj.hours_between
+            window_oil_total += pj.oil_added_quarts
+
+        # Rolling average: total oil consumed / total hours in window
+        rolling_rate = window_oil_total / window_hours_total if window_hours_total > 0 else None
+
+        results.append({
+            "date": p.end_date,
+            "hourmeter": p.end_hourmeter,
+            "rate": p.rate_quarts_per_hour,
+            "rolling_avg_rate": rolling_rate,
+            "oil_added": p.oil_added_quarts,
+            "hours_since_last": p.hours_between,
+        })
+
+    return results
