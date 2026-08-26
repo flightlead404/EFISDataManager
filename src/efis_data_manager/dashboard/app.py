@@ -93,6 +93,7 @@ def api_flight_detail(flight_id):
 
     return jsonify({
         "flight_id": stats.flight_id,
+        "operation_id": stats.operation_id,
         "date": stats.date,
         "duration_seconds": stats.duration_seconds,
         "airborne_seconds": stats.airborne_seconds,
