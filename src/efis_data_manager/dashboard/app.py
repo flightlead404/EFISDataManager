@@ -127,7 +127,10 @@ def api_flight_detail(flight_id):
 
 @app.route("/api/flight/<int:flight_id>/data")
 def api_flight_data(flight_id):
-    """Get time-series data for a flight's dual charts."""
+    """Get time-series data for a flight's dual charts.
+
+    Downsamples to ~1500 points max for responsive chart rendering.
+    """
     conn = get_db_connection()
     try:
         # Get operation_id for this flight
@@ -151,7 +154,17 @@ def api_flight_data(flight_id):
             (flight["operation_id"],)
         ).fetchall()
 
-        # Build response as column arrays (more efficient than row objects)
+        # Downsample if needed (target ~1500 points for smooth charts)
+        max_points = 1500
+        if len(rows) > max_points:
+            step = len(rows) / max_points
+            indices = [int(i * step) for i in range(max_points)]
+            # Always include first and last
+            if indices[-1] != len(rows) - 1:
+                indices.append(len(rows) - 1)
+            rows = [rows[i] for i in indices]
+
+        # Build response as column arrays
         data = {
             "timestamps": [],
             "engine": {

@@ -102,20 +102,20 @@ fetch(`/api/flight/${flightId}/data`)
 
         // Engine chart
         const engineTraces = [
-            { x: ts, y: data.engine.rpm, name: 'RPM', visible: true },
-            { x: ts, y: data.engine.map, name: 'MAP', visible: 'legendonly', yaxis: 'y2' },
-            { x: ts, y: data.engine.cht1, name: 'CHT1', visible: true },
-            { x: ts, y: data.engine.cht2, name: 'CHT2', visible: true },
-            { x: ts, y: data.engine.cht3, name: 'CHT3', visible: true },
-            { x: ts, y: data.engine.cht4, name: 'CHT4', visible: true },
-            { x: ts, y: data.engine.egt1, name: 'EGT1', visible: 'legendonly' },
-            { x: ts, y: data.engine.egt2, name: 'EGT2', visible: 'legendonly' },
-            { x: ts, y: data.engine.egt3, name: 'EGT3', visible: 'legendonly' },
-            { x: ts, y: data.engine.egt4, name: 'EGT4', visible: 'legendonly' },
-            { x: ts, y: data.engine.fuel_flow, name: 'Fuel Flow', visible: 'legendonly' },
-            { x: ts, y: data.engine.oil_temp, name: 'Oil Temp', visible: 'legendonly' },
-            { x: ts, y: data.engine.oil_pressure, name: 'Oil Press', visible: 'legendonly' },
-            { x: ts, y: data.engine.eis_volts, name: 'Volts', visible: 'legendonly' },
+            { x: ts, y: data.engine.rpm, name: 'RPM', visible: true, connectgaps: false },
+            { x: ts, y: data.engine.map, name: 'MAP', visible: 'legendonly', yaxis: 'y2', connectgaps: false },
+            { x: ts, y: data.engine.cht1, name: 'CHT1', visible: true, connectgaps: false },
+            { x: ts, y: data.engine.cht2, name: 'CHT2', visible: true, connectgaps: false },
+            { x: ts, y: data.engine.cht3, name: 'CHT3', visible: true, connectgaps: false },
+            { x: ts, y: data.engine.cht4, name: 'CHT4', visible: true, connectgaps: false },
+            { x: ts, y: data.engine.egt1, name: 'EGT1', visible: 'legendonly', connectgaps: false },
+            { x: ts, y: data.engine.egt2, name: 'EGT2', visible: 'legendonly', connectgaps: false },
+            { x: ts, y: data.engine.egt3, name: 'EGT3', visible: 'legendonly', connectgaps: false },
+            { x: ts, y: data.engine.egt4, name: 'EGT4', visible: 'legendonly', connectgaps: false },
+            { x: ts, y: data.engine.fuel_flow, name: 'Fuel Flow', visible: 'legendonly', connectgaps: false },
+            { x: ts, y: data.engine.oil_temp, name: 'Oil Temp', visible: 'legendonly', connectgaps: false },
+            { x: ts, y: data.engine.oil_pressure, name: 'Oil Press', visible: 'legendonly', connectgaps: false },
+            { x: ts, y: data.engine.eis_volts, name: 'Volts', visible: 'legendonly', connectgaps: false },
         ];
 
         Plotly.newPlot('engine-chart', engineTraces, {
@@ -127,15 +127,15 @@ fetch(`/api/flight/${flightId}/data`)
 
         // Flight chart
         const flightTraces = [
-            { x: ts, y: data.flight.ias, name: 'IAS', visible: true },
-            { x: ts, y: data.flight.tas, name: 'TAS', visible: 'legendonly' },
-            { x: ts, y: data.flight.ground_speed, name: 'GS', visible: 'legendonly' },
-            { x: ts, y: data.flight.pressure_alt, name: 'Press Alt', visible: true, yaxis: 'y2' },
-            { x: ts, y: data.flight.gps_alt, name: 'GPS Alt', visible: 'legendonly', yaxis: 'y2' },
-            { x: ts, y: data.flight.density_alt, name: 'Density Alt', visible: 'legendonly', yaxis: 'y2' },
-            { x: ts, y: data.flight.vertical_speed, name: 'VS', visible: 'legendonly' },
-            { x: ts, y: data.flight.oat, name: 'OAT', visible: 'legendonly' },
-            { x: ts, y: data.flight.g_load, name: 'G-Load', visible: 'legendonly' },
+            { x: ts, y: data.flight.ias, name: 'IAS', visible: true, connectgaps: false },
+            { x: ts, y: data.flight.tas, name: 'TAS', visible: 'legendonly', connectgaps: false },
+            { x: ts, y: data.flight.ground_speed, name: 'GS', visible: 'legendonly', connectgaps: false },
+            { x: ts, y: data.flight.pressure_alt, name: 'Press Alt', visible: true, yaxis: 'y2', connectgaps: false },
+            { x: ts, y: data.flight.gps_alt, name: 'GPS Alt', visible: 'legendonly', yaxis: 'y2', connectgaps: false },
+            { x: ts, y: data.flight.density_alt, name: 'Density Alt', visible: 'legendonly', yaxis: 'y2', connectgaps: false },
+            { x: ts, y: data.flight.vertical_speed, name: 'VS', visible: 'legendonly', connectgaps: false },
+            { x: ts, y: data.flight.oat, name: 'OAT', visible: 'legendonly', connectgaps: false },
+            { x: ts, y: data.flight.g_load, name: 'G-Load', visible: 'legendonly', connectgaps: false },
         ];
 
         Plotly.newPlot('flight-chart', flightTraces, {
