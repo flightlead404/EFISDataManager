@@ -214,7 +214,10 @@ def get_flight_stats(flight_id: int) -> Optional[FlightStats]:
         cht_fields = ["cht1", "cht2", "cht3", "cht4", "cht5", "cht6"]
         egt_fields = ["egt1", "egt2", "egt3", "egt4", "egt5", "egt6"]
 
-        for i, (cht_f, egt_f) in enumerate(zip(cht_fields, egt_fields), start=1):
+        from efis_data_manager.config import load_config
+        num_cyl = load_config().get("num_cylinders", 4)
+
+        for i, (cht_f, egt_f) in enumerate(zip(cht_fields[:num_cyl], egt_fields[:num_cyl]), start=1):
             cyl = CylinderStats(number=i)
             cyl.max_cht = _max_col(rows, cht_f, min_valid=100)
             cyl.avg_cht_cruise = _avg_col(cruise, cht_f, min_valid=100)
@@ -229,8 +232,8 @@ def get_flight_stats(flight_id: int) -> Optional[FlightStats]:
         # Use higher min_valid to exclude unused/dummy cylinders on 4-cyl engines
         stats.max_cht = max((c.max_cht for c in stats.cylinders if c.max_cht), default=None)
         stats.max_egt = max((c.max_egt for c in stats.cylinders if c.max_egt), default=None)
-        stats.cht_spread_max = _max_spread(cruise, cht_fields, min_valid=200)
-        stats.egt_spread_max = _max_spread(cruise, egt_fields, min_valid=500)
+        stats.cht_spread_max = _max_spread(cruise, cht_fields[:num_cyl], min_valid=200)
+        stats.egt_spread_max = _max_spread(cruise, egt_fields[:num_cyl], min_valid=500)
 
         # Generate alerts
         _check_alerts(stats, get_thresholds())

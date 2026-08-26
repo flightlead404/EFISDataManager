@@ -644,7 +644,7 @@ def _extract_multidisk(zip_path: str, pwd: Optional[bytes], chartdata_dir: str) 
                 # Unknown type — put in base chartdata dir
                 sub_dir = ""
 
-            if sub_dir and tile_dir.startswith("W"):
+            if sub_dir and (tile_dir.startswith("W") or tile_dir.startswith("E")):
                 dest_dir = os.path.join(chartdata_dir, sub_dir, tile_dir)
             elif sub_dir:
                 dest_dir = os.path.join(chartdata_dir, sub_dir)

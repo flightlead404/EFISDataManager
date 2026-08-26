@@ -19,6 +19,18 @@ DEFAULT_CONFIG = {
     "check_charts_interval_hours": 12,
     "check_nav_interval_hours": 24,
     "check_software_interval_hours": 24,
+    # Engine/aircraft configuration
+    "num_cylinders": 4,
+    "engine_type": "IO-360",
+    # Analysis thresholds (overridable)
+    "analysis_thresholds": {},
+    # Flight detection
+    "airborne_ias_threshold": 40,
+    "cruise_vs_threshold": 300,
+    "cruise_rpm_min": 1800,
+    # Dashboard
+    "dashboard_port": 5050,
+    "trend_window_hours": 25,
 }
 
 

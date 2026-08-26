@@ -1,0 +1,80 @@
+{% extends "base.html" %}
+{% block title %}Oil Consumption — EFIS Data Manager{% endblock %}
+{% block content %}
+<h1>Oil Consumption</h1>
+<div class="card">
+    <div id="oil-chart" class="chart-container" style="height: 350px;"></div>
+</div>
+<div class="card">
+    <h2>History</h2>
+    <table id="oil-table">
+        <thead>
+            <tr>
+                <th>Date</th>
+                <th>Hourmeter</th>
+                <th>Oil Added</th>
+                <th>Hours Since Last</th>
+                <th>Rate (qt/hr)</th>
+                <th>Rolling Avg</th>
+            </tr>
+        </thead>
+        <tbody></tbody>
+    </table>
+</div>
+<div style="margin-top: 1rem;">
+    <a href="/api/export/oil" class="btn">Export CSV</a>
+</div>
+{% endblock %}
+{% block scripts %}
+<script>
+const layout = {
+    paper_bgcolor: '#16213e',
+    plot_bgcolor: '#1a2744',
+    font: { color: '#e0e0e0', size: 11 },
+    margin: { l: 50, r: 20, t: 30, b: 40 },
+    legend: { orientation: 'h', y: -0.15 },
+    xaxis: { gridcolor: '#0f3460', title: 'Hourmeter' },
+    yaxis: { gridcolor: '#0f3460', title: 'qt/hr' },
+};
+
+fetch('/api/oil')
+    .then(r => r.json())
+    .then(data => {
+        if (data.length === 0) return;
+
+        // Chart
+        const traces = [
+            {
+                x: data.map(d => d.hourmeter),
+                y: data.map(d => d.rate),
+                name: 'Rate',
+                mode: 'markers+lines',
+                marker: { size: 6, color: '#ff7043' },
+                line: { color: '#ff7043', width: 1, dash: 'dot' },
+            },
+            {
+                x: data.map(d => d.hourmeter),
+                y: data.map(d => d.rolling_avg_rate),
+                name: 'Rolling Avg',
+                mode: 'lines',
+                line: { color: '#4fc3f7', width: 2 },
+            },
+        ];
+        Plotly.newPlot('oil-chart', traces, layout, { responsive: true });
+
+        // Table
+        const tbody = document.querySelector('#oil-table tbody');
+        data.forEach(d => {
+            const rateCls = d.rate > 0.15 ? 'style="color:#ff7043;"' : '';
+            tbody.innerHTML += `<tr>
+                <td>${d.date}</td>
+                <td>${d.hourmeter.toFixed(1)}</td>
+                <td>${d.oil_added} qt</td>
+                <td>${d.hours_since_last.toFixed(1)} hr</td>
+                <td ${rateCls}>${d.rate.toFixed(3)}</td>
+                <td>${d.rolling_avg_rate ? d.rolling_avg_rate.toFixed(3) : '-'}</td>
+            </tr>`;
+        });
+    });
+</script>
+{% endblock %}

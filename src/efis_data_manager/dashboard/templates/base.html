@@ -1,0 +1,147 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>{% block title %}EFIS Data Manager{% endblock %}</title>
+    <script src="https://cdn.plot.ly/plotly-2.32.0.min.js"></script>
+    <style>
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+            background: #1a1a2e;
+            color: #e0e0e0;
+            min-height: 100vh;
+        }
+        nav {
+            background: #16213e;
+            border-bottom: 1px solid #0f3460;
+            padding: 0.75rem 1.5rem;
+            display: flex;
+            align-items: center;
+            gap: 2rem;
+        }
+        nav .brand {
+            font-size: 1.1rem;
+            font-weight: 600;
+            color: #4fc3f7;
+        }
+        nav a {
+            color: #b0b0b0;
+            text-decoration: none;
+            font-size: 0.9rem;
+            padding: 0.4rem 0.8rem;
+            border-radius: 4px;
+            transition: all 0.2s;
+        }
+        nav a:hover, nav a.active {
+            color: #fff;
+            background: #0f3460;
+        }
+        .container {
+            max-width: 1400px;
+            margin: 0 auto;
+            padding: 1.5rem;
+        }
+        h1 { font-size: 1.5rem; margin-bottom: 1rem; color: #4fc3f7; }
+        h2 { font-size: 1.2rem; margin-bottom: 0.75rem; color: #81d4fa; }
+        .card {
+            background: #16213e;
+            border: 1px solid #0f3460;
+            border-radius: 8px;
+            padding: 1.25rem;
+            margin-bottom: 1rem;
+        }
+        table {
+            width: 100%;
+            border-collapse: collapse;
+            font-size: 0.85rem;
+        }
+        th, td {
+            padding: 0.5rem 0.75rem;
+            text-align: left;
+            border-bottom: 1px solid #0f3460;
+        }
+        th { color: #81d4fa; font-weight: 500; }
+        tr:hover { background: #1a2744; }
+        a.flight-link { color: #4fc3f7; text-decoration: none; }
+        a.flight-link:hover { text-decoration: underline; }
+        .badge {
+            display: inline-block;
+            padding: 0.15rem 0.5rem;
+            border-radius: 3px;
+            font-size: 0.75rem;
+            font-weight: 500;
+        }
+        .badge-warning { background: #e65100; color: #fff; }
+        .badge-caution { background: #f9a825; color: #000; }
+        .badge-ok { background: #2e7d32; color: #fff; }
+        .btn {
+            display: inline-block;
+            padding: 0.5rem 1rem;
+            background: #0f3460;
+            color: #4fc3f7;
+            border: 1px solid #4fc3f7;
+            border-radius: 4px;
+            cursor: pointer;
+            font-size: 0.85rem;
+            text-decoration: none;
+            transition: all 0.2s;
+        }
+        .btn:hover { background: #4fc3f7; color: #1a1a2e; }
+        .stat-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+            gap: 0.75rem;
+            margin-bottom: 1rem;
+        }
+        .stat-box {
+            background: #1a2744;
+            border-radius: 6px;
+            padding: 0.75rem;
+            text-align: center;
+        }
+        .stat-box .value {
+            font-size: 1.4rem;
+            font-weight: 600;
+            color: #4fc3f7;
+        }
+        .stat-box .label {
+            font-size: 0.75rem;
+            color: #888;
+            margin-top: 0.25rem;
+        }
+        .chart-container { margin-bottom: 1rem; }
+        input, select {
+            background: #1a2744;
+            border: 1px solid #0f3460;
+            color: #e0e0e0;
+            padding: 0.4rem 0.6rem;
+            border-radius: 4px;
+            font-size: 0.85rem;
+        }
+        input:focus, select:focus { outline: none; border-color: #4fc3f7; }
+        .form-row {
+            display: flex;
+            align-items: center;
+            gap: 1rem;
+            margin-bottom: 0.75rem;
+        }
+        .form-row label { min-width: 180px; font-size: 0.85rem; color: #aaa; }
+    </style>
+</head>
+<body>
+    <nav>
+        <span class="brand">EFIS Data Manager</span>
+        <a href="/" {% if request.path == '/' %}class="active"{% endif %}>Flights</a>
+        <a href="/trends" {% if request.path == '/trends' %}class="active"{% endif %}>Trends</a>
+        <a href="/alerts" {% if request.path == '/alerts' %}class="active"{% endif %}>Alerts</a>
+        <a href="/oil" {% if request.path == '/oil' %}class="active"{% endif %}>Oil</a>
+        <a href="/settings" {% if request.path == '/settings' %}class="active"{% endif %}>Settings</a>
+    </nav>
+    <div class="container">
+        {% block content %}{% endblock %}
+    </div>
+    {% block scripts %}{% endblock %}
+</body>
+</html>

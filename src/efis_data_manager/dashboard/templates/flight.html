@@ -1,0 +1,167 @@
+{% extends "base.html" %}
+{% block title %}Flight Detail — EFIS Data Manager{% endblock %}
+{% block content %}
+<h1>Flight Detail</h1>
+<div id="flight-stats" class="card">
+    <div class="stat-grid" id="stat-grid"></div>
+    <div id="cylinder-stats"></div>
+    <div id="alert-list" style="margin-top: 0.75rem;"></div>
+</div>
+
+<div class="card">
+    <h2>Engine Data</h2>
+    <div id="engine-chart" class="chart-container" style="height: 350px;"></div>
+</div>
+
+<div class="card">
+    <h2>Flight Data</h2>
+    <div id="flight-chart" class="chart-container" style="height: 350px;"></div>
+</div>
+
+<div style="margin-top: 1rem;">
+    <a id="export-raw" class="btn" href="#">Export Raw CSV</a>
+    <a href="/" class="btn" style="margin-left: 0.5rem;">Back to Flights</a>
+</div>
+{% endblock %}
+{% block scripts %}
+<script>
+const flightId = {{ flight_id }};
+const chartLayout = {
+    paper_bgcolor: '#16213e',
+    plot_bgcolor: '#1a2744',
+    font: { color: '#e0e0e0', size: 11 },
+    margin: { l: 50, r: 20, t: 30, b: 40 },
+    legend: { orientation: 'h', y: -0.15 },
+    xaxis: { gridcolor: '#0f3460', type: 'date' },
+    yaxis: { gridcolor: '#0f3460' },
+};
+
+// Load flight stats
+fetch(`/api/flight/${flightId}`)
+    .then(r => r.json())
+    .then(stats => {
+        const grid = document.getElementById('stat-grid');
+        const items = [
+            ['Duration', `${(stats.duration_seconds/60).toFixed(0)} min`],
+            ['Airborne', `${(stats.airborne_seconds/60).toFixed(0)} min`],
+            ['Max Alt', `${stats.max_altitude ? stats.max_altitude.toFixed(0) : '-'} ft`],
+            ['Max IAS', `${stats.max_indicated_airspeed ? stats.max_indicated_airspeed.toFixed(0) : '-'} kts`],
+            ['Max GS', `${stats.max_ground_speed ? stats.max_ground_speed.toFixed(0) : '-'} kts`],
+            ['Max RPM', `${stats.max_rpm ? stats.max_rpm.toFixed(0) : '-'}`],
+            ['Max CHT', `${stats.max_cht ? stats.max_cht.toFixed(0) : '-'}°F`],
+            ['Max EGT', `${stats.max_egt ? stats.max_egt.toFixed(0) : '-'}°F`],
+            ['CHT Spread', `${stats.cht_spread_max ? stats.cht_spread_max.toFixed(0) : '-'}°F`],
+            ['EGT Spread', `${stats.egt_spread_max ? stats.egt_spread_max.toFixed(0) : '-'}°F`],
+            ['Oil Temp', `${stats.max_oil_temp ? stats.max_oil_temp.toFixed(0) : '-'}°F`],
+            ['Oil Press', `${stats.min_oil_pressure_cruise ? stats.min_oil_pressure_cruise.toFixed(0) : '-'} psi`],
+            ['Fuel Used', `${stats.fuel_used ? stats.fuel_used.toFixed(1) : '-'} gal`],
+            ['Avg FF', `${stats.avg_fuel_flow_cruise ? stats.avg_fuel_flow_cruise.toFixed(1) : '-'} GPH`],
+            ['Hourmeter', `${stats.hourmeter_start} → ${stats.hourmeter_end}`],
+        ];
+        items.forEach(([label, value]) => {
+            grid.innerHTML += `<div class="stat-box"><div class="value">${value}</div><div class="label">${label}</div></div>`;
+        });
+
+        // Cylinder stats
+        if (stats.cylinders && stats.cylinders.length > 0) {
+            let html = '<h2 style="margin-top:1rem;">Cylinders</h2><table><thead><tr><th>Cyl</th><th>Max CHT</th><th>Avg CHT</th><th>Max EGT</th><th>Avg EGT</th></tr></thead><tbody>';
+            stats.cylinders.forEach(c => {
+                html += `<tr><td>#${c.number}</td><td>${c.max_cht ? c.max_cht.toFixed(0) : '-'}°F</td><td>${c.avg_cht_cruise ? c.avg_cht_cruise.toFixed(0) : '-'}°F</td><td>${c.max_egt ? c.max_egt.toFixed(0) : '-'}°F</td><td>${c.avg_egt_cruise ? c.avg_egt_cruise.toFixed(0) : '-'}°F</td></tr>`;
+            });
+            html += '</tbody></table>';
+            document.getElementById('cylinder-stats').innerHTML = html;
+        }
+
+        // Alerts
+        if (stats.alerts && stats.alerts.length > 0) {
+            let html = '<h2>Alerts</h2>';
+            stats.alerts.forEach(a => {
+                const cls = a.startsWith('WARNING') ? 'badge-warning' : 'badge-caution';
+                html += `<span class="badge ${cls}" style="margin-right:0.5rem;">${a}</span>`;
+            });
+            document.getElementById('alert-list').innerHTML = html;
+        }
+
+        // Set export link
+        document.getElementById('export-raw').href = `/api/export/raw/${stats.operation_id}`;
+    });
+
+// Load time-series data and render charts
+fetch(`/api/flight/${flightId}/data`)
+    .then(r => r.json())
+    .then(data => {
+        const ts = data.timestamps;
+
+        // Engine chart
+        const engineTraces = [
+            { x: ts, y: data.engine.rpm, name: 'RPM', visible: true },
+            { x: ts, y: data.engine.map, name: 'MAP', visible: 'legendonly', yaxis: 'y2' },
+            { x: ts, y: data.engine.cht1, name: 'CHT1', visible: true },
+            { x: ts, y: data.engine.cht2, name: 'CHT2', visible: true },
+            { x: ts, y: data.engine.cht3, name: 'CHT3', visible: true },
+            { x: ts, y: data.engine.cht4, name: 'CHT4', visible: true },
+            { x: ts, y: data.engine.egt1, name: 'EGT1', visible: 'legendonly' },
+            { x: ts, y: data.engine.egt2, name: 'EGT2', visible: 'legendonly' },
+            { x: ts, y: data.engine.egt3, name: 'EGT3', visible: 'legendonly' },
+            { x: ts, y: data.engine.egt4, name: 'EGT4', visible: 'legendonly' },
+            { x: ts, y: data.engine.fuel_flow, name: 'Fuel Flow', visible: 'legendonly' },
+            { x: ts, y: data.engine.oil_temp, name: 'Oil Temp', visible: 'legendonly' },
+            { x: ts, y: data.engine.oil_pressure, name: 'Oil Press', visible: 'legendonly' },
+            { x: ts, y: data.engine.eis_volts, name: 'Volts', visible: 'legendonly' },
+        ];
+
+        Plotly.newPlot('engine-chart', engineTraces, {
+            ...chartLayout,
+            title: { text: 'Engine', font: { size: 13, color: '#81d4fa' } },
+            yaxis: { ...chartLayout.yaxis, title: '°F / RPM' },
+            yaxis2: { overlaying: 'y', side: 'right', gridcolor: '#0f3460', title: 'inHg' },
+        }, { responsive: true });
+
+        // Flight chart
+        const flightTraces = [
+            { x: ts, y: data.flight.ias, name: 'IAS', visible: true },
+            { x: ts, y: data.flight.tas, name: 'TAS', visible: 'legendonly' },
+            { x: ts, y: data.flight.ground_speed, name: 'GS', visible: 'legendonly' },
+            { x: ts, y: data.flight.pressure_alt, name: 'Press Alt', visible: true, yaxis: 'y2' },
+            { x: ts, y: data.flight.gps_alt, name: 'GPS Alt', visible: 'legendonly', yaxis: 'y2' },
+            { x: ts, y: data.flight.density_alt, name: 'Density Alt', visible: 'legendonly', yaxis: 'y2' },
+            { x: ts, y: data.flight.vertical_speed, name: 'VS', visible: 'legendonly' },
+            { x: ts, y: data.flight.oat, name: 'OAT', visible: 'legendonly' },
+            { x: ts, y: data.flight.g_load, name: 'G-Load', visible: 'legendonly' },
+        ];
+
+        Plotly.newPlot('flight-chart', flightTraces, {
+            ...chartLayout,
+            title: { text: 'Flight', font: { size: 13, color: '#81d4fa' } },
+            yaxis: { ...chartLayout.yaxis, title: 'kts / fpm' },
+            yaxis2: { overlaying: 'y', side: 'right', gridcolor: '#0f3460', title: 'ft' },
+        }, { responsive: true });
+
+        // Link x-axes for synchronized zoom/pan
+        const engineDiv = document.getElementById('engine-chart');
+        const flightDiv = document.getElementById('flight-chart');
+        engineDiv.on('plotly_relayout', (eventData) => {
+            if (eventData['xaxis.range[0]'] && eventData['xaxis.range[1]']) {
+                Plotly.relayout(flightDiv, {
+                    'xaxis.range[0]': eventData['xaxis.range[0]'],
+                    'xaxis.range[1]': eventData['xaxis.range[1]'],
+                });
+            }
+            if (eventData['xaxis.autorange']) {
+                Plotly.relayout(flightDiv, { 'xaxis.autorange': true });
+            }
+        });
+        flightDiv.on('plotly_relayout', (eventData) => {
+            if (eventData['xaxis.range[0]'] && eventData['xaxis.range[1]']) {
+                Plotly.relayout(engineDiv, {
+                    'xaxis.range[0]': eventData['xaxis.range[0]'],
+                    'xaxis.range[1]': eventData['xaxis.range[1]'],
+                });
+            }
+            if (eventData['xaxis.autorange']) {
+                Plotly.relayout(engineDiv, { 'xaxis.autorange': true });
+            }
+        });
+    });
+</script>
+{% endblock %}

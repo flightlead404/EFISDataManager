@@ -1,0 +1,136 @@
+{% extends "base.html" %}
+{% block title %}Settings — EFIS Data Manager{% endblock %}
+{% block content %}
+<h1>Settings</h1>
+
+<div class="card">
+    <h2>Engine Configuration</h2>
+    <div class="form-row">
+        <label>Number of Cylinders</label>
+        <select id="num_cylinders">
+            <option value="4">4</option>
+            <option value="6">6</option>
+        </select>
+    </div>
+    <div class="form-row">
+        <label>Engine Type</label>
+        <input type="text" id="engine_type" placeholder="IO-360">
+    </div>
+</div>
+
+<div class="card">
+    <h2>Flight Detection</h2>
+    <div class="form-row">
+        <label>Airborne IAS Threshold (kts)</label>
+        <input type="number" id="airborne_ias_threshold" step="5">
+    </div>
+    <div class="form-row">
+        <label>Cruise VS Threshold (fpm)</label>
+        <input type="number" id="cruise_vs_threshold" step="50">
+    </div>
+    <div class="form-row">
+        <label>Cruise RPM Minimum</label>
+        <input type="number" id="cruise_rpm_min" step="100">
+    </div>
+</div>
+
+<div class="card">
+    <h2>Analysis Thresholds</h2>
+    <div id="thresholds-form"></div>
+</div>
+
+<div class="card">
+    <h2>Dashboard</h2>
+    <div class="form-row">
+        <label>Trend Window (hours)</label>
+        <input type="number" id="trend_window_hours" step="5">
+    </div>
+    <div class="form-row">
+        <label>Dashboard Port</label>
+        <input type="number" id="dashboard_port">
+    </div>
+</div>
+
+<div style="margin-top: 1rem;">
+    <button class="btn" onclick="saveSettings()">Save Settings</button>
+    <span id="save-status" style="margin-left: 1rem; color: #66bb6a;"></span>
+</div>
+{% endblock %}
+{% block scripts %}
+<script>
+const thresholdLabels = {
+    cht_caution: 'CHT Caution (°F)',
+    cht_redline: 'CHT Redline (°F)',
+    cht_spread_caution: 'CHT Spread Caution (°F)',
+    egt_caution: 'EGT Caution (°F)',
+    egt_redline: 'EGT Redline (°F)',
+    egt_spread_caution: 'EGT Spread Caution (°F)',
+    oil_temp_caution: 'Oil Temp Caution (°F)',
+    oil_temp_redline: 'Oil Temp Redline (°F)',
+    oil_pressure_low: 'Oil Pressure Low (psi)',
+    oil_pressure_low_cruise: 'Oil Pressure Low Cruise (psi)',
+    g_load_caution: 'G-Load Caution',
+    g_load_limit: 'G-Load Limit',
+    voltage_low: 'Voltage Low (V)',
+    voltage_high: 'Voltage High (V)',
+    trend_oil_consumption_high: 'Oil Consumption High (qt/hr)',
+};
+
+// Load current config
+fetch('/api/config')
+    .then(r => r.json())
+    .then(config => {
+        document.getElementById('num_cylinders').value = config.num_cylinders || 4;
+        document.getElementById('engine_type').value = config.engine_type || '';
+        document.getElementById('airborne_ias_threshold').value = config.airborne_ias_threshold || 40;
+        document.getElementById('cruise_vs_threshold').value = config.cruise_vs_threshold || 300;
+        document.getElementById('cruise_rpm_min').value = config.cruise_rpm_min || 1800;
+        document.getElementById('trend_window_hours').value = config.trend_window_hours || 25;
+        document.getElementById('dashboard_port').value = config.dashboard_port || 5050;
+
+        // Build threshold form
+        fetch('/api/thresholds').then(r => r.json()).then(thresholds => {
+            const form = document.getElementById('thresholds-form');
+            for (const [key, value] of Object.entries(thresholds)) {
+                const label = thresholdLabels[key] || key;
+                form.innerHTML += `<div class="form-row">
+                    <label>${label}</label>
+                    <input type="number" id="thresh_${key}" value="${value}" step="any">
+                </div>`;
+            }
+        });
+    });
+
+function saveSettings() {
+    const config = {
+        num_cylinders: parseInt(document.getElementById('num_cylinders').value),
+        engine_type: document.getElementById('engine_type').value,
+        airborne_ias_threshold: parseInt(document.getElementById('airborne_ias_threshold').value),
+        cruise_vs_threshold: parseInt(document.getElementById('cruise_vs_threshold').value),
+        cruise_rpm_min: parseInt(document.getElementById('cruise_rpm_min').value),
+        trend_window_hours: parseInt(document.getElementById('trend_window_hours').value),
+        dashboard_port: parseInt(document.getElementById('dashboard_port').value),
+    };
+
+    // Collect thresholds
+    const thresholds = {};
+    document.querySelectorAll('[id^="thresh_"]').forEach(el => {
+        const key = el.id.replace('thresh_', '');
+        const val = parseFloat(el.value);
+        if (!isNaN(val)) thresholds[key] = val;
+    });
+    config.analysis_thresholds = thresholds;
+
+    fetch('/api/config', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(config),
+    })
+    .then(r => r.json())
+    .then(() => {
+        document.getElementById('save-status').textContent = 'Saved!';
+        setTimeout(() => document.getElementById('save-status').textContent = '', 3000);
+    });
+}
+</script>
+{% endblock %}

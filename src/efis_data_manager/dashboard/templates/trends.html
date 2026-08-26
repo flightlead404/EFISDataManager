@@ -1,0 +1,56 @@
+{% extends "base.html" %}
+{% block title %}Trends — EFIS Data Manager{% endblock %}
+{% block content %}
+<h1>Engine Trends</h1>
+<div class="card">
+    <div id="trend-chart" class="chart-container" style="height: 450px;"></div>
+</div>
+<div style="margin-top: 1rem;">
+    <a href="/api/export/flights" class="btn">Export Summaries CSV</a>
+</div>
+{% endblock %}
+{% block scripts %}
+<script>
+const layout = {
+    paper_bgcolor: '#16213e',
+    plot_bgcolor: '#1a2744',
+    font: { color: '#e0e0e0', size: 11 },
+    margin: { l: 50, r: 20, t: 30, b: 40 },
+    legend: { orientation: 'h', y: -0.2 },
+    xaxis: { gridcolor: '#0f3460', title: 'Date' },
+    yaxis: { gridcolor: '#0f3460' },
+};
+
+fetch('/api/trends')
+    .then(r => r.json())
+    .then(trends => {
+        const traces = [];
+        const colors = ['#4fc3f7', '#ff7043', '#66bb6a', '#ffa726', '#ab47bc', '#26c6da', '#ef5350'];
+        let i = 0;
+        for (const [key, series] of Object.entries(trends)) {
+            if (series.points.length === 0) continue;
+            const color = colors[i % colors.length];
+            // Raw values
+            traces.push({
+                x: series.points.map(p => p.date),
+                y: series.points.map(p => p.value),
+                name: series.name,
+                mode: 'markers',
+                marker: { size: 5, color: color, opacity: 0.6 },
+                visible: key.includes('cht') ? true : 'legendonly',
+            });
+            // Rolling average
+            traces.push({
+                x: series.points.map(p => p.date),
+                y: series.rolling_avg,
+                name: `${series.name} (avg)`,
+                mode: 'lines',
+                line: { color: color, width: 2 },
+                visible: key.includes('cht') ? true : 'legendonly',
+            });
+            i++;
+        }
+        Plotly.newPlot('trend-chart', traces, layout, { responsive: true });
+    });
+</script>
+{% endblock %}

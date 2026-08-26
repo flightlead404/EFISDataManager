@@ -1,0 +1,41 @@
+{% extends "base.html" %}
+{% block title %}Alerts — EFIS Data Manager{% endblock %}
+{% block content %}
+<h1>Alerts &amp; Anomalies</h1>
+<div class="card">
+    <table id="alerts-table">
+        <thead>
+            <tr>
+                <th>Date</th>
+                <th>Severity</th>
+                <th>Parameter</th>
+                <th>Details</th>
+            </tr>
+        </thead>
+        <tbody></tbody>
+    </table>
+    <p id="no-alerts" style="display:none; color:#888; padding:1rem;">No anomalies detected.</p>
+</div>
+{% endblock %}
+{% block scripts %}
+<script>
+fetch('/api/alerts')
+    .then(r => r.json())
+    .then(alerts => {
+        const tbody = document.querySelector('#alerts-table tbody');
+        if (alerts.length === 0) {
+            document.getElementById('no-alerts').style.display = 'block';
+            return;
+        }
+        alerts.forEach(a => {
+            const cls = a.severity === 'warning' ? 'badge-warning' : 'badge-caution';
+            tbody.innerHTML += `<tr>
+                <td>${a.date}</td>
+                <td><span class="badge ${cls}">${a.severity.toUpperCase()}</span></td>
+                <td>${a.parameter}</td>
+                <td>${a.message}</td>
+            </tr>`;
+        });
+    });
+</script>
+{% endblock %}
