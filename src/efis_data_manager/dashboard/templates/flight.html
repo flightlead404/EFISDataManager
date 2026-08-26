@@ -74,13 +74,21 @@ fetch(`/api/flight/${flightId}`)
 
         // Alerts
         if (stats.alerts && stats.alerts.length > 0) {
-            let html = '<h2>Alerts</h2>';
-            stats.alerts.forEach(a => {
+            let html = '<h2>Alerts <span style="font-size:0.75rem;color:#888;">(click to jump)</span></h2><div>';
+            stats.alerts.forEach((a, idx) => {
                 const cls = a.startsWith('WARNING') ? 'badge-warning' : 'badge-caution';
-                html += `<span class="badge ${cls}" style="margin-right:0.5rem;">${a}</span>`;
+                html += `<span class="badge ${cls}" style="margin-right:0.5rem;margin-bottom:0.3rem;cursor:pointer;" onclick="jumpToAlert(${idx})">${a}</span>`;
             });
+            html += '</div>';
             document.getElementById('alert-list').innerHTML = html;
         }
+
+        // Fetch per-flight alerts with timestamps from anomaly API
+        fetch('/api/alerts')
+            .then(r => r.json())
+            .then(alerts => {
+                window.flightAlerts = alerts.filter(a => a.flight_id === flightId && a.timestamp);
+            });
 
         // Set export link
         document.getElementById('export-raw').href = `/api/export/raw/${stats.operation_id}`;
@@ -163,5 +171,48 @@ fetch(`/api/flight/${flightId}/data`)
             }
         });
     });
+
+// Jump to alert timestamp: zoom both charts to a 2-minute window and add vertical marker
+function jumpToAlert(idx) {
+    const alerts = window.flightAlerts || [];
+    if (idx >= alerts.length) return;
+
+    const alert = alerts[idx];
+    if (!alert || !alert.timestamp) return;
+
+    const ts = new Date(alert.timestamp);
+    const windowMs = 60000; // 1 minute each side
+    const t0 = new Date(ts.getTime() - windowMs).toISOString();
+    const t1 = new Date(ts.getTime() + windowMs).toISOString();
+
+    const annotation = {
+        shapes: [{
+            type: 'line',
+            x0: alert.timestamp,
+            x1: alert.timestamp,
+            y0: 0, y1: 1,
+            yref: 'paper',
+            line: { color: '#ff5252', width: 2, dash: 'dot' },
+        }],
+        annotations: [{
+            x: alert.timestamp,
+            y: 1,
+            yref: 'paper',
+            text: alert.parameter,
+            showarrow: true,
+            arrowhead: 2,
+            arrowcolor: '#ff5252',
+            font: { color: '#ff5252', size: 11 },
+            bgcolor: '#1a1a2e',
+            bordercolor: '#ff5252',
+        }],
+        'xaxis.range': [t0, t1],
+    };
+
+    const engineDiv = document.getElementById('engine-chart');
+    const flightDiv = document.getElementById('flight-chart');
+    Plotly.relayout(engineDiv, annotation);
+    Plotly.relayout(flightDiv, { ...annotation, annotations: [] }); // marker on both, label only on engine
+}
 </script>
 {% endblock %}
