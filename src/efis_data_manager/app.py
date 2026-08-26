@@ -51,6 +51,8 @@ class EFISDataManagerApp(rumps.App):
             "Drive: Not connected",
             "Eject Drive",
             None,
+            "Alerts (0)",
+            None,
             "Archive: " + self._short_path(self.config["archive_path"]),
             "USB Image: " + self._short_path(self.config["usb_image_path"]),
             None,
@@ -67,6 +69,7 @@ class EFISDataManagerApp(rumps.App):
 
         self.menu["Status: Idle"].set_callback(None)
         self.menu["Drive: Not connected"].set_callback(None)
+        self.menu["Alerts (0)"].set_callback(None)
         self.menu["Archive: " + self._short_path(self.config["archive_path"])].set_callback(None)
         self.menu["USB Image: " + self._short_path(self.config["usb_image_path"])].set_callback(None)
 
@@ -219,6 +222,8 @@ class EFISDataManagerApp(rumps.App):
                 self._set_status("Archive errors")
             else:
                 rumps.notification("EFIS Data Manager", "Archive Complete", msg)
+                # Refresh alerts after new data imported
+                self._refresh_alerts()
                 # Now run drive update (sequential: archive first, then update)
                 self._run_drive_update(mount_point)
 
@@ -311,6 +316,8 @@ class EFISDataManagerApp(rumps.App):
         """One-time startup check — runs all currency checks 30s after launch."""
         timer.stop()  # Only run once
         logger.info("Startup check: running all currency checks...")
+        # Refresh alerts on startup
+        self._refresh_alerts()
         if not self._charts_running:
             threading.Thread(target=self._run_chart_check_auto, daemon=True).start()
         if not self._nav_running:
@@ -712,6 +719,38 @@ class EFISDataManagerApp(rumps.App):
             self._update_title(current_status)
 
         NSOperationQueue.mainQueue().addOperationWithBlock_(_do_update)
+
+    def _refresh_alerts(self):
+        """Refresh the Alerts menu item with current anomalies."""
+        from AppKit import NSOperationQueue
+
+        def _do_refresh():
+            try:
+                from efis_data_manager.analysis import detect_anomalies
+                anomalies = detect_anomalies()
+
+                # Update the alerts menu item title
+                alert_title = f"Alerts ({len(anomalies)})"
+                # Find and update the alerts menu item
+                for key in list(self.menu.keys()):
+                    if isinstance(key, str) and key.startswith("Alerts"):
+                        self.menu[key].title = alert_title
+                        # Build submenu with recent alerts (max 10)
+                        # Clear existing submenu items
+                        submenu = self.menu[alert_title]
+                        # rumps doesn't support dynamic submenus easily,
+                        # so we just update the title with count
+                        break
+
+                # If there are new warnings, notify
+                warnings = [a for a in anomalies if a.severity == "warning"]
+                if warnings:
+                    self.title = "\u26A0 EFIS"  # ⚠ EFIS
+
+            except Exception as e:
+                logger.error(f"Alert refresh failed: {e}")
+
+        NSOperationQueue.mainQueue().addOperationWithBlock_(_do_refresh)
 
     def _update_title(self, status_text: str):
         """Set the menu bar title based on current state."""
