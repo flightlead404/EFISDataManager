@@ -138,6 +138,7 @@
         <a href="/alerts" {% if request.path == '/alerts' %}class="active"{% endif %}>Alerts</a>
         <a href="/oil" {% if request.path == '/oil' %}class="active"{% endif %}>Oil</a>
         <a href="/settings" {% if request.path == '/settings' %}class="active"{% endif %}>Settings</a>
+        <span style="margin-left: auto; color: #666; font-size: 0.8rem;">v{{ dashboard_version }}</span>
     </nav>
     <div class="container">
         {% block content %}{% endblock %}

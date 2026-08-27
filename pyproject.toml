@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "efis-data-manager"
-version = "0.1.0"
+version = "0.6.0"
 description = "GRT HXr EFIS Ground Support Automation"
 requires-python = ">=3.11"
 dependencies = [
@@ -13,6 +13,7 @@ dependencies = [
     "beautifulsoup4>=4.12.0",
     "playwright>=1.40.0",
     "pyzipper>=0.3.6",
+    "flask>=3.1.0",
 ]
 
 [project.optional-dependencies]
@@ -23,6 +24,7 @@ dev = [
 
 [project.scripts]
 efis-data-manager = "efis_data_manager.app:main"
+efis-dashboard = "efis_data_manager.dashboard.app:run_dashboard"
 
 [tool.setuptools.packages.find]
 where = ["src"]

@@ -19,9 +19,17 @@ from efis_data_manager.export import (
     export_flight_raw,
 )
 
+from efis_data_manager import DASHBOARD_VERSION
+
 logger = logging.getLogger(__name__)
 
 app = Flask(__name__, template_folder="templates")
+
+
+@app.context_processor
+def inject_version():
+    """Make the dashboard version available in all templates."""
+    return {"dashboard_version": DASHBOARD_VERSION}
 
 
 # ---------------------------------------------------------------------------

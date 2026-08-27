@@ -64,6 +64,7 @@ class EFISDataManagerApp(rumps.App):
             "Seattle Avionics Login...",
             "Prepare Drive...",
             None,
+            "About",
             "Quit",
         ]
 
@@ -686,6 +687,20 @@ class EFISDataManagerApp(rumps.App):
         )
         if response == 1:
             rumps.quit_application()
+
+    @rumps.clicked("About")
+    def about(self, _):
+        from efis_data_manager import MENUBAR_VERSION, __version__
+        rumps.alert(
+            title="EFIS Data Manager",
+            message=(
+                f"Menu Bar Tool v{MENUBAR_VERSION}\n"
+                f"Project release v{__version__}\n\n"
+                "GRT HXr EFIS Ground Support Automation\n"
+                "USB detection, chart currency, archiving, and analysis."
+            ),
+            ok="OK",
+        )
 
     # ------------------------------------------------------------------
     # Status
