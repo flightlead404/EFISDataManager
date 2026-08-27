@@ -59,6 +59,38 @@ logging.basicConfig(
 )
 
 
+def _install_exception_hooks():
+    """Log uncaught exceptions (main thread and worker threads) to the log file.
+
+    Previously an uncaught exception on the main thread killed the app silently
+    with no traceback. These hooks ensure the full traceback is always logged.
+    """
+    def _log_uncaught(exc_type, exc_value, exc_tb):
+        if issubclass(exc_type, KeyboardInterrupt):
+            sys.__excepthook__(exc_type, exc_value, exc_tb)
+            return
+        logger.critical(
+            "Uncaught exception (main thread):",
+            exc_info=(exc_type, exc_value, exc_tb),
+        )
+
+    sys.excepthook = _log_uncaught
+
+    # Thread exceptions (Python 3.8+)
+    def _log_thread_exc(args):
+        if issubclass(args.exc_type, SystemExit):
+            return
+        logger.critical(
+            f"Uncaught exception (thread {args.thread.name if args.thread else '?'}):",
+            exc_info=(args.exc_type, args.exc_value, args.exc_traceback),
+        )
+
+    threading.excepthook = _log_thread_exc
+
+
+_install_exception_hooks()
+
+
 class EFISDataManagerApp(rumps.App):
     """Menu bar application for GRT HXr ground support automation."""
 
@@ -98,6 +130,7 @@ class EFISDataManagerApp(rumps.App):
             "Seattle Avionics Login...",
             "Prepare Drive...",
             None,
+            "Diagnostics...",
             "Recent Errors...",
             "About",
             "Quit",
@@ -109,12 +142,40 @@ class EFISDataManagerApp(rumps.App):
         self.menu["Archive: " + self._short_path(self.config["archive_path"])].set_callback(None)
         self.menu["USB Image: " + self._short_path(self.config["usb_image_path"])].set_callback(None)
 
+        # Sanity-check configured paths at startup (logs warnings)
+        self._check_paths()
+
         # Start USB monitoring
         self._start_usb_monitor()
 
         # Initial state: disable eject if no drive
         if not getattr(self, '_drive_connected', False):
             self.menu["Eject Drive"].set_callback(None)
+
+    def _check_paths(self):
+        """Validate configured paths at startup, logging any concerns.
+
+        Catches issues like a path pointing at a removed CloudStorage/Dropbox
+        location, or a non-writable archive directory.
+        """
+        suspect_substrings = ("CloudStorage", "Dropbox")
+        for key in ("archive_path", "usb_image_path"):
+            path = self.config.get(key, "")
+            if not path:
+                logger.warning(f"Config '{key}' is empty.")
+                continue
+            if any(s in path for s in suspect_substrings):
+                logger.warning(
+                    f"Config '{key}' points at a cloud-storage path "
+                    f"({path}) — this may be stale."
+                )
+            # Ensure it exists / is creatable
+            try:
+                os.makedirs(path, exist_ok=True)
+                if not os.access(path, os.W_OK):
+                    logger.warning(f"Config '{key}' path is not writable: {path}")
+            except OSError as e:
+                logger.warning(f"Config '{key}' path unusable ({path}): {e}")
 
     def _short_path(self, path_str: str) -> str:
         from pathlib import Path
@@ -780,6 +841,80 @@ class EFISDataManagerApp(rumps.App):
                 except Exception:
                     pass
             rumps.quit_application()
+
+    @rumps.clicked("Diagnostics...")
+    def show_diagnostics(self, _):
+        """Show a self-check panel: versions, paths, DB, browser, disk, launchd."""
+        from efis_data_manager import __version__, MENUBAR_VERSION, DASHBOARD_VERSION
+        import shutil
+
+        lines = []
+        lines.append(f"Project v{__version__}  (menu bar {MENUBAR_VERSION}, dashboard {DASHBOARD_VERSION})")
+        lines.append("")
+
+        # Config paths
+        lines.append("Paths:")
+        for key in ("archive_path", "usb_image_path"):
+            path = self.config.get(key, "(unset)")
+            exists = os.path.isdir(path) if path else False
+            flag = "OK" if exists else "MISSING"
+            if any(s in path for s in ("CloudStorage", "Dropbox")):
+                flag = "SUSPECT (cloud path)"
+            lines.append(f"  {key}: {path} [{flag}]")
+
+        # Database
+        try:
+            from efis_data_manager.database import DB_PATH, get_db_connection
+            if os.path.exists(str(DB_PATH)):
+                size_mb = os.path.getsize(str(DB_PATH)) / (1024 * 1024)
+                conn = get_db_connection()
+                n_ops = conn.execute("SELECT COUNT(*) FROM operations").fetchone()[0]
+                n_flights = conn.execute(
+                    "SELECT COUNT(*) FROM operations WHERE has_flight=1"
+                ).fetchone()[0]
+                n_lb = conn.execute("SELECT COUNT(*) FROM logbook").fetchone()[0]
+                conn.close()
+                lines.append("")
+                lines.append(f"Database: {size_mb:.1f} MB")
+                lines.append(f"  {n_ops} operations ({n_flights} flights), {n_lb} logbook entries")
+            else:
+                lines.append("")
+                lines.append("Database: not yet created")
+        except Exception as e:
+            lines.append(f"Database: error ({e})")
+
+        # Playwright browser
+        try:
+            from efis_data_manager.currency import _check_playwright_browser
+            berr = _check_playwright_browser()
+            lines.append("")
+            lines.append(f"Playwright browser: {'OK' if not berr else 'MISSING'}")
+        except Exception:
+            lines.append("Playwright browser: unknown")
+
+        # Disk space on archive volume
+        try:
+            usage = shutil.disk_usage(os.path.expanduser("~"))
+            free_gb = usage.free / (1024 ** 3)
+            lines.append("")
+            lines.append(f"Free disk space: {free_gb:.1f} GB")
+        except Exception:
+            pass
+
+        # launchd plist target
+        try:
+            plist = os.path.expanduser("~/Library/LaunchAgents/com.efisdatamanager.plist")
+            if os.path.exists(plist):
+                with open(plist) as f:
+                    content = f.read()
+                bad = "CloudStorage" in content or "Dropbox" in content
+                lines.append("")
+                lines.append(f"launchd plist: {'SUSPECT (cloud path)' if bad else 'OK'}")
+        except Exception:
+            pass
+
+        rumps.alert(title="EFIS Data Manager — Diagnostics",
+                    message="\n".join(lines), ok="OK")
 
     @rumps.clicked("Recent Errors...")
     def show_recent_errors(self, _):
