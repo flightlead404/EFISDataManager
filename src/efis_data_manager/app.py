@@ -7,6 +7,7 @@ settings access, and background currency checking.
 import logging
 import os
 import subprocess
+import sys
 import threading
 
 import rumps
@@ -75,6 +76,7 @@ class EFISDataManagerApp(rumps.App):
         self._nav_first_tick_skipped = False
         self._pending_chart_downloads = None
         self._usb_monitor = None
+        self._dashboard_process = None
 
         self.menu = [
             "Status: Idle",
@@ -89,6 +91,8 @@ class EFISDataManagerApp(rumps.App):
             "Check Charts Now",
             "Check Nav DB Now",
             "Check EFIS/AHRS Software",
+            None,
+            "Analysis Dashboard...",
             None,
             "Settings...",
             "Seattle Avionics Login...",
@@ -169,11 +173,12 @@ class EFISDataManagerApp(rumps.App):
             return
 
         import subprocess
+        from efis_data_manager.usb_monitor import is_efis_drive
         mount_point = None
-        # Find current EFIS mount
+        # Find current EFIS mount (handles EFIS, EFIS_1, EFIS_2, ... via is_efis_drive)
         for name in os.listdir("/Volumes"):
             path = os.path.join("/Volumes", name)
-            if os.path.isdir(path) and name.upper() == "EFIS":
+            if os.path.isdir(path) and is_efis_drive(path):
                 mount_point = path
                 break
 
@@ -592,6 +597,36 @@ class EFISDataManagerApp(rumps.App):
     # Settings
     # ------------------------------------------------------------------
 
+    @rumps.clicked("Analysis Dashboard...")
+    def open_dashboard(self, _):
+        """Launch the analysis dashboard web server (if needed) and open it."""
+        import webbrowser
+        from efis_data_manager.config import load_config
+
+        port = load_config().get("dashboard_port", 5050)
+        url = f"http://localhost:{port}"
+
+        # Start the dashboard server if not already running
+        proc = self._dashboard_process
+        if proc is None or proc.poll() is not None:
+            try:
+                self._dashboard_process = subprocess.Popen(
+                    [sys.executable, "-m", "efis_data_manager.dashboard"],
+                    stdout=subprocess.DEVNULL,
+                    stderr=subprocess.DEVNULL,
+                )
+                logger.info(f"Started analysis dashboard on {url}")
+                # Give the server a moment to bind the port before opening
+                threading.Timer(1.5, lambda: webbrowser.open(url)).start()
+            except Exception as e:
+                logger.error(f"Failed to start dashboard: {e}")
+                rumps.notification("EFIS Data Manager", "Dashboard Failed",
+                                   f"Could not start dashboard: {e}")
+                return
+        else:
+            # Already running — just open the browser
+            webbrowser.open(url)
+
     @rumps.clicked("Settings...")
     def open_settings(self, _):
         from efis_data_manager.settings_window import show_settings
@@ -738,6 +773,12 @@ class EFISDataManagerApp(rumps.App):
             ok="Quit", cancel="Cancel",
         )
         if response == 1:
+            # Shut down the dashboard server if we started it
+            if self._dashboard_process and self._dashboard_process.poll() is None:
+                try:
+                    self._dashboard_process.terminate()
+                except Exception:
+                    pass
             rumps.quit_application()
 
     @rumps.clicked("Recent Errors...")

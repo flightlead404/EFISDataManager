@@ -13,15 +13,22 @@ from typing import Callable, Optional
 logger = logging.getLogger(__name__)
 
 
+import re
+
+# Matches "EFIS", "EFIS_1", "EFIS 2", etc. macOS appends a numeric suffix
+# when a volume name was recently used, and the user rotates multiple drives.
+_EFIS_NAME_RE = re.compile(r"^EFIS([ _-]?\d+)?$", re.IGNORECASE)
+
+
 def is_efis_drive(mount_point: str) -> bool:
     """Check if a mounted volume is an EFIS drive.
 
     Criteria (any one is sufficient):
-    - Volume name is "EFIS"
+    - Volume name is "EFIS" or "EFIS_N" (rotating drives / macOS suffix)
     - GRTCHARTS/ directory exists at volume root
     """
     volume_name = os.path.basename(mount_point)
-    if volume_name.upper() == "EFIS":
+    if _EFIS_NAME_RE.match(volume_name):
         return True
     if os.path.isdir(os.path.join(mount_point, "GRTCHARTS")):
         return True
