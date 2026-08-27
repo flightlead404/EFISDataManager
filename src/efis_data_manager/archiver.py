@@ -67,6 +67,10 @@ def archive_efis_drive(mount_point: str, progress_callback: Optional[Callable] =
 
     # --- Phase 1: Copy/move files FROM USB (reads) ---
 
+    # --- Priority: FDL files first, imported immediately ---
+    # Flight data is the time-sensitive payload — move and import it before
+    # the bulky DEMO logs so the analysis DB is ready ASAP.
+
     # FDL CSV files
     fdl_dest = archive_root / "FDL" / today
     fdl_archived_paths = []
@@ -80,6 +84,45 @@ def archive_efis_drive(mount_point: str, progress_callback: Optional[Callable] =
             results["skipped"] += 1
         else:
             results["errors"].append(result)
+
+    # Import FDL data into analysis DB immediately (before slow DEMO archive)
+    if fdl_archived_paths:
+        _status("Importing FDL data to database...")
+        _import_fdl_to_database(fdl_archived_paths, results)
+
+    # Logbook CSV files (copy, don't delete from USB) — small, import now
+    logbook_dest = archive_root / "Logbook"
+    logbook_paths = []
+    for f in _find_files(mount_point, "Logbook*.csv"):
+        result = _copy_file(f, logbook_dest)
+        if result == "copied":
+            results["logbook_copied"] += 1
+            logbook_paths.append(logbook_dest / os.path.basename(f))
+        elif result == "skipped":
+            results["skipped"] += 1
+            # Still import to DB even if file copy was skipped (might have new entries)
+            logbook_paths.append(logbook_dest / os.path.basename(f))
+        else:
+            results["errors"].append(result)
+
+    # Import logbook into analysis DB
+    if logbook_paths:
+        _import_logbook_to_database(logbook_paths, results)
+
+    # Settings .bak files (copy with date stamp, don't delete from USB)
+    settings_dest = archive_root / "Settings"
+    for bak_name in ["Settings.bak", "State.bak", "WP.bak", "Plan.bak"]:
+        bak_path = os.path.join(mount_point, bak_name)
+        if os.path.isfile(bak_path):
+            result = _copy_with_datestamp(bak_path, settings_dest, today)
+            if result == "copied":
+                results["settings_copied"] += 1
+            elif result == "skipped":
+                results["skipped"] += 1
+            else:
+                results["errors"].append(result)
+
+    # --- Bulk archival: DEMO and snapshot files (not time-sensitive) ---
 
     # DEMO LOG files
     demo_dest = archive_root / "Demo" / today
@@ -102,34 +145,6 @@ def archive_efis_drive(mount_point: str, progress_callback: Optional[Callable] =
             results["skipped"] += 1
         else:
             results["errors"].append(result)
-
-    # Logbook CSV files (copy, don't delete from USB)
-    logbook_dest = archive_root / "Logbook"
-    logbook_paths = []
-    for f in _find_files(mount_point, "Logbook*.csv"):
-        result = _copy_file(f, logbook_dest)
-        if result == "copied":
-            results["logbook_copied"] += 1
-            logbook_paths.append(logbook_dest / os.path.basename(f))
-        elif result == "skipped":
-            results["skipped"] += 1
-            # Still import to DB even if file copy was skipped (might have new entries)
-            logbook_paths.append(logbook_dest / os.path.basename(f))
-        else:
-            results["errors"].append(result)
-
-    # Settings .bak files (copy with date stamp, don't delete from USB)
-    settings_dest = archive_root / "Settings"
-    for bak_name in ["Settings.bak", "State.bak", "WP.bak", "Plan.bak"]:
-        bak_path = os.path.join(mount_point, bak_name)
-        if os.path.isfile(bak_path):
-            result = _copy_with_datestamp(bak_path, settings_dest, today)
-            if result == "copied":
-                results["settings_copied"] += 1
-            elif result == "skipped":
-                results["skipped"] += 1
-            else:
-                results["errors"].append(result)
 
     # --- Phase 2: Cleanup (writes/deletes on USB) ---
 
@@ -161,16 +176,6 @@ def archive_efis_drive(mount_point: str, progress_callback: Optional[Callable] =
             results["errors"].append(f"Remove E:ChartData: {e}")
 
     _status("Archive complete.")
-
-    # --- Phase 3: Import FDL data into analysis database ---
-    if fdl_archived_paths:
-        _status("Importing FDL data to database...")
-        _import_fdl_to_database(fdl_archived_paths, results)
-
-    # --- Phase 4: Import logbook into analysis database ---
-    if logbook_paths:
-        _import_logbook_to_database(logbook_paths, results)
-
     return results
 
 
@@ -178,10 +183,14 @@ def _find_files(mount_point: str, pattern: str) -> list[str]:
     """Find files matching a glob pattern at the root of the mount point."""
     import fnmatch
 
+    # Match case-insensitively: GRT writes .CSV/.LOG/.PNG (uppercase) but we
+    # want patterns to match regardless of case. fnmatch's case behavior is
+    # OS-dependent, so normalize both sides explicitly.
+    pattern_lower = pattern.lower()
     found = []
     try:
         for name in os.listdir(mount_point):
-            if fnmatch.fnmatch(name, pattern):
+            if fnmatch.fnmatchcase(name.lower(), pattern_lower):
                 full_path = os.path.join(mount_point, name)
                 if os.path.isfile(full_path):
                     found.append(full_path)

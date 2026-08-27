@@ -254,10 +254,22 @@ class EFISDataManagerApp(rumps.App):
                 self._set_status("Archive errors")
             else:
                 rumps.notification("EFIS Data Manager", "Archive Complete", msg)
-                # Refresh alerts after new data imported
-                self._refresh_alerts()
-                # Now run drive update (sequential: archive first, then update)
-                self._run_drive_update(mount_point)
+
+            # Data is now imported into the analysis DB. Signal that flight
+            # data is ready to analyze — independent of the (slow) chart sync.
+            self._refresh_alerts()
+            if results.get("fdl_imported"):
+                rumps.notification(
+                    "EFIS Data Manager", "Flight Data Ready",
+                    f"Imported {results['fdl_imported']} operation(s). "
+                    "Open the dashboard to analyze — chart sync continues in background."
+                )
+
+            # Kick off the drive update (long chart sync) on its OWN thread so
+            # the archive thread finishes cleanly and analysis isn't blocked.
+            threading.Thread(
+                target=self._run_drive_update, args=(mount_point,), daemon=True
+            ).start()
 
         except Exception as e:
             logger.error(f"Archive failed: {e}")
