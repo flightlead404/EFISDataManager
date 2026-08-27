@@ -1,9 +1,9 @@
 """EFIS Data Manager - GRT HXr Ground Support Automation."""
 
 # Project/release version (matches git tags and pyproject.toml)
-__version__ = "0.6.1"
+__version__ = "0.6.2"
 
 # Per-component display versions. These are independent labels shown in each
 # UI. Bump when a component meaningfully changes; they do not drive packaging.
-MENUBAR_VERSION = "0.6.0"
+MENUBAR_VERSION = "0.6.1"
 DASHBOARD_VERSION = "0.6.1"

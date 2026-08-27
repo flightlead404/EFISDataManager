@@ -841,6 +841,30 @@ def _save_grt_metadata(metadata: dict):
         json.dump(metadata, f, indent=2)
 
 
+def _check_playwright_browser() -> Optional[str]:
+    """Check whether the Playwright Chromium browser is installed.
+
+    Returns:
+        None if the browser is available, or an error message describing
+        the fix if the browser binary is missing.
+    """
+    browsers_path = os.path.expanduser("~/Library/Caches/ms-playwright")
+    if not os.path.isdir(browsers_path):
+        return _browser_missing_message()
+    # Look for a chromium/headless-shell executable under the cache
+    for entry in os.listdir(browsers_path):
+        if entry.startswith("chromium"):
+            return None
+    return _browser_missing_message()
+
+
+def _browser_missing_message() -> str:
+    return (
+        "Playwright browser not installed. Run this once to fix:\n"
+        "  ./venv/bin/playwright install chromium"
+    )
+
+
 def _playwright_fetch_grt_page(url: str, timeout: int = 60000) -> str:
     """Fetch a GRT page using Playwright to bypass Sucuri JS challenge.
 
@@ -947,6 +971,12 @@ def check_and_download_nav_db() -> dict:
     """
     config = load_config()
     usb_image_path = config["usb_image_path"]
+
+    # Clear error if the Playwright browser isn't installed
+    browser_error = _check_playwright_browser()
+    if browser_error:
+        logger.error(f"Nav DB check: {browser_error}")
+        return {"status": "error", "message": browser_error}
 
     try:
         html = _playwright_fetch_grt_page(GRT_NAV_PROC_URL)
@@ -1064,6 +1094,12 @@ def check_and_download_efis_software() -> dict:
     usb_image_path = config["usb_image_path"]
     metadata = _load_grt_metadata()
     updated_items = []
+
+    # Clear error if the Playwright browser isn't installed
+    browser_error = _check_playwright_browser()
+    if browser_error:
+        logger.error(f"Software check: {browser_error}")
+        return {"status": "error", "updated_items": [], "message": browser_error}
 
     try:
         # Check HXr page
