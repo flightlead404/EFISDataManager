@@ -550,16 +550,25 @@ class EFISDataManagerApp(rumps.App):
 
         try:
             result = check_and_download_efis_software()
-            if result["status"] == "updated":
-                rumps.notification("EFIS Data Manager", "EFIS Software Updated",
-                                   result["message"])
+            if result["status"] == "available":
+                # New version(s) detected — user downloads manually (Sucuri blocks auto)
+                names = ", ".join(result["updated_items"])
+                rumps.notification("EFIS Data Manager", "New EFIS Software Available",
+                                   f"{names}. See grtavionics.com to download.")
+                logger.info(f"Software available for manual download: {result['message']}")
+                self._set_status(f"Software update available: {names}")
             elif result["status"] == "current":
                 rumps.notification("EFIS Data Manager", "Software Current",
                                    result["message"])
+                self._set_status("Idle")
+            elif result["status"] == "blocked":
+                # Bot protection — soft failure, don't alarm the user
+                logger.warning(f"Software check blocked: {result['message']}")
+                self._set_status("Idle")
             else:
                 rumps.notification("EFIS Data Manager", "Software Check Failed",
                                    result["message"][:100])
-            self._set_status("Idle" if result["status"] != "error" else "Software check failed")
+                self._set_status("Software check failed")
         except Exception as e:
             logger.error(f"EFIS software check failed: {e}")
             rumps.notification("EFIS Data Manager", "Software Check Failed", str(e)[:100])

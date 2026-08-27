@@ -72,6 +72,15 @@ class PageLayoutChangedError(CurrencyError):
     pass
 
 
+class BotProtectionBlockedError(CurrencyError):
+    """The target site's bot protection (Sucuri/GoDaddy) blocked the request.
+
+    Transient — a retry later usually succeeds. Callers should treat this as
+    a soft "couldn't check" rather than a hard failure.
+    """
+    pass
+
+
 # ---------------------------------------------------------------------------
 # Keychain helpers
 # ---------------------------------------------------------------------------
@@ -900,14 +909,17 @@ with sync_playwright() as p:
 
 
 def _playwright_download_grt_file(page_url: str, link_selector: str, dest_path: str,
-                                   timeout: int = 120000) -> int:
+                                   timeout: int = 120000, link_text: str = None) -> int:
     """Download a file from GRT by clicking a link via Playwright subprocess.
 
     Args:
         page_url: The GRT page containing the download link.
-        link_selector: CSS selector for the download link.
+        link_selector: CSS selector for the download link (fallback).
         dest_path: Local path to save the downloaded file.
         timeout: Download timeout in ms.
+        link_text: If provided, locate the link by exact link text instead of
+            the CSS selector. More robust on GRT product pages where hrefs are
+            resolved dynamically and not matchable by an href selector.
 
     Returns:
         File size in bytes.
@@ -916,8 +928,14 @@ def _playwright_download_grt_file(page_url: str, link_selector: str, dest_path: 
     import sys
 
     os.makedirs(os.path.dirname(dest_path), exist_ok=True)
-    # Escape quotes in selector for embedding in Python string
-    sel_escaped = link_selector.replace('"', '\\"')
+    sel_escaped = link_selector.replace('"', '\\"') if link_selector else ""
+    text_escaped = link_text.replace('"', '\\"') if link_text else ""
+
+    # Choose locator strategy: by text (preferred for GRT product pages) or CSS
+    if link_text:
+        locator_line = f'link = page.get_by_role("link", name="{text_escaped}", exact=True)'
+    else:
+        locator_line = f"link = page.locator('{sel_escaped}')"
 
     script = f"""
 import time, os, sys, shutil, tempfile
@@ -930,14 +948,16 @@ with sync_playwright() as p:
     page.goto("{page_url}", timeout=90000)
     time.sleep(8)
 
-    link = page.locator('{sel_escaped}')
+    {locator_line}
     if link.count() == 0:
         print("LINK_NOT_FOUND", file=sys.stderr)
         browser.close()
         sys.exit(1)
 
+    # Links may live inside collapsed accordions on GRT pages, so the element
+    # exists but isn't visible. force=True clicks it anyway.
     with page.expect_download(timeout={timeout}) as dl_info:
-        link.click()
+        link.first.click(force=True)
     download = dl_info.value
 
     tmp_path = tempfile.mktemp(suffix=".tmp")
@@ -953,9 +973,10 @@ with sync_playwright() as p:
         capture_output=True, text=True, timeout=180, env=env
     )
     if result.returncode != 0:
+        locator_desc = f"text '{link_text}'" if link_text else f"selector '{link_selector}'"
         if "LINK_NOT_FOUND" in result.stderr:
             raise PageLayoutChangedError(
-                f"Download link not found with selector '{link_selector}' on {page_url}"
+                f"Download link not found with {locator_desc} on {page_url}"
             )
         raise CurrencyError(f"Playwright download failed: {result.stderr[:200]}")
 
@@ -1082,18 +1103,27 @@ MINIAP_SOFTWARE_TARGETS = {
 
 
 def check_and_download_efis_software() -> dict:
-    """Check for new EFIS/AHRS software and download if updated.
+    """Check for new EFIS/AHRS software and notify if updated.
 
-    Compares download URLs against previously seen URLs — if URL changes,
+    Compares download URLs against previously seen URLs — if a URL changes,
     a new version is available.
 
+    NOTE: GRT's getfile.aspx download endpoint sits behind Sucuri bot
+    protection that requires a genuine user-gesture click on a visible link.
+    The download links live in collapsed accordions (hidden), so automated
+    headless download is unreliable. We therefore DETECT new versions and
+    notify the user with the URL for manual download, rather than attempting
+    the download automatically. Software updates are infrequent.
+
     Returns:
-        Dict with: {"status": "current"|"updated"|"error", "updated_items": list, "message": str}
+        Dict with: {"status": "current"|"available"|"error",
+                    "updated_items": list, "message": str}
     """
     config = load_config()
     usb_image_path = config["usb_image_path"]
     metadata = _load_grt_metadata()
-    updated_items = []
+    updated_items = []      # human-readable descriptions of new versions
+    available_urls = {}     # description -> download URL for manual fetch
 
     # Clear error if the Playwright browser isn't installed
     browser_error = _check_playwright_browser()
@@ -1110,17 +1140,10 @@ def check_and_download_efis_software() -> dict:
                 continue
             stored_url = metadata.get(f"hxr_{local_name}_url")
             if url != stored_url:
-                logger.info(f"New HXr software detected: {link_text} -> {url}")
-                logger.info(f"Downloading HXr {link_text}...")
-                dest = os.path.join(usb_image_path, local_name)
-                _playwright_download_grt_file(
-                    GRT_HXR_PRODUCT_URL,
-                    f'a[href*="{_url_to_selector_fragment(url)}"]',
-                    dest,
-                )
-                logger.info(f"Downloaded HXr {link_text} to {dest}")
+                logger.info(f"New HXr software available: {link_text} -> {url}")
                 metadata[f"hxr_{local_name}_url"] = url
                 updated_items.append(f"HXr {link_text}")
+                available_urls[f"HXr {link_text}"] = url
 
         # Check Mini A/P page
         miniap_links = _get_grt_download_links(GRT_MINIAP_PRODUCT_URL)
@@ -1130,26 +1153,34 @@ def check_and_download_efis_software() -> dict:
                 continue
             stored_url = metadata.get(f"miniap_{local_name}_url")
             if url != stored_url:
-                logger.info(f"New Mini A/P software detected: {link_text} -> {url}")
-                logger.info(f"Downloading Mini A/P {link_text}...")
-                dest = os.path.join(usb_image_path, local_name)
-                _playwright_download_grt_file(
-                    GRT_MINIAP_PRODUCT_URL,
-                    f'a[href*="{_url_to_selector_fragment(url)}"]',
-                    dest,
-                )
-                logger.info(f"Downloaded Mini A/P {link_text} to {dest}")
+                logger.info(f"New Mini A/P software available: {link_text} -> {url}")
                 metadata[f"miniap_{local_name}_url"] = url
                 updated_items.append(f"Mini A/P {link_text}")
+                available_urls[f"Mini A/P {link_text}"] = url
 
         _save_grt_metadata(metadata)
 
         if updated_items:
-            msg = f"Updated: {', '.join(updated_items)}"
-            return {"status": "updated", "updated_items": updated_items, "message": msg}
+            # Build a message listing new versions and their URLs for manual download
+            lines = [f"{desc}: {url}" for desc, url in available_urls.items()]
+            msg = "New software available (download manually):\n" + "\n".join(lines)
+            return {
+                "status": "available",
+                "updated_items": updated_items,
+                "available_urls": available_urls,
+                "message": msg,
+            }
         else:
             return {"status": "current", "updated_items": [], "message": "All EFIS software is current."}
 
+    except BotProtectionBlockedError as e:
+        logger.warning(f"EFIS software check skipped: {e}")
+        return {
+            "status": "blocked",
+            "updated_items": [],
+            "message": "Could not check — grtavionics.com bot protection "
+                       "blocked the request. Will retry on next scheduled check.",
+        }
     except Exception as e:
         logger.error(f"EFIS software check failed: {e}")
         return {"status": "error", "updated_items": [], "message": str(e)}
@@ -1164,6 +1195,9 @@ def _get_grt_download_links(page_url: str) -> dict:
     import subprocess as _sp
     import sys
 
+    # NOTE: a compound selector like a[href*=".dat"], a[href*="getfile"] can
+    # intermittently return null hrefs on these pages. Query ALL anchors and
+    # filter by href in Python instead — this is reliable.
     script = f'''
 import json, time
 from playwright.sync_api import sync_playwright
@@ -1173,12 +1207,15 @@ with sync_playwright() as p:
     page = browser.new_page()
     page.goto("{page_url}", timeout=90000)
     time.sleep(8)
-    links = page.query_selector_all('a[href*=".zip"], a[href*=".dat"], a[href*="getfile"]')
+    links = page.query_selector_all("a")
     result = {{}}
     for link in links:
-        href = link.get_attribute("href")
-        text = link.inner_text().strip()
-        if text and href:
+        href = link.get_attribute("href") or ""
+        text = (link.inner_text() or "").strip()
+        if not text or not href:
+            continue
+        low = href.lower()
+        if ".zip" in low or ".dat" in low or "getfile" in low:
             result[text] = href
     browser.close()
     print(json.dumps(result))
@@ -1192,7 +1229,15 @@ with sync_playwright() as p:
     if result.returncode != 0:
         raise PageLayoutChangedError(f"Failed to fetch GRT page: {result.stderr[:200]}")
 
-    return _json.loads(result.stdout)
+    links = _json.loads(result.stdout)
+    # Detect Sucuri/GoDaddy bot-protection block: page loads but has no
+    # download links. Signal with a sentinel so callers can treat it as a
+    # soft "couldn't check" rather than "no updates".
+    if not links:
+        raise BotProtectionBlockedError(
+            "GRT page returned no download links (likely bot-protection block)."
+        )
+    return links
 
 
 def _url_to_selector_fragment(url: str) -> str:
