@@ -13,6 +13,7 @@ import logging
 import os
 import re
 import subprocess
+import threading
 import zipfile
 from pathlib import Path
 from typing import Optional
@@ -831,6 +832,12 @@ GRT_MINIAP_PRODUCT_URL = "https://grtavionics.com/product/mini-ap-efis/"
 
 GRT_VERSION_METADATA_FILE = APP_SUPPORT_DIR / "grt_versions.json"
 
+# Serialize read-modify-write of the shared metadata file. The nav DB and
+# software checks run on concurrent startup threads and both update this file;
+# without a lock one thread's write can clobber the other's, causing spurious
+# "new version" alerts on the next run.
+_grt_metadata_lock = threading.Lock()
+
 
 def _load_grt_metadata() -> dict:
     """Load locally stored GRT version metadata."""
@@ -844,10 +851,24 @@ def _load_grt_metadata() -> dict:
 
 
 def _save_grt_metadata(metadata: dict):
-    """Save GRT version metadata to disk."""
-    APP_SUPPORT_DIR.mkdir(parents=True, exist_ok=True)
-    with open(GRT_VERSION_METADATA_FILE, "w") as f:
-        json.dump(metadata, f, indent=2)
+    """Merge-and-save GRT version metadata to disk.
+
+    Reloads the current on-disk metadata under a lock and merges the caller's
+    updates into it before writing, so concurrent nav DB / software checks
+    don't overwrite each other's keys.
+    """
+    with _grt_metadata_lock:
+        APP_SUPPORT_DIR.mkdir(parents=True, exist_ok=True)
+        current = {}
+        if GRT_VERSION_METADATA_FILE.exists():
+            try:
+                with open(GRT_VERSION_METADATA_FILE) as f:
+                    current = json.load(f)
+            except (json.JSONDecodeError, OSError):
+                current = {}
+        current.update(metadata)
+        with open(GRT_VERSION_METADATA_FILE, "w") as f:
+            json.dump(current, f, indent=2)
 
 
 def _check_playwright_browser() -> Optional[str]:
