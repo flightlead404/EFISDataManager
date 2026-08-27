@@ -78,16 +78,19 @@ def settings_page():
 
 @app.route("/api/flights")
 def api_flights():
-    """Get all flights with summary data."""
+    """Get all operations with summary data.
+
+    Query param ?flights_only=1 excludes ground operations.
+    """
+    flights_only = request.args.get("flights_only") == "1"
     conn = get_db_connection()
     try:
-        flights = conn.execute(
-            """SELECT f.*, o.source_filename
-               FROM flights f
-               JOIN operations o ON f.operation_id = o.id
-               ORDER BY f.date DESC, f.start_time DESC"""
-        ).fetchall()
-        return jsonify([dict(f) for f in flights])
+        query = "SELECT * FROM operations"
+        if flights_only:
+            query += " WHERE has_flight = 1"
+        query += " ORDER BY date DESC, start_time DESC"
+        ops = conn.execute(query).fetchall()
+        return jsonify([dict(o) for o in ops])
     finally:
         conn.close()
 
@@ -102,6 +105,7 @@ def api_flight_detail(flight_id):
     return jsonify({
         "flight_id": stats.flight_id,
         "operation_id": stats.operation_id,
+        "has_flight": stats.has_flight,
         "date": stats.date,
         "duration_seconds": stats.duration_seconds,
         "airborne_seconds": stats.airborne_seconds,
@@ -143,12 +147,12 @@ def api_flight_data(flight_id):
     """
     conn = get_db_connection()
     try:
-        # Get operation_id for this flight
+        # flight_id is the operation id
         flight = conn.execute(
-            "SELECT operation_id FROM flights WHERE id = ?", (flight_id,)
+            "SELECT id as operation_id FROM operations WHERE id = ?", (flight_id,)
         ).fetchone()
         if not flight:
-            return jsonify({"error": "Flight not found"}), 404
+            return jsonify({"error": "Operation not found"}), 404
 
         # Check for time range params (full resolution zoom)
         start = request.args.get("start")

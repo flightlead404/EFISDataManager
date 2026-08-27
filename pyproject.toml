@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "efis-data-manager"
-version = "0.6.0"
+version = "0.6.1"
 description = "GRT HXr EFIS Ground Support Automation"
 requires-python = ">=3.11"
 dependencies = [

@@ -38,6 +38,9 @@ CREATE TABLE IF NOT EXISTS schema_info (
 );
 
 -- Operations: one per FDL file (each engine start/stop cycle)
+-- Operations: one per FDL file (each engine start/stop cycle).
+-- Summary stats computed for ALL operations (flights and ground ops).
+-- Cruise averages are only populated for flights (has_flight=1).
 CREATE TABLE IF NOT EXISTS operations (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     source_filename TEXT NOT NULL,
@@ -46,26 +49,15 @@ CREATE TABLE IF NOT EXISTS operations (
     duration_seconds INTEGER NOT NULL,
     record_count INTEGER NOT NULL,
     has_flight INTEGER NOT NULL DEFAULT 0,  -- 1 if airborne segment detected
+    airborne_seconds INTEGER NOT NULL DEFAULT 0,
     date TEXT NOT NULL,                 -- YYYY-MM-DD for easy grouping
     imported_at TEXT NOT NULL,          -- when this was imported
-    UNIQUE(source_filename, start_time)
-);
-
--- Flights: summary for operations that include airborne time
-CREATE TABLE IF NOT EXISTS flights (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    operation_id INTEGER NOT NULL REFERENCES operations(id),
-    date TEXT NOT NULL,
-    start_time TEXT NOT NULL,
-    end_time TEXT NOT NULL,
-    duration_seconds INTEGER NOT NULL,
-    airborne_seconds INTEGER NOT NULL,
-    -- GPS/nav
+    -- GPS/nav (mostly relevant for flights)
     max_gps_altitude REAL,
     max_pressure_altitude REAL,
     max_ground_speed REAL,
     max_indicated_airspeed REAL,
-    -- Engine
+    -- Engine (computed for all operations)
     max_rpm REAL,
     avg_rpm_cruise REAL,
     max_cht REAL,
@@ -80,7 +72,7 @@ CREATE TABLE IF NOT EXISTS flights (
     -- Hourmeter
     hourmeter_start REAL,
     hourmeter_end REAL,
-    UNIQUE(operation_id)
+    UNIQUE(source_filename, start_time)
 );
 
 -- Time-series data: 1-second FDL samples
@@ -162,7 +154,7 @@ CREATE INDEX IF NOT EXISTS idx_fdl_data_operation ON fdl_data(operation_id);
 CREATE INDEX IF NOT EXISTS idx_fdl_data_timestamp ON fdl_data(timestamp);
 CREATE INDEX IF NOT EXISTS idx_fdl_data_op_ts ON fdl_data(operation_id, timestamp);
 CREATE INDEX IF NOT EXISTS idx_operations_date ON operations(date);
-CREATE INDEX IF NOT EXISTS idx_flights_date ON flights(date);
+CREATE INDEX IF NOT EXISTS idx_operations_flight ON operations(has_flight);
 CREATE INDEX IF NOT EXISTS idx_logbook_date ON logbook(date);
 """
 
@@ -222,7 +214,7 @@ def import_fdl_file(fdl: FDLFile) -> Optional[int]:
             logger.info(f"Already imported: {fdl.source_filename}")
             return None
 
-        # Insert operation
+        # Insert operation (stats filled in by _compute_operation_summary)
         now = datetime.now().isoformat()
         cur = conn.execute(
             """INSERT INTO operations
@@ -245,9 +237,9 @@ def import_fdl_file(fdl: FDLFile) -> Optional[int]:
         # Batch insert time-series data
         _insert_fdl_data(conn, operation_id, fdl.records)
 
-        # If this operation includes a flight, compute summary
-        if fdl.has_flight:
-            _compute_flight_summary(conn, operation_id, fdl)
+        # Compute summary stats for ALL operations (flights and ground ops).
+        # Cruise averages are only meaningful for flights.
+        _compute_operation_summary(conn, operation_id, fdl)
 
         conn.commit()
         logger.info(
@@ -301,23 +293,28 @@ def _insert_fdl_data(conn: sqlite3.Connection, operation_id: int,
     )
 
 
-def _compute_flight_summary(conn: sqlite3.Connection, operation_id: int,
-                            fdl: FDLFile):
-    """Compute and store flight summary statistics."""
-    from efis_data_manager.fdl_parser import AIRBORNE_IAS_THRESHOLD
+def _compute_operation_summary(conn: sqlite3.Connection, operation_id: int,
+                               fdl: FDLFile):
+    """Compute and store summary statistics for an operation.
 
+    Runs for ALL operations (flights and ground ops). Max/min values and
+    fuel/hourmeter are computed for everything. Cruise averages are only
+    computed for flights (has_flight=1) since ground ops have no cruise phase.
+    """
     records = fdl.records
+    is_flight = fdl.has_flight
 
-    # Find airborne segment
+    # Find airborne segment (empty for ground ops)
     airborne_records = [r for r in records if r.airborne]
     airborne_seconds = len(airborne_records)  # 1-second samples
 
-    # Cruise: airborne and RPM stable (exclude climb/descent by VS threshold)
+    # Cruise: airborne and RPM stable (exclude climb/descent by VS threshold).
+    # Only relevant for flights; ground ops never have airborne records.
     cruise_records = [
         r for r in airborne_records
         if r.vertical_speed is not None and abs(r.vertical_speed) < 300
         and r.rpm1 is not None and r.rpm1 > 1800
-    ]
+    ] if is_flight else []
 
     # Compute stats
     max_gps_alt = max((r.gps_altitude for r in records if r.gps_altitude), default=None)
@@ -382,23 +379,34 @@ def _compute_flight_summary(conn: sqlite3.Connection, operation_id: int,
     hm_start = hourmeters[0] if hourmeters else None
     hm_end = hourmeters[-1] if hourmeters else None
 
+    # For ground ops, min_oil_pressure uses all running records (no airborne set)
+    if not is_flight:
+        oil_press_running = [
+            r.oil_pressure for r in records
+            if r.oil_pressure and r.oil_pressure > 0
+            and r.rpm1 and r.rpm1 > 400
+        ]
+        min_oil_pressure = min(oil_press_running) if oil_press_running else None
+
     conn.execute(
-        """INSERT INTO flights
-           (operation_id, date, start_time, end_time, duration_seconds,
-            airborne_seconds, max_gps_altitude, max_pressure_altitude,
-            max_ground_speed, max_indicated_airspeed, max_rpm, avg_rpm_cruise,
-            max_cht, avg_cht_cruise, max_egt, avg_egt_cruise,
-            max_oil_temp, min_oil_pressure, fuel_used, avg_fuel_flow_cruise,
-            hourmeter_start, hourmeter_end)
-           VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+        """UPDATE operations SET
+            airborne_seconds = ?,
+            max_gps_altitude = ?, max_pressure_altitude = ?,
+            max_ground_speed = ?, max_indicated_airspeed = ?,
+            max_rpm = ?, avg_rpm_cruise = ?,
+            max_cht = ?, avg_cht_cruise = ?,
+            max_egt = ?, avg_egt_cruise = ?,
+            max_oil_temp = ?, min_oil_pressure = ?,
+            fuel_used = ?, avg_fuel_flow_cruise = ?,
+            hourmeter_start = ?, hourmeter_end = ?
+           WHERE id = ?""",
         (
-            operation_id, fdl.date.isoformat(),
-            fdl.start_time.isoformat(), fdl.end_time.isoformat(),
-            fdl.duration_seconds, airborne_seconds,
+            airborne_seconds,
             max_gps_alt, max_press_alt, max_gs, max_ias,
             max_rpm, avg_rpm_cruise, max_cht, avg_cht_cruise,
             max_egt, avg_egt_cruise, max_oil_temp, min_oil_pressure,
             fuel_used, avg_ff_cruise, hm_start, hm_end,
+            operation_id,
         )
     )
 

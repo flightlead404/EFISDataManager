@@ -43,26 +43,36 @@ def export_flight_summaries(output_path: Optional[str] = None) -> str:
     conn = get_db_connection()
     try:
         flights = conn.execute(
-            """SELECT f.*, o.source_filename
-               FROM flights f
-               JOIN operations o ON f.operation_id = o.id
-               ORDER BY f.date"""
+            """SELECT * FROM operations ORDER BY date"""
         ).fetchall()
+
+        # Build a map of operation_id -> alert summary
+        from efis_data_manager.analysis import detect_anomalies
+        alerts_by_op = {}
+        for a in detect_anomalies():
+            if a.flight_id:
+                alerts_by_op.setdefault(a.flight_id, []).append(
+                    f"{a.parameter}: {a.severity}"
+                )
 
         with open(output_path, "w", newline="") as f:
             writer = csv.writer(f)
             writer.writerow([
-                "Date", "Source File", "Duration (min)", "Airborne (min)",
+                "Date", "Type", "Source File", "Duration (min)", "Airborne (min)",
                 "Max Altitude (ft)", "Max IAS (kts)", "Max GS (kts)",
                 "Max RPM", "Max CHT (°F)", "Avg CHT Cruise (°F)",
                 "Max EGT (°F)", "Avg EGT Cruise (°F)",
                 "Max Oil Temp (°F)", "Min Oil Press (psi)",
                 "Fuel Used (gal)", "Avg FF Cruise (GPH)",
-                "Hourmeter Start", "Hourmeter End",
+                "Hourmeter Start", "Hourmeter End", "Alerts",
             ])
             for flight in flights:
+                op_type = "Flight" if flight["has_flight"] else "Ground"
+                alerts = alerts_by_op.get(flight["id"], [])
+                alert_str = "; ".join(alerts) if alerts else ""
                 writer.writerow([
                     flight["date"],
+                    op_type,
                     flight["source_filename"] if "source_filename" in flight.keys() else "",
                     round(flight["duration_seconds"] / 60, 1),
                     round(flight["airborne_seconds"] / 60, 1),
@@ -80,9 +90,10 @@ def export_flight_summaries(output_path: Optional[str] = None) -> str:
                     flight["avg_fuel_flow_cruise"],
                     flight["hourmeter_start"],
                     flight["hourmeter_end"],
+                    alert_str,
                 ])
 
-        logger.info(f"Exported {len(flights)} flight summaries to {output_path}")
+        logger.info(f"Exported {len(flights)} operation summaries to {output_path}")
         return output_path
 
     finally:

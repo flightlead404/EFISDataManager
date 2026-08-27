@@ -83,12 +83,13 @@ class CylinderStats:
 
 @dataclass
 class FlightStats:
-    """Comprehensive per-flight statistics."""
+    """Comprehensive per-operation statistics (flight or ground)."""
     flight_id: int
     operation_id: int
     date: str
     duration_seconds: int
     airborne_seconds: int
+    has_flight: bool = True
 
     # Performance
     max_ground_speed: Optional[float] = None
@@ -132,28 +133,26 @@ class FlightStats:
     alerts: list[str] = field(default_factory=list)
 
 
-def get_flight_stats(flight_id: int) -> Optional[FlightStats]:
-    """Compute detailed statistics for a specific flight.
+def get_flight_stats(operation_id: int) -> Optional[FlightStats]:
+    """Compute detailed statistics for a specific operation (flight or ground).
 
     Queries the raw FDL data from the database and computes comprehensive
-    per-flight metrics including cylinder-level analysis.
+    per-operation metrics including cylinder-level analysis.
 
     Args:
-        flight_id: The flights.id to analyze.
+        operation_id: The operations.id to analyze.
 
     Returns:
-        FlightStats dataclass or None if flight not found.
+        FlightStats dataclass or None if operation not found.
     """
     conn = get_db_connection()
     try:
-        # Get flight metadata
-        flight_row = conn.execute(
-            "SELECT * FROM flights WHERE id = ?", (flight_id,)
+        # Get operation metadata
+        op_row = conn.execute(
+            "SELECT * FROM operations WHERE id = ?", (operation_id,)
         ).fetchone()
-        if not flight_row:
+        if not op_row:
             return None
-
-        operation_id = flight_row["operation_id"]
 
         # Get all FDL data for this operation
         rows = conn.execute(
@@ -166,15 +165,16 @@ def get_flight_stats(flight_id: int) -> Optional[FlightStats]:
             return None
 
         stats = FlightStats(
-            flight_id=flight_id,
+            flight_id=operation_id,
             operation_id=operation_id,
-            date=flight_row["date"],
-            duration_seconds=flight_row["duration_seconds"],
-            airborne_seconds=flight_row["airborne_seconds"],
-            hourmeter_start=flight_row["hourmeter_start"],
-            hourmeter_end=flight_row["hourmeter_end"],
-            fuel_used=flight_row["fuel_used"],
+            date=op_row["date"],
+            duration_seconds=op_row["duration_seconds"],
+            airborne_seconds=op_row["airborne_seconds"],
+            hourmeter_start=op_row["hourmeter_start"],
+            hourmeter_end=op_row["hourmeter_end"],
+            fuel_used=op_row["fuel_used"],
         )
+        stats.has_flight = bool(op_row["has_flight"])
 
         # Classify records
         airborne = [r for r in rows if (r["indicated_airspeed"] or 0) > 40]
@@ -250,7 +250,7 @@ def get_all_flight_stats() -> list[FlightStats]:
     try:
         flight_ids = [
             row["id"] for row in
-            conn.execute("SELECT id FROM flights ORDER BY date DESC").fetchall()
+            conn.execute("SELECT id FROM operations ORDER BY date DESC").fetchall()
         ]
     finally:
         conn.close()
@@ -294,13 +294,15 @@ def compute_trends(window_hours: float = 25.0) -> dict[str, TrendSeries]:
     """
     conn = get_db_connection()
     try:
+        # Trends only include flights, not ground operations
         flights = conn.execute(
-            """SELECT f.id, f.date, f.hourmeter_end, f.max_cht, f.avg_cht_cruise,
-                      f.max_egt, f.avg_egt_cruise, f.max_oil_temp,
-                      f.min_oil_pressure, f.avg_fuel_flow_cruise, f.fuel_used,
-                      f.airborne_seconds
-               FROM flights f
-               ORDER BY f.date, f.hourmeter_end""",
+            """SELECT id, date, hourmeter_end, max_cht, avg_cht_cruise,
+                      max_egt, avg_egt_cruise, max_oil_temp,
+                      min_oil_pressure, avg_fuel_flow_cruise, fuel_used,
+                      airborne_seconds
+               FROM operations
+               WHERE has_flight = 1
+               ORDER BY date, hourmeter_end""",
         ).fetchall()
     finally:
         conn.close()
@@ -403,10 +405,9 @@ def detect_anomalies(window_hours: float = 25.0) -> list[Anomaly]:
 
     conn = get_db_connection()
     try:
+        # Alerts cover all operations (flights and ground ops)
         flights = conn.execute(
-            """SELECT f.*, o.source_filename
-               FROM flights f JOIN operations o ON f.operation_id = o.id
-               ORDER BY f.date DESC""",
+            """SELECT * FROM operations ORDER BY date DESC""",
         ).fetchall()
     finally:
         pass  # Keep conn open for timestamp lookups below
@@ -416,7 +417,9 @@ def detect_anomalies(window_hours: float = 25.0) -> list[Anomaly]:
     for flight in flights:
         fid = flight["id"]
         fdate = flight["date"]
-        op_id = flight["operation_id"]
+        op_id = flight["id"]
+        is_ground = not flight["has_flight"]
+        ground_note = " (ground op)" if is_ground else ""
 
         # --- Absolute exceedances (with timestamp lookup) ---
         if flight["max_cht"] and flight["max_cht"] >= thresholds["cht_redline"]:
@@ -424,7 +427,7 @@ def detect_anomalies(window_hours: float = 25.0) -> list[Anomaly]:
             anomalies.append(Anomaly(
                 flight_id=fid, date=fdate, parameter="CHT",
                 severity="warning",
-                message=f"CHT reached {flight['max_cht']:.0f}°F (redline {thresholds['cht_redline']}°F)",
+                message=f"CHT reached {flight['max_cht']:.0f}°F (redline {thresholds['cht_redline']}°F){ground_note}",
                 value=flight["max_cht"], threshold=thresholds["cht_redline"],
                 timestamp=ts,
             ))
@@ -433,7 +436,7 @@ def detect_anomalies(window_hours: float = 25.0) -> list[Anomaly]:
             anomalies.append(Anomaly(
                 flight_id=fid, date=fdate, parameter="CHT",
                 severity="caution",
-                message=f"CHT reached {flight['max_cht']:.0f}°F (caution {thresholds['cht_caution']}°F)",
+                message=f"CHT reached {flight['max_cht']:.0f}°F (caution {thresholds['cht_caution']}°F){ground_note}",
                 value=flight["max_cht"], threshold=thresholds["cht_caution"],
                 timestamp=ts,
             ))
@@ -443,7 +446,7 @@ def detect_anomalies(window_hours: float = 25.0) -> list[Anomaly]:
             anomalies.append(Anomaly(
                 flight_id=fid, date=fdate, parameter="EGT",
                 severity="warning",
-                message=f"EGT reached {flight['max_egt']:.0f}°F (redline {thresholds['egt_redline']}°F)",
+                message=f"EGT reached {flight['max_egt']:.0f}°F (redline {thresholds['egt_redline']}°F){ground_note}",
                 value=flight["max_egt"], threshold=thresholds["egt_redline"],
                 timestamp=ts,
             ))
@@ -454,18 +457,20 @@ def detect_anomalies(window_hours: float = 25.0) -> list[Anomaly]:
             anomalies.append(Anomaly(
                 flight_id=fid, date=fdate, parameter="Oil Temp",
                 severity=sev,
-                message=f"Oil temp reached {flight['max_oil_temp']:.0f}°F",
+                message=f"Oil temp reached {flight['max_oil_temp']:.0f}°F{ground_note}",
                 value=flight["max_oil_temp"], threshold=thresholds["oil_temp_caution"],
                 timestamp=ts,
             ))
 
+        # Oil pressure: use appropriate context (cruise for flights, running for ground)
+        oil_press_context = "in cruise" if not is_ground else "while running"
         if flight["min_oil_pressure"] and flight["min_oil_pressure"] < thresholds["oil_pressure_low_cruise"]:
             sev = "warning" if flight["min_oil_pressure"] < thresholds["oil_pressure_low"] else "caution"
             ts = _find_min_timestamp(conn, op_id, "oil_pressure", thresholds["oil_pressure_low_cruise"])
             anomalies.append(Anomaly(
                 flight_id=fid, date=fdate, parameter="Oil Pressure",
                 severity=sev,
-                message=f"Oil pressure dropped to {flight['min_oil_pressure']:.0f} psi in cruise",
+                message=f"Oil pressure dropped to {flight['min_oil_pressure']:.0f} psi {oil_press_context}{ground_note}",
                 value=flight["min_oil_pressure"], threshold=thresholds["oil_pressure_low_cruise"],
                 timestamp=ts,
             ))

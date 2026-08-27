@@ -1,15 +1,19 @@
 {% extends "base.html" %}
 {% block title %}Flights — EFIS Data Manager{% endblock %}
 {% block content %}
-<h1>Flights</h1>
-<div style="margin-bottom: 1rem;">
+<h1>Operations</h1>
+<div style="margin-bottom: 1rem; display: flex; align-items: center; gap: 1rem;">
     <a href="/api/export/flights" class="btn">Export CSV</a>
+    <label style="font-size: 0.85rem; color: #aaa; cursor: pointer;">
+        <input type="checkbox" id="flights-only" style="vertical-align: middle;"> Flights only
+    </label>
 </div>
 <div class="card">
     <table id="flights-table">
         <thead>
             <tr>
                 <th>Date</th>
+                <th>Type</th>
                 <th>Duration</th>
                 <th>Airborne</th>
                 <th>Max Alt</th>
@@ -28,32 +32,44 @@
 {% endblock %}
 {% block scripts %}
 <script>
-fetch('/api/flights')
-    .then(r => r.json())
-    .then(flights => {
-        const tbody = document.querySelector('#flights-table tbody');
-        flights.forEach(f => {
-            const dur = (f.duration_seconds / 60).toFixed(0);
-            const air = (f.airborne_seconds / 60).toFixed(0);
-            // Simple alert check
-            let alertBadge = '<span class="badge badge-ok">OK</span>';
-            if (f.max_cht && f.max_cht >= 420) alertBadge = '<span class="badge badge-warning">CHT</span>';
-            else if (f.max_cht && f.max_cht >= 380) alertBadge = '<span class="badge badge-caution">CHT</span>';
+function loadOperations() {
+    const flightsOnly = document.getElementById('flights-only').checked;
+    const url = flightsOnly ? '/api/flights?flights_only=1' : '/api/flights';
+    fetch(url)
+        .then(r => r.json())
+        .then(flights => {
+            const tbody = document.querySelector('#flights-table tbody');
+            tbody.innerHTML = '';
+            flights.forEach(f => {
+                const dur = (f.duration_seconds / 60).toFixed(0);
+                const air = (f.airborne_seconds / 60).toFixed(0);
+                const typeBadge = f.has_flight
+                    ? '<span class="badge badge-ok">Flight</span>'
+                    : '<span class="badge" style="background:#546e7a;color:#fff;">Ground</span>';
+                // Simple alert check
+                let alertBadge = '<span class="badge badge-ok">OK</span>';
+                if (f.max_cht && f.max_cht >= 420) alertBadge = '<span class="badge badge-warning">CHT</span>';
+                else if (f.max_cht && f.max_cht >= 380) alertBadge = '<span class="badge badge-caution">CHT</span>';
 
-            tbody.innerHTML += `<tr>
-                <td><a href="/flight/${f.id}" class="flight-link">${f.date}</a></td>
-                <td>${dur} min</td>
-                <td>${air} min</td>
-                <td>${f.max_pressure_altitude ? f.max_pressure_altitude.toFixed(0) : '-'} ft</td>
-                <td>${f.max_indicated_airspeed ? f.max_indicated_airspeed.toFixed(0) : '-'} kts</td>
-                <td>${f.max_cht ? f.max_cht.toFixed(0) : '-'}°F</td>
-                <td>${f.max_egt ? f.max_egt.toFixed(0) : '-'}°F</td>
-                <td>${f.max_oil_temp ? f.max_oil_temp.toFixed(0) : '-'}°F</td>
-                <td>${f.min_oil_pressure ? f.min_oil_pressure.toFixed(0) : '-'} psi</td>
-                <td>${f.fuel_used ? f.fuel_used.toFixed(1) : '-'} gal</td>
-                <td>${alertBadge}</td>
-            </tr>`;
+                tbody.innerHTML += `<tr>
+                    <td><a href="/flight/${f.id}" class="flight-link">${f.date}</a></td>
+                    <td>${typeBadge}</td>
+                    <td>${dur} min</td>
+                    <td>${f.has_flight ? air + ' min' : '-'}</td>
+                    <td>${f.max_pressure_altitude ? f.max_pressure_altitude.toFixed(0) : '-'} ft</td>
+                    <td>${f.max_indicated_airspeed ? f.max_indicated_airspeed.toFixed(0) : '-'} kts</td>
+                    <td>${f.max_cht ? f.max_cht.toFixed(0) : '-'}°F</td>
+                    <td>${f.max_egt ? f.max_egt.toFixed(0) : '-'}°F</td>
+                    <td>${f.max_oil_temp ? f.max_oil_temp.toFixed(0) : '-'}°F</td>
+                    <td>${f.min_oil_pressure ? f.min_oil_pressure.toFixed(0) : '-'} psi</td>
+                    <td>${f.fuel_used ? f.fuel_used.toFixed(1) : '-'} gal</td>
+                    <td>${alertBadge}</td>
+                </tr>`;
+            });
         });
-    });
+}
+
+document.getElementById('flights-only').addEventListener('change', loadOperations);
+loadOperations();
 </script>
 {% endblock %}
