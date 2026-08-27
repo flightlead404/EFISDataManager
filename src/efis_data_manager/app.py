@@ -18,12 +18,42 @@ logger = logging.getLogger(__name__)
 # Configure logging to file (works regardless of how app is launched)
 _log_dir = os.path.expanduser("~/EFIS/DataManagerLogs")
 os.makedirs(_log_dir, exist_ok=True)
+
+
+class RecentErrorHandler(logging.Handler):
+    """Logging handler that retains the most recent error/warning records
+    in an in-memory ring buffer for display in the menu bar UI."""
+
+    def __init__(self, capacity: int = 10):
+        super().__init__(level=logging.WARNING)
+        from collections import deque
+        self.records = deque(maxlen=capacity)
+
+    def emit(self, record):
+        try:
+            ts = __import__("datetime").datetime.fromtimestamp(
+                record.created
+            ).strftime("%Y-%m-%d %H:%M:%S")
+            self.records.append(
+                f"[{ts}] {record.levelname}: {record.getMessage()}"
+            )
+        except Exception:
+            pass
+
+    def get_recent(self) -> list[str]:
+        return list(self.records)
+
+
+# Shared handler instance so the app can read recent errors
+_recent_error_handler = RecentErrorHandler(capacity=10)
+
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
     handlers=[
         logging.FileHandler(os.path.join(_log_dir, "efis_data_manager.log")),
         logging.StreamHandler(),
+        _recent_error_handler,
     ],
 )
 
@@ -64,6 +94,7 @@ class EFISDataManagerApp(rumps.App):
             "Seattle Avionics Login...",
             "Prepare Drive...",
             None,
+            "Recent Errors...",
             "About",
             "Quit",
         ]
@@ -687,6 +718,24 @@ class EFISDataManagerApp(rumps.App):
         )
         if response == 1:
             rumps.quit_application()
+
+    @rumps.clicked("Recent Errors...")
+    def show_recent_errors(self, _):
+        errors = _recent_error_handler.get_recent()
+        if not errors:
+            rumps.alert(
+                title="Recent Errors",
+                message="No errors or warnings logged this session.",
+                ok="OK",
+            )
+            return
+        # Show most recent first
+        body = "\n\n".join(reversed(errors))
+        rumps.alert(
+            title=f"Recent Errors ({len(errors)})",
+            message=body,
+            ok="OK",
+        )
 
     @rumps.clicked("About")
     def about(self, _):
