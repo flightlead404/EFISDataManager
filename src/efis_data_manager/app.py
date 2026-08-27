@@ -855,20 +855,18 @@ class EFISDataManagerApp(rumps.App):
                 from efis_data_manager.analysis import detect_anomalies
                 anomalies = detect_anomalies()
 
-                # Update the alerts menu item title
+                # Update the alerts menu item title. rumps keys menu items by
+                # their ORIGINAL title, so find the item by iterating values and
+                # matching on the current title prefix — never re-index by the
+                # new title (that key doesn't exist and raises KeyError).
                 alert_title = f"Alerts ({len(anomalies)})"
-                # Find and update the alerts menu item
-                for key in list(self.menu.keys()):
-                    if isinstance(key, str) and key.startswith("Alerts"):
-                        self.menu[key].title = alert_title
-                        # Build submenu with recent alerts (max 10)
-                        # Clear existing submenu items
-                        submenu = self.menu[alert_title]
-                        # rumps doesn't support dynamic submenus easily,
-                        # so we just update the title with count
+                for item in self.menu.values():
+                    title = getattr(item, "title", None)
+                    if isinstance(title, str) and title.startswith("Alerts"):
+                        item.title = alert_title
                         break
 
-                # If there are new warnings, notify
+                # If there are new warnings, reflect in the menu bar title
                 warnings = [a for a in anomalies if a.severity == "warning"]
                 if warnings:
                     self.title = "\u26A0 EFIS"  # ⚠ EFIS
