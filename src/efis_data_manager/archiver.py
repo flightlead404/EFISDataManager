@@ -82,6 +82,10 @@ def archive_efis_drive(mount_point: str, progress_callback: Optional[Callable] =
             fdl_archived_paths.append(fdl_dest / os.path.basename(f))
         elif result == "skipped":
             results["skipped"] += 1
+            # Already archived (matching size), but it may not have been
+            # imported to the DB — queue it. import_fdl_file dedups by
+            # (filename, start_time), so re-importing is a no-op if present.
+            fdl_archived_paths.append(fdl_dest / os.path.basename(f))
         else:
             results["errors"].append(result)
 
