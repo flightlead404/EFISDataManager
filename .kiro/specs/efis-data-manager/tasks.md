@@ -67,19 +67,44 @@
 
 ## Phase 6: Analysis
 
-- [ ] 6.1 Create `fdl_parser.py` — parse FDL CSV into structured records
-- [ ] 6.2 Design SQLite schema for time-series engine data
-- [ ] 6.3 Flight segmentation (split FDL data into individual flights by GPS/time gaps)
-- [ ] 6.4 Import FDL data into SQLite on archive
-- [ ] 6.5 Create `analysis.py` — per-flight summary statistics
-- [ ] 6.6 Rolling trend computation (10/25/50 hour windows)
-- [ ] 6.7 Anomaly detection with altitude/OAT normalization
-- [ ] 6.8 Configurable thresholds (stored in config)
-- [ ] 6.9 Oil consumption tracking (logbook CSV import + manual entry)
-- [ ] 6.10 Oil consumption rate calculation (25+ hour rolling window)
-- [ ] 6.11 Alert generation (engine anomalies + oil consumption spikes)
-- [ ] 6.12 Alert display in menu bar popover
-- [ ] 6.13 CSV/Excel export of per-flight data and trend reports
+- [x] 6.1 Create `fdl_parser.py` — parse FDL CSV into structured records
+- [x] 6.2 Design SQLite schema for time-series engine data
+- [x] 6.3 Flight segmentation (each FDL file = one operation; flight = IAS > threshold)
+- [x] 6.4 Import FDL data into SQLite on archive
+- [x] 6.5 Create `analysis.py` — per-flight summary statistics
+- [x] 6.6 Rolling trend computation (configurable engine-hour window, default 25hr)
+- [x] 6.7 Anomaly detection (absolute exceedances + 2σ statistical)
+- [x] 6.8 Configurable thresholds (stored in config)
+- [x] 6.9 Oil consumption tracking (oil_events table + logbook enrichment + manual entry)
+- [x] 6.10 Oil consumption rate calculation (rolling window)
+- [x] 6.11 Alert generation (engine anomalies + oil consumption spikes)
+- [x] 6.12 Alert display in menu bar (count + Recent Errors + Diagnostics)
+- [x] 6.13 CSV export of per-operation data, trends, oil consumption, raw FDL
+
+## Phase 6.5: Web Dashboard ✅
+
+- [x] Flask dashboard (localhost) launched from menu bar, browser-based
+- [x] Operations list with Flight/Ground badge and "flights only" filter
+- [x] Dual time-synced charts (engine + flight) with WebGL, progressive resolution
+- [x] Clickable alerts jump to timestamp on flight detail charts
+- [x] Trends, alerts, oil pages
+- [x] Oil events: record changes/additions, cutoff date, red vertical change markers
+- [x] Settings page (num_cylinders, thresholds, flight detection, dashboard)
+- [x] Logbook CSV as transient enrichment: oil additions → oil_events,
+      origin/destination → matched to operations by hourmeter range
+
+## DEFERRED — needs real data
+
+- [ ] **Multi-file FDL stitching for long flights.** GRT rotates to a new FDL
+      file when a max size is hit (DEMO files cap ~6.29 MB with +N suffix; FDL
+      likely similar). A single long flight (up to ~5 hr) may span multiple FDL
+      files, which currently import as SEPARATE operations — splitting one
+      flight in two. Need to detect continuation files (small time gap at
+      rotation + engine running continuously across the boundary; a new file
+      starting with engine already hot = continuation) and merge them into one
+      operation. **Blocked until we have a real multi-file flight** to confirm
+      rotation behavior: exact time gap at rotation, whether tick counter
+      continues or resets, and whether GRT uses +N suffix or sequential numbers.
 
 ## Phase 7: Natural Language Reporting
 

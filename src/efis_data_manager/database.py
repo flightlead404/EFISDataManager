@@ -72,6 +72,9 @@ CREATE TABLE IF NOT EXISTS operations (
     -- Hourmeter
     hourmeter_start REAL,
     hourmeter_end REAL,
+    -- Logbook enrichment (matched by hourmeter range on logbook import)
+    origin TEXT,
+    destination TEXT,
     UNIQUE(source_filename, start_time)
 );
 
@@ -129,28 +132,9 @@ CREATE TABLE IF NOT EXISTS fdl_data (
     internal_map REAL
 );
 
--- Logbook entries (imported from Logbook.csv)
-CREATE TABLE IF NOT EXISTS logbook (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    date TEXT NOT NULL,
-    origin TEXT,
-    destination TEXT,
-    duration_str TEXT,
-    duration_hours REAL,
-    fuel_used REAL,
-    departure_time TEXT,
-    arrival_time TEXT,
-    hourmeter REAL,
-    flight_type TEXT,
-    passengers INTEGER,
-    fuel_added REAL,
-    oil_added REAL,
-    imported_at TEXT NOT NULL,
-    UNIQUE(date, departure_time, origin)
-);
-
 -- Oil events: single source of truth for oil tracking (changes + additions).
--- Supersedes the logbook oil_added column.
+-- The logbook CSV is a transient enrichment source (not stored): its oil
+-- additions feed this table, and its origin/destination enrich operations.
 CREATE TABLE IF NOT EXISTS oil_events (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     date TEXT NOT NULL,                 -- YYYY-MM-DD
@@ -159,7 +143,9 @@ CREATE TABLE IF NOT EXISTS oil_events (
     quarts_added REAL NOT NULL DEFAULT 0,
     quarts_low REAL NOT NULL DEFAULT 0, -- how low before a change (counts as consumed)
     note TEXT,
-    created_at TEXT NOT NULL
+    source TEXT NOT NULL DEFAULT 'manual',  -- 'manual' or 'logbook'
+    created_at TEXT NOT NULL,
+    UNIQUE(date, hourmeter, source, event_type)
 );
 
 -- Indexes for common queries
@@ -169,7 +155,6 @@ CREATE INDEX IF NOT EXISTS idx_fdl_data_timestamp ON fdl_data(timestamp);
 CREATE INDEX IF NOT EXISTS idx_fdl_data_op_ts ON fdl_data(operation_id, timestamp);
 CREATE INDEX IF NOT EXISTS idx_operations_date ON operations(date);
 CREATE INDEX IF NOT EXISTS idx_operations_flight ON operations(has_flight);
-CREATE INDEX IF NOT EXISTS idx_logbook_date ON logbook(date);
 """
 
 
@@ -187,6 +172,26 @@ def get_db_connection() -> sqlite3.Connection:
 def _ensure_schema(conn: sqlite3.Connection):
     """Create tables if they don't exist, handle migrations."""
     conn.executescript(SCHEMA_SQL)
+
+    # Lightweight migrations: add columns that may be missing on older DBs.
+    # ALTER TABLE ADD COLUMN is a no-op-safe pattern guarded by a column check.
+    def _columns(table):
+        return {r[1] for r in conn.execute(f"PRAGMA table_info({table})")}
+
+    op_cols = _columns("operations")
+    if "origin" not in op_cols:
+        conn.execute("ALTER TABLE operations ADD COLUMN origin TEXT")
+    if "destination" not in op_cols:
+        conn.execute("ALTER TABLE operations ADD COLUMN destination TEXT")
+
+    oil_cols = _columns("oil_events")
+    if oil_cols and "source" not in oil_cols:
+        conn.execute("ALTER TABLE oil_events ADD COLUMN source TEXT NOT NULL DEFAULT 'manual'")
+
+    # Drop the legacy logbook table if it exists (now a transient source)
+    conn.execute("DROP TABLE IF EXISTS logbook")
+
+    conn.commit()
 
     # Check/set schema version
     cur = conn.execute(
@@ -430,23 +435,40 @@ def _compute_operation_summary(conn: sqlite3.Connection, operation_id: int,
 # ---------------------------------------------------------------------------
 
 def import_logbook_csv(filepath: str) -> dict:
-    """Import a GRT Logbook.csv file into the database.
+    """Import a GRT Logbook.csv as an enrichment source (not stored as a table).
 
-    Handles duplicate prevention via (date, departure_time, origin) unique constraint.
+    The logbook is used for two things:
+      1. Oil additions -> oil_events (source='logbook'), deduped
+      2. Origin/destination -> matched to the corresponding operation by
+         hourmeter range and stored on the operations row. Multiple legs that
+         fall within one operation's hourmeter span have their airports
+         concatenated (e.g. "KCCO -> KLZU -> KCCO").
 
     Args:
         filepath: Path to Logbook.csv file.
 
     Returns:
-        Dict with {"imported": int, "skipped": int, "errors": list[str]}
+        Dict with counts: {"oil_events_created", "operations_enriched",
+                           "legs_read", "errors"}
     """
     import csv
 
-    results = {"imported": 0, "skipped": 0, "errors": []}
+    results = {"oil_events_created": 0, "operations_enriched": 0,
+               "legs_read": 0, "errors": []}
     conn = get_db_connection()
     now = datetime.now().isoformat()
 
     try:
+        # Preload operations with a valid hourmeter range for matching
+        ops = conn.execute(
+            """SELECT id, hourmeter_start, hourmeter_end
+               FROM operations
+               WHERE hourmeter_start IS NOT NULL AND hourmeter_end IS NOT NULL"""
+        ).fetchall()
+
+        # legs_by_op accumulates (origin, destination) per operation id
+        legs_by_op = {}
+
         with open(filepath, "r", newline="") as f:
             reader = csv.DictReader(f)
             for row_num, row in enumerate(reader, start=2):
@@ -454,44 +476,66 @@ def import_logbook_csv(filepath: str) -> dict:
                     date = row.get("Date", "").strip()
                     if not date:
                         continue
+                    results["legs_read"] += 1
 
                     origin = row.get("Origin", "").strip() or None
                     destination = row.get("Destination", "").strip() or None
-                    duration_str = row.get("Length", "").strip() or None
-                    departure_time = row.get("Departure", "").strip() or None
-                    arrival_time = row.get("Arrival", "").strip() or None
-                    flight_type = row.get("Type", "").strip() or None
-
-                    # Parse numeric fields
-                    duration_hours = _parse_float(row.get("Length (hours)", ""))
-                    fuel_used = _parse_float(row.get("Fuel Used", ""))
                     hourmeter = _parse_float(row.get("Hourmeter", ""))
-                    passengers = _parse_int(row.get("Passengers", ""))
-                    fuel_added = _parse_float(row.get("Fuel Added", ""))
                     oil_added = _parse_float(row.get("Oil Added", ""))
 
-                    conn.execute(
-                        """INSERT OR IGNORE INTO logbook
-                           (date, origin, destination, duration_str, duration_hours,
-                            fuel_used, departure_time, arrival_time, hourmeter,
-                            flight_type, passengers, fuel_added, oil_added, imported_at)
-                           VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
-                        (date, origin, destination, duration_str, duration_hours,
-                         fuel_used, departure_time, arrival_time, hourmeter,
-                         flight_type, passengers, fuel_added, oil_added, now)
-                    )
-                    if conn.total_changes:
-                        results["imported"] += 1
-                    else:
-                        results["skipped"] += 1
+                    # 1. Oil additions -> oil_events (deduped by unique constraint)
+                    if oil_added and oil_added > 0 and hourmeter is not None:
+                        conn.execute(
+                            """INSERT OR IGNORE INTO oil_events
+                               (date, hourmeter, event_type, quarts_added,
+                                quarts_low, note, source, created_at)
+                               VALUES (?,?,?,?,?,?,?,?)""",
+                            (date, hourmeter, "addition", oil_added, 0.0,
+                             "from logbook", "logbook", now)
+                        )
+                        if conn.total_changes:
+                            results["oil_events_created"] += 1
+
+                    # 2. Match leg to an operation by hourmeter range
+                    if hourmeter is not None and (origin or destination):
+                        for op in ops:
+                            if op["hourmeter_start"] <= hourmeter <= op["hourmeter_end"]:
+                                legs_by_op.setdefault(op["id"], []).append(
+                                    (origin, destination)
+                                )
+                                break
 
                 except Exception as e:
                     results["errors"].append(f"Row {row_num}: {e}")
 
+        # Apply enrichment: concatenate airports per operation
+        for op_id, legs in legs_by_op.items():
+            airports = []
+            for origin, destination in legs:
+                if origin and (not airports or airports[-1] != origin):
+                    airports.append(origin)
+                if destination:
+                    airports.append(destination)
+            route = " -> ".join(airports) if airports else None
+            first_origin = legs[0][0]
+            last_dest = legs[-1][1]
+            conn.execute(
+                "UPDATE operations SET origin = ?, destination = ? WHERE id = ?",
+                (first_origin, last_dest, op_id)
+            )
+            # Store full route in destination if multiple legs
+            if len(legs) > 1 and route:
+                conn.execute(
+                    "UPDATE operations SET destination = ? WHERE id = ?",
+                    (route, op_id)
+                )
+            results["operations_enriched"] += 1
+
         conn.commit()
         logger.info(
-            f"Logbook import: {results['imported']} new, "
-            f"{results['skipped']} skipped"
+            f"Logbook enrichment: {results['legs_read']} legs read, "
+            f"{results['oil_events_created']} oil events created, "
+            f"{results['operations_enriched']} operations enriched"
         )
     except Exception as e:
         conn.rollback()
@@ -528,7 +572,7 @@ def _parse_int(val: str) -> Optional[int]:
 
 def add_oil_event(date: str, hourmeter: float, event_type: str,
                   quarts_added: float = 0.0, quarts_low: float = 0.0,
-                  note: str = "") -> int:
+                  note: str = "", source: str = "manual") -> int:
     """Add an oil change or addition event.
 
     Args:
@@ -539,9 +583,10 @@ def add_oil_event(date: str, hourmeter: float, event_type: str,
         quarts_low: For a change, how many quarts low it was before (counts
             as consumed since the last event).
         note: Optional free-text note.
+        source: 'manual' (user-entered) or 'logbook' (auto from logbook import).
 
     Returns:
-        The new oil_events.id.
+        The new oil_events.id, or -1 if it was a duplicate (ignored).
     """
     if event_type not in ("change", "addition"):
         raise ValueError(f"event_type must be 'change' or 'addition', got {event_type!r}")
@@ -549,14 +594,14 @@ def add_oil_event(date: str, hourmeter: float, event_type: str,
     conn = get_db_connection()
     try:
         cur = conn.execute(
-            """INSERT INTO oil_events
-               (date, hourmeter, event_type, quarts_added, quarts_low, note, created_at)
-               VALUES (?,?,?,?,?,?,?)""",
-            (date, hourmeter, event_type, quarts_added, quarts_low, note,
+            """INSERT OR IGNORE INTO oil_events
+               (date, hourmeter, event_type, quarts_added, quarts_low, note, source, created_at)
+               VALUES (?,?,?,?,?,?,?,?)""",
+            (date, hourmeter, event_type, quarts_added, quarts_low, note, source,
              datetime.now().isoformat())
         )
         conn.commit()
-        return cur.lastrowid
+        return cur.lastrowid if cur.rowcount else -1
     finally:
         conn.close()
 

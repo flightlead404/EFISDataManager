@@ -872,11 +872,11 @@ class EFISDataManagerApp(rumps.App):
                 n_flights = conn.execute(
                     "SELECT COUNT(*) FROM operations WHERE has_flight=1"
                 ).fetchone()[0]
-                n_lb = conn.execute("SELECT COUNT(*) FROM logbook").fetchone()[0]
+                n_oil = conn.execute("SELECT COUNT(*) FROM oil_events").fetchone()[0]
                 conn.close()
                 lines.append("")
                 lines.append(f"Database: {size_mb:.1f} MB")
-                lines.append(f"  {n_ops} operations ({n_flights} flights), {n_lb} logbook entries")
+                lines.append(f"  {n_ops} operations ({n_flights} flights), {n_oil} oil events")
             else:
                 lines.append("")
                 lines.append("Database: not yet created")
