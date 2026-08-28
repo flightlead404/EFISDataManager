@@ -129,7 +129,11 @@ CREATE TABLE IF NOT EXISTS fdl_data (
     volts1 REAL,
     -- Other
     hourmeter REAL,
-    internal_map REAL
+    internal_map REAL,
+    -- EIS aux channels (this install: aux1=amps, aux2=MAP, aux3=fuel pressure)
+    aux1 REAL,
+    aux2 REAL,
+    aux3 REAL
 );
 
 -- Oil events: single source of truth for oil tracking (changes + additions).
@@ -187,6 +191,11 @@ def _ensure_schema(conn: sqlite3.Connection):
     oil_cols = _columns("oil_events")
     if oil_cols and "source" not in oil_cols:
         conn.execute("ALTER TABLE oil_events ADD COLUMN source TEXT NOT NULL DEFAULT 'manual'")
+
+    fdl_cols = _columns("fdl_data")
+    for c in ("aux1", "aux2", "aux3"):
+        if fdl_cols and c not in fdl_cols:
+            conn.execute(f"ALTER TABLE fdl_data ADD COLUMN {c} REAL")
 
     # Drop the legacy logbook table if it exists (now a transient source)
     conn.execute("DROP TABLE IF EXISTS logbook")
@@ -292,6 +301,7 @@ def _insert_fdl_data(conn: sqlite3.Connection, operation_id: int,
             r.egt1, r.egt2, r.egt3, r.egt4, r.egt5, r.egt6,
             r.fuel_flow, r.fuel_total, r.oil_temp, r.oil_pressure,
             r.eis_volts, r.volts1, r.hourmeter, r.internal_map,
+            r.aux1, r.aux2, r.aux3,
         ))
 
     conn.executemany(
@@ -306,8 +316,9 @@ def _insert_fdl_data(conn: sqlite3.Connection, operation_id: int,
             cht1, cht2, cht3, cht4, cht5, cht6,
             egt1, egt2, egt3, egt4, egt5, egt6,
             fuel_flow, fuel_total, oil_temp, oil_pressure,
-            eis_volts, volts1, hourmeter, internal_map)
-           VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+            eis_volts, volts1, hourmeter, internal_map,
+            aux1, aux2, aux3)
+           VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
         rows,
     )
 

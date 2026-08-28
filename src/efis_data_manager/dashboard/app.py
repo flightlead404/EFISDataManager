@@ -139,11 +139,11 @@ def api_flight_detail(flight_id):
 
 @app.route("/api/flight/<int:flight_id>/data")
 def api_flight_data(flight_id):
-    """Get time-series data for a flight's dual charts.
+    """Get full-resolution time-series data for a flight's panels.
 
-    Supports progressive resolution:
-    - Without time range params: returns downsampled overview (~1500 points)
-    - With ?start=ISO&end=ISO: returns full resolution for that window
+    Returns every 1-second sample for the operation. Flight sizes (up to ~5hr
+    = ~18k points) render fine in WebGL, so all zoom/pan is pure client-side
+    with no downsampling or re-fetch.
     """
     conn = get_db_connection()
     try:
@@ -154,49 +154,19 @@ def api_flight_data(flight_id):
         if not flight:
             return jsonify({"error": "Operation not found"}), 404
 
-        # Check for time range params (full resolution zoom)
-        start = request.args.get("start")
-        end = request.args.get("end")
-
-        if start and end:
-            # Full resolution for zoomed window
-            rows = conn.execute(
-                """SELECT timestamp, indicated_airspeed, true_airspeed, ground_speed,
-                          pressure_altitude, gps_altitude, density_altitude,
-                          vertical_speed, oat, g_load,
-                          rpm1, cht1, cht2, cht3, cht4,
-                          egt1, egt2, egt3, egt4,
-                          fuel_flow, oil_temp, oil_pressure, eis_volts,
-                          internal_map
-                   FROM fdl_data
-                   WHERE operation_id = ? AND timestamp >= ? AND timestamp <= ?
-                   ORDER BY timestamp""",
-                (flight["operation_id"], start, end)
-            ).fetchall()
-        else:
-            # Downsampled overview
-            rows = conn.execute(
-                """SELECT timestamp, indicated_airspeed, true_airspeed, ground_speed,
-                          pressure_altitude, gps_altitude, density_altitude,
-                          vertical_speed, oat, g_load,
-                          rpm1, cht1, cht2, cht3, cht4,
-                          egt1, egt2, egt3, egt4,
-                          fuel_flow, oil_temp, oil_pressure, eis_volts,
-                          internal_map
-                   FROM fdl_data
-                   WHERE operation_id = ?
-                   ORDER BY timestamp""",
-                (flight["operation_id"],)
-            ).fetchall()
-
-            # Downsample if needed (target ~1500 points for initial view)
-            max_points = 1500
-            if len(rows) > max_points:
-                step = len(rows) / max_points
-                indices = [int(i * step) for i in range(max_points)]
-                if indices[-1] != len(rows) - 1:
-                    indices.append(len(rows) - 1)
-                rows = [rows[i] for i in indices]
+        rows = conn.execute(
+            """SELECT timestamp, indicated_airspeed, true_airspeed, ground_speed,
+                      pressure_altitude, gps_altitude, density_altitude,
+                      vertical_speed, oat, g_load,
+                      roll, pitch, mag_heading, track,
+                      rpm1, cht1, cht2, cht3, cht4,
+                      egt1, egt2, egt3, egt4,
+                      fuel_flow, oil_temp, oil_pressure, eis_volts,
+                      aux1, aux2, aux3
+               FROM fdl_data
+               WHERE operation_id = ? ORDER BY timestamp""",
+            (flight["operation_id"],)
+        ).fetchall()
 
         # Build response as column arrays
         data = {
@@ -207,19 +177,21 @@ def api_flight_data(flight_id):
                 "cht1": [], "cht2": [], "cht3": [], "cht4": [],
                 "egt1": [], "egt2": [], "egt3": [], "egt4": [],
                 "fuel_flow": [], "oil_temp": [], "oil_pressure": [],
-                "eis_volts": [],
+                "eis_volts": [], "amps": [], "fuel_pressure": [],
             },
             "flight": {
                 "ias": [], "tas": [], "ground_speed": [],
                 "pressure_alt": [], "gps_alt": [], "density_alt": [],
                 "vertical_speed": [], "oat": [], "g_load": [],
+                "roll": [], "pitch": [], "mag_heading": [], "track": [],
             },
         }
 
         for row in rows:
             data["timestamps"].append(row["timestamp"])
             data["engine"]["rpm"].append(row["rpm1"])
-            data["engine"]["map"].append(row["internal_map"])
+            # MAP is on aux2 for this install (the Internal MAP column is empty)
+            data["engine"]["map"].append(row["aux2"])
             data["engine"]["cht1"].append(row["cht1"])
             data["engine"]["cht2"].append(row["cht2"])
             data["engine"]["cht3"].append(row["cht3"])
@@ -232,6 +204,8 @@ def api_flight_data(flight_id):
             data["engine"]["oil_temp"].append(row["oil_temp"])
             data["engine"]["oil_pressure"].append(row["oil_pressure"])
             data["engine"]["eis_volts"].append(row["eis_volts"])
+            data["engine"]["amps"].append(row["aux1"])            # aux1 = amps
+            data["engine"]["fuel_pressure"].append(row["aux3"])   # aux3 = fuel pressure
             data["flight"]["ias"].append(row["indicated_airspeed"])
             data["flight"]["tas"].append(row["true_airspeed"])
             data["flight"]["ground_speed"].append(row["ground_speed"])
@@ -241,6 +215,10 @@ def api_flight_data(flight_id):
             data["flight"]["vertical_speed"].append(row["vertical_speed"])
             data["flight"]["oat"].append(row["oat"])
             data["flight"]["g_load"].append(row["g_load"])
+            data["flight"]["roll"].append(row["roll"])
+            data["flight"]["pitch"].append(row["pitch"])
+            data["flight"]["mag_heading"].append(row["mag_heading"])
+            data["flight"]["track"].append(row["track"])
 
         return jsonify(data)
 
@@ -378,8 +356,18 @@ def create_app():
 
 
 def run_dashboard():
-    """Run the dashboard web server."""
+    """Run the dashboard web server.
+
+    Set FLASK_DEBUG=1 in the environment to enable auto-reload on source/
+    template changes (for development). Defaults to production mode.
+    """
     config = load_config()
     port = config.get("dashboard_port", 5050)
-    logger.info(f"Starting dashboard on http://localhost:{port}")
-    app.run(host="127.0.0.1", port=port, debug=False)
+    debug = os.environ.get("FLASK_DEBUG", "").lower() in ("1", "true", "yes")
+
+    # Auto-refresh Jinja templates in debug so template edits show on refresh
+    app.jinja_env.auto_reload = debug
+    app.config["TEMPLATES_AUTO_RELOAD"] = debug
+
+    logger.info(f"Starting dashboard on http://localhost:{port} (debug={debug})")
+    app.run(host="127.0.0.1", port=port, debug=debug, use_reloader=debug)

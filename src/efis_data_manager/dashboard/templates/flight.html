@@ -8,263 +8,399 @@
     <div id="alert-list" style="margin-top: 0.75rem;"></div>
 </div>
 
-<div class="card">
-    <h2>Engine Data</h2>
-    <div id="engine-chart" class="chart-container" style="height: 350px;"></div>
-</div>
-
-<div class="card">
-    <h2>Flight Data</h2>
-    <div id="flight-chart" class="chart-container" style="height: 350px;"></div>
-</div>
+<div id="panels"></div>
 
 <div style="margin-top: 1rem;">
-    <a id="export-raw" class="btn" href="#">Export Raw CSV</a>
+    <button class="btn" onclick="addPanel()">+ Add Panel</button>
+    <a id="export-raw" class="btn" href="#" style="margin-left:0.5rem;">Export Raw CSV</a>
     <a href="/" class="btn" style="margin-left: 0.5rem;">Back to Flights</a>
 </div>
 {% endblock %}
 {% block scripts %}
 <script>
 const flightId = {{ flight_id }};
-const chartLayout = {
-    paper_bgcolor: '#16213e',
-    plot_bgcolor: '#1a2744',
-    font: { color: '#e0e0e0', size: 11 },
-    margin: { l: 50, r: 20, t: 30, b: 40 },
-    legend: { orientation: 'h', y: -0.15 },
-    xaxis: { gridcolor: '#0f3460', type: 'date' },
-    yaxis: { gridcolor: '#0f3460' },
+
+// --- Parameter catalog: key -> {label, group, data-path} ---
+// data-path is "engine"/"flight" bucket + field name in the API response.
+const PARAMS = {
+    egt1:  {label: 'EGT1',  group: 'engine'}, egt2: {label: 'EGT2', group: 'engine'},
+    egt3:  {label: 'EGT3',  group: 'engine'}, egt4: {label: 'EGT4', group: 'engine'},
+    cht1:  {label: 'CHT1',  group: 'engine'}, cht2: {label: 'CHT2', group: 'engine'},
+    cht3:  {label: 'CHT3',  group: 'engine'}, cht4: {label: 'CHT4', group: 'engine'},
+    rpm:   {label: 'RPM',   group: 'engine'}, map:  {label: 'MAP',  group: 'engine'},
+    fuel_flow:     {label: 'Fuel Flow',     group: 'engine'},
+    fuel_pressure: {label: 'Fuel Press',    group: 'engine'},
+    oil_temp:      {label: 'Oil Temp',      group: 'engine'},
+    oil_pressure:  {label: 'Oil Press',     group: 'engine'},
+    eis_volts:     {label: 'Volts',         group: 'engine'},
+    amps:          {label: 'Amps',          group: 'engine'},
+    ias:   {label: 'IAS',   group: 'flight'}, tas: {label: 'TAS', group: 'flight'},
+    ground_speed: {label: 'GS',           group: 'flight'},
+    pressure_alt: {label: 'Press Alt',    group: 'flight'},
+    gps_alt:      {label: 'GPS Alt',      group: 'flight'},
+    density_alt:  {label: 'Density Alt',  group: 'flight'},
+    vertical_speed: {label: 'VS',         group: 'flight'},
+    oat:   {label: 'OAT',   group: 'flight'}, g_load: {label: 'G-Load', group: 'flight'},
+    roll:  {label: 'Roll',  group: 'flight'}, pitch: {label: 'Pitch', group: 'flight'},
+    mag_heading: {label: 'Heading',       group: 'flight'},
+    track:       {label: 'Track',         group: 'flight'},
 };
 
-// Load flight stats
-fetch(`/api/flight/${flightId}`)
-    .then(r => r.json())
-    .then(stats => {
-        const grid = document.getElementById('stat-grid');
-        const items = [
-            ['Duration', `${(stats.duration_seconds/60).toFixed(0)} min`],
-            ['Airborne', `${(stats.airborne_seconds/60).toFixed(0)} min`],
-            ['Max Alt', `${stats.max_altitude ? stats.max_altitude.toFixed(0) : '-'} ft`],
-            ['Max IAS', `${stats.max_indicated_airspeed ? stats.max_indicated_airspeed.toFixed(0) : '-'} kts`],
-            ['Max GS', `${stats.max_ground_speed ? stats.max_ground_speed.toFixed(0) : '-'} kts`],
-            ['Max RPM', `${stats.max_rpm ? stats.max_rpm.toFixed(0) : '-'}`],
-            ['Max CHT', `${stats.max_cht ? stats.max_cht.toFixed(0) : '-'}°F`],
-            ['Max EGT', `${stats.max_egt ? stats.max_egt.toFixed(0) : '-'}°F`],
-            ['CHT Spread', `${stats.cht_spread_max ? stats.cht_spread_max.toFixed(0) : '-'}°F`],
-            ['EGT Spread', `${stats.egt_spread_max ? stats.egt_spread_max.toFixed(0) : '-'}°F`],
-            ['Oil Temp', `${stats.max_oil_temp ? stats.max_oil_temp.toFixed(0) : '-'}°F`],
-            ['Oil Press', `${stats.min_oil_pressure_cruise ? stats.min_oil_pressure_cruise.toFixed(0) : '-'} psi`],
-            ['Fuel Used', `${stats.fuel_used ? stats.fuel_used.toFixed(1) : '-'} gal`],
-            ['Avg FF', `${stats.avg_fuel_flow_cruise ? stats.avg_fuel_flow_cruise.toFixed(1) : '-'} GPH`],
-            ['Hourmeter', `${stats.hourmeter_start} → ${stats.hourmeter_end}`],
-        ];
-        items.forEach(([label, value]) => {
-            grid.innerHTML += `<div class="stat-box"><div class="value">${value}</div><div class="label">${label}</div></div>`;
+// Default panels: title + list of parameter keys shown by default.
+// Keep panels focused (prefer <=3 traces; the 4 cylinders are the exception).
+const DEFAULT_PANELS = [
+    {title: 'EGT',    params: ['egt1','egt2','egt3','egt4']},
+    {title: 'CHT',    params: ['cht1','cht2','cht3','cht4']},
+    {title: 'Power',  params: ['rpm','map','fuel_flow']},
+    {title: 'Flight', params: ['ias','tas','pressure_alt','vertical_speed','oat']},
+];
+
+// Height of each panel's plot area (px)
+const PANEL_HEIGHT = 340;
+
+const COLORS = ['#4fc3f7','#ff7043','#66bb6a','#ffa726','#ab47bc','#26c6da',
+                '#ef5350','#8bc34a','#ff8a65','#ba68c8','#4dd0e1','#f06292'];
+
+let FLIGHT_DATA = null;   // {timestamps, engine:{...}, flight:{...}}
+let panels = [];          // [{id, title, params:Set, normalize:bool, div}]
+let panelSeq = 0;
+let syncing = false;
+
+const baseLayout = () => ({
+    paper_bgcolor: '#16213e', plot_bgcolor: '#1a2744',
+    font: {color: '#e0e0e0', size: 11},
+    margin: {l: 50, r: 15, t: 6, b: 22},
+    // Legend overlaid inside the top-left of the plot, horizontal, so it
+    // doesn't consume a separate band below the chart.
+    legend: {
+        orientation: 'h', x: 0, y: 1, xanchor: 'left', yanchor: 'top',
+        font: {size: 10}, bgcolor: 'rgba(22,33,62,0.6)',
+    },
+    dragmode: 'pan',
+    hovermode: 'x unified',   // one hover box per x, values for all traces
+    xaxis: {
+        gridcolor: '#0f3460', type: 'date',
+        showspikes: true, spikemode: 'across', spikesnap: 'cursor',
+        spikecolor: '#4fc3f7', spikethickness: 1, spikedash: 'solid',
+    },
+    yaxis: {gridcolor: '#0f3460', autorange: true},
+});
+const chartConfig = {responsive: true, scrollZoom: true, displaylogo: false};
+
+// --- Stats header (unchanged behavior) ---
+fetch(`/api/flight/${flightId}`).then(r => r.json()).then(stats => {
+    const grid = document.getElementById('stat-grid');
+    const items = [
+        ['Duration', `${(stats.duration_seconds/60).toFixed(0)} min`],
+        ['Airborne', `${(stats.airborne_seconds/60).toFixed(0)} min`],
+        ['Max Alt', `${stats.max_altitude ? stats.max_altitude.toFixed(0) : '-'} ft`],
+        ['Max IAS', `${stats.max_indicated_airspeed ? stats.max_indicated_airspeed.toFixed(0) : '-'} kts`],
+        ['Max CHT', `${stats.max_cht ? stats.max_cht.toFixed(0) : '-'}°F`],
+        ['Max EGT', `${stats.max_egt ? stats.max_egt.toFixed(0) : '-'}°F`],
+        ['CHT Spread', `${stats.cht_spread_max ? stats.cht_spread_max.toFixed(0) : '-'}°F`],
+        ['EGT Spread', `${stats.egt_spread_max ? stats.egt_spread_max.toFixed(0) : '-'}°F`],
+        ['Oil Temp', `${stats.max_oil_temp ? stats.max_oil_temp.toFixed(0) : '-'}°F`],
+        ['Oil Press', `${stats.min_oil_pressure_cruise ? stats.min_oil_pressure_cruise.toFixed(0) : '-'} psi`],
+        ['Fuel Used', `${stats.fuel_used ? stats.fuel_used.toFixed(1) : '-'} gal`],
+        ['Avg FF', `${stats.avg_fuel_flow_cruise ? stats.avg_fuel_flow_cruise.toFixed(1) : '-'} GPH`],
+    ];
+    items.forEach(([label, value]) => {
+        grid.innerHTML += `<div class="stat-box"><div class="value">${value}</div><div class="label">${label}</div></div>`;
+    });
+    if (stats.cylinders && stats.cylinders.length > 0) {
+        let html = '<h2 style="margin-top:1rem;">Cylinders</h2><table><thead><tr><th>Cyl</th><th>Max CHT</th><th>Avg CHT</th><th>Max EGT</th><th>Avg EGT</th></tr></thead><tbody>';
+        stats.cylinders.forEach(c => {
+            html += `<tr><td>#${c.number}</td><td>${c.max_cht?c.max_cht.toFixed(0):'-'}°F</td><td>${c.avg_cht_cruise?c.avg_cht_cruise.toFixed(0):'-'}°F</td><td>${c.max_egt?c.max_egt.toFixed(0):'-'}°F</td><td>${c.avg_egt_cruise?c.avg_egt_cruise.toFixed(0):'-'}°F</td></tr>`;
         });
-
-        // Cylinder stats
-        if (stats.cylinders && stats.cylinders.length > 0) {
-            let html = '<h2 style="margin-top:1rem;">Cylinders</h2><table><thead><tr><th>Cyl</th><th>Max CHT</th><th>Avg CHT</th><th>Max EGT</th><th>Avg EGT</th></tr></thead><tbody>';
-            stats.cylinders.forEach(c => {
-                html += `<tr><td>#${c.number}</td><td>${c.max_cht ? c.max_cht.toFixed(0) : '-'}°F</td><td>${c.avg_cht_cruise ? c.avg_cht_cruise.toFixed(0) : '-'}°F</td><td>${c.max_egt ? c.max_egt.toFixed(0) : '-'}°F</td><td>${c.avg_egt_cruise ? c.avg_egt_cruise.toFixed(0) : '-'}°F</td></tr>`;
-            });
-            html += '</tbody></table>';
-            document.getElementById('cylinder-stats').innerHTML = html;
-        }
-
-        // Alerts
-        if (stats.alerts && stats.alerts.length > 0) {
-            let html = '<h2>Alerts <span style="font-size:0.75rem;color:#888;">(click to jump)</span></h2><div>';
-            stats.alerts.forEach((a, idx) => {
-                const cls = a.startsWith('WARNING') ? 'badge-warning' : 'badge-caution';
-                html += `<span class="badge ${cls}" style="margin-right:0.5rem;margin-bottom:0.3rem;cursor:pointer;" onclick="jumpToAlert(${idx})">${a}</span>`;
-            });
-            html += '</div>';
-            document.getElementById('alert-list').innerHTML = html;
-        }
-
-        // Fetch per-flight alerts with timestamps from anomaly API
-        fetch('/api/alerts')
-            .then(r => r.json())
-            .then(alerts => {
-                window.flightAlerts = alerts.filter(a => a.flight_id === flightId && a.timestamp);
-            });
-
-        // Set export link
-        document.getElementById('export-raw').href = `/api/export/raw/${stats.operation_id}`;
+        html += '</tbody></table>';
+        document.getElementById('cylinder-stats').innerHTML = html;
+    }
+    if (stats.alerts && stats.alerts.length > 0) {
+        let html = '<h2>Alerts <span style="font-size:0.75rem;color:#888;">(click to jump)</span></h2><div>';
+        stats.alerts.forEach((a, idx) => {
+            const cls = a.startsWith('WARNING') ? 'badge-warning' : 'badge-caution';
+            html += `<span class="badge ${cls}" style="margin-right:0.5rem;cursor:pointer;" onclick="jumpToAlert(${idx})">${a}</span>`;
+        });
+        html += '</div>';
+        document.getElementById('alert-list').innerHTML = html;
+    }
+    fetch('/api/alerts').then(r => r.json()).then(alerts => {
+        window.flightAlerts = alerts.filter(a => a.flight_id === flightId && a.timestamp);
     });
+    document.getElementById('export-raw').href = `/api/export/raw/${stats.operation_id}`;
+});
 
-// Load time-series data and render charts
-fetch(`/api/flight/${flightId}/data`)
-    .then(r => r.json())
-    .then(data => {
-        const ts = data.timestamps;
+// --- Load time-series and build panels ---
+fetch(`/api/flight/${flightId}/data`).then(r => r.json()).then(data => {
+    FLIGHT_DATA = data;
+    DEFAULT_PANELS.forEach(p => createPanel(p.title, p.params));
+});
 
-        // Engine chart — use scattergl for WebGL rendering (much faster)
-        const engineTraces = [
-            { x: ts, y: data.engine.rpm, name: 'RPM', visible: true, type: 'scattergl', connectgaps: false },
-            { x: ts, y: data.engine.map, name: 'MAP', visible: 'legendonly', yaxis: 'y2', type: 'scattergl', connectgaps: false },
-            { x: ts, y: data.engine.cht1, name: 'CHT1', visible: true, type: 'scattergl', connectgaps: false },
-            { x: ts, y: data.engine.cht2, name: 'CHT2', visible: true, type: 'scattergl', connectgaps: false },
-            { x: ts, y: data.engine.cht3, name: 'CHT3', visible: true, type: 'scattergl', connectgaps: false },
-            { x: ts, y: data.engine.cht4, name: 'CHT4', visible: true, type: 'scattergl', connectgaps: false },
-            { x: ts, y: data.engine.egt1, name: 'EGT1', visible: 'legendonly', type: 'scattergl', connectgaps: false },
-            { x: ts, y: data.engine.egt2, name: 'EGT2', visible: 'legendonly', type: 'scattergl', connectgaps: false },
-            { x: ts, y: data.engine.egt3, name: 'EGT3', visible: 'legendonly', type: 'scattergl', connectgaps: false },
-            { x: ts, y: data.engine.egt4, name: 'EGT4', visible: 'legendonly', type: 'scattergl', connectgaps: false },
-            { x: ts, y: data.engine.fuel_flow, name: 'Fuel Flow', visible: 'legendonly', type: 'scattergl', connectgaps: false },
-            { x: ts, y: data.engine.oil_temp, name: 'Oil Temp', visible: 'legendonly', type: 'scattergl', connectgaps: false },
-            { x: ts, y: data.engine.oil_pressure, name: 'Oil Press', visible: 'legendonly', type: 'scattergl', connectgaps: false },
-            { x: ts, y: data.engine.eis_volts, name: 'Volts', visible: 'legendonly', type: 'scattergl', connectgaps: false },
-        ];
+function paramValues(key) {
+    const p = PARAMS[key];
+    if (!p || !FLIGHT_DATA) return [];
+    return FLIGHT_DATA[p.group][key] || [];
+}
 
-        Plotly.newPlot('engine-chart', engineTraces, {
-            ...chartLayout,
-            title: { text: 'Engine', font: { size: 13, color: '#81d4fa' } },
-            yaxis: { ...chartLayout.yaxis, title: '°F / RPM' },
-            yaxis2: { overlaying: 'y', side: 'right', gridcolor: '#0f3460', title: 'inHg' },
-        }, { responsive: true });
+// Normalize an array to 0..1 over its finite values
+function normalize(arr) {
+    const finite = arr.filter(v => v != null && isFinite(v));
+    if (finite.length === 0) return arr;
+    const min = Math.min(...finite), max = Math.max(...finite);
+    const range = max - min || 1;
+    return arr.map(v => (v == null || !isFinite(v)) ? null : (v - min) / range);
+}
 
-        // Flight chart — use scattergl for WebGL rendering
-        const flightTraces = [
-            { x: ts, y: data.flight.ias, name: 'IAS', visible: true, type: 'scattergl', connectgaps: false },
-            { x: ts, y: data.flight.tas, name: 'TAS', visible: 'legendonly', type: 'scattergl', connectgaps: false },
-            { x: ts, y: data.flight.ground_speed, name: 'GS', visible: 'legendonly', type: 'scattergl', connectgaps: false },
-            { x: ts, y: data.flight.pressure_alt, name: 'Press Alt', visible: true, yaxis: 'y2', type: 'scattergl', connectgaps: false },
-            { x: ts, y: data.flight.gps_alt, name: 'GPS Alt', visible: 'legendonly', yaxis: 'y2', type: 'scattergl', connectgaps: false },
-            { x: ts, y: data.flight.density_alt, name: 'Density Alt', visible: 'legendonly', yaxis: 'y2', type: 'scattergl', connectgaps: false },
-            { x: ts, y: data.flight.vertical_speed, name: 'VS', visible: 'legendonly', type: 'scattergl', connectgaps: false },
-            { x: ts, y: data.flight.oat, name: 'OAT', visible: 'legendonly', type: 'scattergl', connectgaps: false },
-            { x: ts, y: data.flight.g_load, name: 'G-Load', visible: 'legendonly', type: 'scattergl', connectgaps: false },
-        ];
+// Reasonable decimal places per parameter for hover display
+function precisionFor(key) {
+    if (key === 'fuel_flow' || key === 'g_load') return 1;
+    if (key === 'roll' || key === 'pitch') return 1;
+    if (key === 'map' || key === 'fuel_pressure' || key === 'oat') return 1;
+    if (key === 'eis_volts') return 1;
+    return 0;  // rpm, cht, egt, amps, altitude, speeds, heading, etc.
+}
 
-        Plotly.newPlot('flight-chart', flightTraces, {
-            ...chartLayout,
-            title: { text: 'Flight', font: { size: 13, color: '#81d4fa' } },
-            yaxis: { ...chartLayout.yaxis, title: 'kts / fpm' },
-            yaxis2: { overlaying: 'y', side: 'right', gridcolor: '#0f3460', title: 'ft' },
-        }, { responsive: true });
+function buildTraces(panel) {
+    const ts = FLIGHT_DATA.timestamps;
+    let ci = 0;
+    return [...panel.params].map(key => {
+        const raw = paramValues(key);
+        const y = panel.normalize ? normalize(raw) : raw;
+        const dp = precisionFor(key);
+        return {
+            x: ts, y,
+            name: PARAMS[key].label,
+            type: 'scattergl', mode: 'lines',
+            connectgaps: false,
+            line: {width: 1.5, color: COLORS[ci++ % COLORS.length]},
+            // Show the REAL value on hover even when the plotted y is
+            // normalized. Include the label in the template since a custom
+            // hovertemplate replaces the auto-prepended name.
+            customdata: raw,
+            hovertemplate: `${PARAMS[key].label}: %{customdata:.${dp}f}<extra></extra>`,
+        };
+    });
+}
 
-        // Link x-axes for synchronized zoom/pan + progressive resolution
-        const engineDiv = document.getElementById('engine-chart');
-        const flightDiv = document.getElementById('flight-chart');
+function createPanel(title, paramKeys) {
+    const id = 'panel-' + (panelSeq++);
+    const panel = {id, title, params: new Set(paramKeys), normalize: false, div: null};
+    panels.push(panel);
 
-        let fetchTimeout = null;
-        function onZoom(eventData) {
-            const start = eventData['xaxis.range[0]'];
-            const end = eventData['xaxis.range[1]'];
+    const wrap = document.createElement('div');
+    wrap.className = 'card';
+    wrap.id = id + '-wrap';
+    wrap.innerHTML = `
+        <div style="display:flex;align-items:center;gap:0.5rem;margin-bottom:0.5rem;flex-wrap:wrap;">
+            <span style="display:flex;flex-direction:column;line-height:0.7;">
+                <a href="#" title="Move up" onclick="movePanel('${id}',-1);return false;"
+                   style="color:#4fc3f7;text-decoration:none;font-size:0.8rem;">&#9650;</a>
+                <a href="#" title="Move down" onclick="movePanel('${id}',1);return false;"
+                   style="color:#4fc3f7;text-decoration:none;font-size:0.8rem;">&#9660;</a>
+            </span>
+            <input type="text" value="${title}" style="width:100px;font-weight:600;color:#81d4fa;"
+                   onchange="renamePanel('${id}', this.value)">
+            <select onchange="if(this.value){addParam('${id}', this.value);this.value='';}">
+                <option value="">+ add parameter</option>
+                ${Object.keys(PARAMS).map(k => `<option value="${k}">${PARAMS[k].label}</option>`).join('')}
+            </select>
+            <label style="font-size:0.8rem;color:#aaa;cursor:pointer;">
+                <input type="checkbox" onchange="toggleNormalize('${id}', this.checked)"> Normalize
+            </label>
+            <span id="${id}-chips" style="flex:1;"></span>
+        </div>
+        <div id="${id}" class="chart-container" style="height: ${PANEL_HEIGHT}px;"></div>
+    `;
+    document.getElementById('panels').appendChild(wrap);
+    panel.div = document.getElementById(id);
+    renderPanel(panel);
+    renderChips(panel);
+    return panel;
+}
 
-            // Sync the other chart
-            if (start && end) {
-                const other = (this === engineDiv) ? flightDiv : engineDiv;
-                Plotly.relayout(other, { 'xaxis.range[0]': start, 'xaxis.range[1]': end });
+function renderChips(panel) {
+    const el = document.getElementById(panel.id + '-chips');
+    el.innerHTML = [...panel.params].map(k =>
+        `<span class="badge" style="background:#0f3460;color:#4fc3f7;margin-right:0.25rem;cursor:pointer;"
+               onclick="removeParam('${panel.id}','${k}')">${PARAMS[k].label} &times;</span>`
+    ).join('');
+}
 
-                // Debounce: fetch full-resolution data after 300ms of no further zoom
-                clearTimeout(fetchTimeout);
-                fetchTimeout = setTimeout(() => {
-                    fetchFullResolution(start, end);
-                }, 300);
-            }
-            if (eventData['xaxis.autorange']) {
-                const other = (this === engineDiv) ? flightDiv : engineDiv;
-                Plotly.relayout(other, { 'xaxis.autorange': true });
-                // Reset to overview data
-                clearTimeout(fetchTimeout);
-                fetchTimeout = setTimeout(() => {
-                    fetchOverviewData();
-                }, 300);
-            }
-        }
+function renderPanel(panel) {
+    const layout = baseLayout();
+    if (panel.normalize) layout.yaxis.title = 'normalized (0-1)';
+    // Preserve the current x-zoom across a re-render, but always refit Y to
+    // the (possibly changed) set of traces so a removed/added parameter
+    // rescales the axis instead of keeping a stale range.
+    const gd = panel.div;
+    const xr = (gd && gd.layout && gd.layout.xaxis && gd.layout.xaxis.range && !gd.layout.xaxis.autorange)
+        ? gd.layout.xaxis.range.slice() : null;
+    if (xr) { layout.xaxis.range = xr; layout.xaxis.autorange = false; }
 
-        engineDiv.on('plotly_relayout', onZoom.bind(engineDiv));
-        flightDiv.on('plotly_relayout', onZoom.bind(flightDiv));
+    Plotly.react(gd, buildTraces(panel), layout, chartConfig);
 
-        function fetchFullResolution(start, end) {
-            fetch(`/api/flight/${flightId}/data?start=${encodeURIComponent(start)}&end=${encodeURIComponent(end)}`)
-                .then(r => r.json())
-                .then(newData => {
-                    updateCharts(newData, start, end);
-                });
-        }
+    // Force Y to refit the current traces within the visible x-window.
+    fitYToWindow(panel.div);
 
-        function fetchOverviewData() {
-            fetch(`/api/flight/${flightId}/data`)
-                .then(r => r.json())
-                .then(newData => {
-                    updateCharts(newData, null, null);
-                });
-        }
+    // Attach event handlers exactly once per panel. Re-attaching on every
+    // render stacks duplicate listeners, causing relayout events to collide
+    // with the sync re-entrancy guard (symptom: some panels stop syncing).
+    if (!panel._wired) {
+        wireSync(panel.div);
+        wireAutoY(panel.div);
+        wireSpike(panel.div);
+        panel._wired = true;
+    }
+}
 
-        function updateCharts(newData, start, end) {
-            const newTs = newData.timestamps;
-            // Update engine traces
-            const engineUpdate = {
-                x: [newTs, newTs, newTs, newTs, newTs, newTs, newTs, newTs, newTs, newTs, newTs, newTs, newTs, newTs],
-                y: [newData.engine.rpm, newData.engine.map,
-                    newData.engine.cht1, newData.engine.cht2, newData.engine.cht3, newData.engine.cht4,
-                    newData.engine.egt1, newData.engine.egt2, newData.engine.egt3, newData.engine.egt4,
-                    newData.engine.fuel_flow, newData.engine.oil_temp, newData.engine.oil_pressure, newData.engine.eis_volts],
-            };
-            Plotly.restyle(engineDiv, engineUpdate);
+function findPanel(id) { return panels.find(p => p.id === id); }
 
-            // Update flight traces
-            const flightUpdate = {
-                x: [newTs, newTs, newTs, newTs, newTs, newTs, newTs, newTs, newTs],
-                y: [newData.flight.ias, newData.flight.tas, newData.flight.ground_speed,
-                    newData.flight.pressure_alt, newData.flight.gps_alt, newData.flight.density_alt,
-                    newData.flight.vertical_speed, newData.flight.oat, newData.flight.g_load],
-            };
-            Plotly.restyle(flightDiv, flightUpdate);
+function addParam(id, key) {
+    const p = findPanel(id); if (!p) return;
+    p.params.add(key); renderPanel(p); renderChips(p);
+}
+function removeParam(id, key) {
+    const p = findPanel(id); if (!p) return;
+    p.params.delete(key); renderPanel(p); renderChips(p);
+}
+function toggleNormalize(id, on) {
+    const p = findPanel(id); if (!p) return;
+    p.normalize = on; renderPanel(p);
+}
+function renamePanel(id, name) { const p = findPanel(id); if (p) p.title = name; }
 
-            // Maintain zoom range
-            if (start && end) {
-                Plotly.relayout(engineDiv, { 'xaxis.range': [start, end] });
-                Plotly.relayout(flightDiv, { 'xaxis.range': [start, end] });
-            }
+// Move a panel up (dir=-1) or down (dir=1) in the stack
+function movePanel(id, dir) {
+    const i = panels.findIndex(p => p.id === id);
+    if (i < 0) return;
+    const j = i + dir;
+    if (j < 0 || j >= panels.length) return;
+
+    // Swap in the panels array
+    [panels[i], panels[j]] = [panels[j], panels[i]];
+
+    // Reorder the DOM to match
+    const container = document.getElementById('panels');
+    const wraps = panels.map(p => document.getElementById(p.id + '-wrap'));
+    wraps.forEach(w => container.appendChild(w));  // re-append in new order
+
+    // Charts need a resize nudge after DOM move
+    panels.forEach(p => Plotly.Plots.resize(p.div));
+}
+function removePanel(id) {
+    const p = findPanel(id); if (!p) return;
+    Plotly.purge(p.div);
+    document.getElementById(id + '-wrap').remove();
+    panels = panels.filter(x => x.id !== id);
+}
+function addPanel() { createPanel('New', []); }
+
+// --- Time-axis sync across all panels ---
+// Full-resolution data is loaded once; zoom/pan are pure client-side, so we
+// only need to keep the panels' x-ranges in lockstep. Re-entrancy guarded.
+function wireSync(div) {
+    div.on('plotly_relayout', (ed) => {
+        if (syncing) return;
+        const start = ed['xaxis.range[0]'], end = ed['xaxis.range[1]'], auto = ed['xaxis.autorange'];
+        if (start === undefined && end === undefined && !auto) return;
+        syncing = true;
+        try {
+            panels.forEach(p => {
+                if (p.div === div) return;
+                if (auto) Plotly.relayout(p.div, {'xaxis.autorange': true});
+                else Plotly.relayout(p.div, {'xaxis.range': [start, end]});
+            });
+        } finally { setTimeout(() => { syncing = false; }, 0); }
+    });
+}
+
+// Refit the Y axis to the data currently visible in the x-window. If the
+// x-axis is on autorange (full view), fits to all data.
+function fitYToWindow(gd) {
+    if (!gd || !gd.data || gd.data.length === 0) return;
+    const xr = gd.layout && gd.layout.xaxis ? gd.layout.xaxis.range : null;
+    const windowed = xr && !(gd.layout.xaxis.autorange);
+    const t0 = windowed ? new Date(xr[0]).getTime() : -Infinity;
+    const t1 = windowed ? new Date(xr[1]).getTime() : Infinity;
+
+    let ymin = Infinity, ymax = -Infinity;
+    gd.data.forEach(tr => {
+        const xs = tr.x, ys = tr.y;
+        for (let i = 0; i < xs.length; i++) {
+            const tx = new Date(xs[i]).getTime();
+            if (tx < t0 || tx > t1) continue;
+            const v = ys[i];
+            if (v == null || !isFinite(v)) continue;
+            if (v < ymin) ymin = v;
+            if (v > ymax) ymax = v;
         }
     });
+    if (ymin < ymax) {
+        const pad = (ymax - ymin) * 0.05;
+        Plotly.relayout(gd, {'yaxis.range': [ymin - pad, ymax + pad]});
+    } else {
+        Plotly.relayout(gd, {'yaxis.autorange': true});
+    }
+}
 
-// Jump to alert timestamp: zoom both charts to a 2-minute window and add vertical marker
+// --- Auto-rescale Y to the data visible in the current x-window ---
+function wireAutoY(div) {
+    div.on('plotly_relayout', (ed) => {
+        const start = ed['xaxis.range[0]'], end = ed['xaxis.range[1]'];
+        if (start === undefined || end === undefined) {
+            if (ed['xaxis.autorange']) fitYToWindow(div);
+            return;
+        }
+        fitYToWindow(div);
+    });
+}
+
+// --- Cross-panel crosshair: hovering one panel draws a synced vertical
+//     line on all the others at the same timestamp. hover/unhover are not
+//     triggered by relayout, so no re-entrancy guard is needed. ---
+function drawSpikeAt(exceptDiv, x) {
+    panels.forEach(p => {
+        if (p.div === exceptDiv) return;  // native spike handles the hovered panel
+        Plotly.relayout(p.div, {
+            shapes: [{type:'line', x0:x, x1:x, y0:0, y1:1, yref:'paper',
+                      line:{color:'#4fc3f7', width:1}}]
+        });
+    });
+}
+function clearSpikes(exceptDiv) {
+    panels.forEach(p => {
+        if (p.div === exceptDiv) return;
+        Plotly.relayout(p.div, {shapes: []});
+    });
+}
+function wireSpike(div) {
+    div.on('plotly_hover', (ev) => {
+        if (!ev.points || !ev.points.length) return;
+        drawSpikeAt(div, ev.points[0].x);
+    });
+    div.on('plotly_unhover', () => clearSpikes(div));
+}
+
+// --- Jump to alert timestamp: zoom all panels to a window + marker ---
 function jumpToAlert(idx) {
     const alerts = window.flightAlerts || [];
     if (idx >= alerts.length) return;
-
-    const alert = alerts[idx];
-    if (!alert || !alert.timestamp) return;
-
-    const ts = new Date(alert.timestamp);
-    const windowMs = 60000; // 1 minute each side
-    const t0 = new Date(ts.getTime() - windowMs).toISOString();
-    const t1 = new Date(ts.getTime() + windowMs).toISOString();
-
-    const annotation = {
-        shapes: [{
-            type: 'line',
-            x0: alert.timestamp,
-            x1: alert.timestamp,
-            y0: 0, y1: 1,
-            yref: 'paper',
-            line: { color: '#ff5252', width: 2, dash: 'dot' },
-        }],
-        annotations: [{
-            x: alert.timestamp,
-            y: 1,
-            yref: 'paper',
-            text: alert.parameter,
-            showarrow: true,
-            arrowhead: 2,
-            arrowcolor: '#ff5252',
-            font: { color: '#ff5252', size: 11 },
-            bgcolor: '#1a1a2e',
-            bordercolor: '#ff5252',
-        }],
-        'xaxis.range': [t0, t1],
-    };
-
-    const engineDiv = document.getElementById('engine-chart');
-    const flightDiv = document.getElementById('flight-chart');
-    Plotly.relayout(engineDiv, annotation);
-    Plotly.relayout(flightDiv, { ...annotation, annotations: [] }); // marker on both, label only on engine
+    const a = alerts[idx]; if (!a || !a.timestamp) return;
+    const ts = new Date(a.timestamp), w = 60000;
+    const t0 = new Date(ts.getTime() - w).toISOString();
+    const t1 = new Date(ts.getTime() + w).toISOString();
+    syncing = true;
+    try {
+        panels.forEach((p, i) => {
+            const relayout = {'xaxis.range': [t0, t1],
+                shapes: [{type:'line', x0:a.timestamp, x1:a.timestamp, y0:0, y1:1,
+                          yref:'paper', line:{color:'#ff5252', width:2, dash:'dot'}}]};
+            if (i === 0) relayout.annotations = [{x:a.timestamp, y:1, yref:'paper',
+                text:a.parameter, showarrow:true, arrowhead:2, arrowcolor:'#ff5252',
+                font:{color:'#ff5252', size:11}, bgcolor:'#1a1a2e', bordercolor:'#ff5252'}];
+            Plotly.relayout(p.div, relayout);
+        });
+    } finally { setTimeout(() => { syncing = false; }, 0); }
 }
 </script>
 {% endblock %}
