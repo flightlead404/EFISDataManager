@@ -2,79 +2,218 @@
 {% block title %}Oil Consumption — EFIS Data Manager{% endblock %}
 {% block content %}
 <h1>Oil Consumption</h1>
+
 <div class="card">
-    <div id="oil-chart" class="chart-container" style="height: 350px;"></div>
+    <div id="oil-chart" class="chart-container" style="height: 380px;"></div>
 </div>
+
 <div class="card">
-    <h2>History</h2>
-    <table id="oil-table">
+    <h2>Record Oil Event</h2>
+    <div class="form-row">
+        <label>Type</label>
+        <select id="ev-type" onchange="toggleLowField()">
+            <option value="addition">Addition (top-off)</option>
+            <option value="change">Oil Change</option>
+        </select>
+    </div>
+    <div class="form-row">
+        <label>Date</label>
+        <input type="date" id="ev-date">
+    </div>
+    <div class="form-row">
+        <label>Tach / Hourmeter</label>
+        <input type="number" id="ev-hourmeter" step="0.1" placeholder="e.g. 455.0">
+    </div>
+    <div class="form-row">
+        <label>Quarts Added</label>
+        <input type="number" id="ev-added" step="0.5" placeholder="e.g. 1.0">
+    </div>
+    <div class="form-row" id="low-row" style="display:none;">
+        <label>Quarts Low (before change)</label>
+        <input type="number" id="ev-low" step="0.5" placeholder="e.g. 0.5">
+    </div>
+    <div class="form-row">
+        <label>Note</label>
+        <input type="text" id="ev-note" placeholder="optional" style="width:300px;">
+    </div>
+    <button class="btn" onclick="addEvent()">Add Event</button>
+    <span id="add-status" style="margin-left:1rem;color:#66bb6a;"></span>
+</div>
+
+<div class="card">
+    <h2>Oil Events</h2>
+    <div class="form-row">
+        <label>Ignore events before</label>
+        <input type="date" id="cutoff-date">
+        <button class="btn" onclick="saveCutoff()">Apply Cutoff</button>
+        <span id="cutoff-status" style="margin-left:0.5rem;color:#66bb6a;"></span>
+    </div>
+    <table id="events-table">
         <thead>
-            <tr>
-                <th>Date</th>
-                <th>Hourmeter</th>
-                <th>Oil Added</th>
-                <th>Hours Since Last</th>
-                <th>Rate (qt/hr)</th>
-                <th>Rolling Avg</th>
-            </tr>
+            <tr><th>Date</th><th>Type</th><th>Tach</th><th>Added</th><th>Low</th><th>Note</th><th></th></tr>
         </thead>
         <tbody></tbody>
     </table>
 </div>
-<div style="margin-top: 1rem;">
+
+<div class="card">
+    <h2>Consumption History</h2>
+    <table id="oil-table">
+        <thead>
+            <tr><th>Date</th><th>Tach</th><th>Type</th><th>Consumed</th><th>Hours Since Last</th><th>Rate (qt/hr)</th><th>Rolling Avg</th></tr>
+        </thead>
+        <tbody></tbody>
+    </table>
+</div>
+<div style="margin-top:1rem;">
     <a href="/api/export/oil" class="btn">Export CSV</a>
 </div>
 {% endblock %}
 {% block scripts %}
 <script>
+function toggleLowField() {
+    const isChange = document.getElementById('ev-type').value === 'change';
+    document.getElementById('low-row').style.display = isChange ? 'flex' : 'none';
+}
+
+function addEvent() {
+    const body = {
+        date: document.getElementById('ev-date').value,
+        hourmeter: document.getElementById('ev-hourmeter').value,
+        event_type: document.getElementById('ev-type').value,
+        quarts_added: document.getElementById('ev-added').value,
+        quarts_low: document.getElementById('ev-low').value,
+        note: document.getElementById('ev-note').value,
+    };
+    if (!body.date || !body.hourmeter) {
+        document.getElementById('add-status').textContent = 'Date and tach required';
+        document.getElementById('add-status').style.color = '#ff7043';
+        return;
+    }
+    fetch('/api/oil/event', {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify(body),
+    }).then(r => r.json()).then(res => {
+        if (res.status === 'ok') {
+            document.getElementById('add-status').style.color = '#66bb6a';
+            document.getElementById('add-status').textContent = 'Added';
+            loadOil();
+            setTimeout(() => document.getElementById('add-status').textContent = '', 2000);
+        } else {
+            document.getElementById('add-status').style.color = '#ff7043';
+            document.getElementById('add-status').textContent = res.message || 'Error';
+        }
+    });
+}
+
+function deleteEvent(id) {
+    if (!confirm('Delete this oil event?')) return;
+    fetch(`/api/oil/event/${id}`, {method: 'DELETE'})
+        .then(() => loadOil());
+}
+
+function saveCutoff() {
+    const cutoff = document.getElementById('cutoff-date').value;
+    fetch('/api/config', {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({oil_cutoff_date: cutoff}),
+    }).then(() => {
+        document.getElementById('cutoff-status').textContent = 'Applied';
+        loadOil();
+        setTimeout(() => document.getElementById('cutoff-status').textContent = '', 2000);
+    });
+}
+
 const layout = {
-    paper_bgcolor: '#16213e',
-    plot_bgcolor: '#1a2744',
-    font: { color: '#e0e0e0', size: 11 },
-    margin: { l: 50, r: 20, t: 30, b: 40 },
-    legend: { orientation: 'h', y: -0.15 },
-    xaxis: { gridcolor: '#0f3460', title: 'Hourmeter' },
-    yaxis: { gridcolor: '#0f3460', title: 'qt/hr' },
+    paper_bgcolor: '#16213e', plot_bgcolor: '#1a2744',
+    font: {color: '#e0e0e0', size: 11},
+    margin: {l: 50, r: 20, t: 30, b: 40},
+    legend: {orientation: 'h', y: -0.15},
+    xaxis: {gridcolor: '#0f3460', title: 'Tach / Hourmeter'},
+    yaxis: {gridcolor: '#0f3460', title: 'qt/hr'},
 };
 
-fetch('/api/oil')
-    .then(r => r.json())
-    .then(data => {
-        if (data.length === 0) return;
+function loadOil() {
+    fetch('/api/oil').then(r => r.json()).then(data => {
+        // Chart: consumption rate + rolling avg + oil-change vertical markers
+        const cons = data.consumption;
+        const traces = [];
+        if (cons.length > 0) {
+            traces.push({
+                x: cons.map(d => d.hourmeter), y: cons.map(d => d.rate),
+                name: 'Rate', mode: 'markers+lines', type: 'scattergl',
+                marker: {size: 6, color: '#ff7043'},
+                line: {color: '#ff7043', width: 1, dash: 'dot'},
+            });
+            traces.push({
+                x: cons.map(d => d.hourmeter), y: cons.map(d => d.rolling_avg_rate),
+                name: 'Rolling Avg', mode: 'lines', type: 'scattergl',
+                line: {color: '#4fc3f7', width: 2},
+            });
+        }
 
-        // Chart
-        const traces = [
-            {
-                x: data.map(d => d.hourmeter),
-                y: data.map(d => d.rate),
-                name: 'Rate',
-                mode: 'markers+lines',
-                marker: { size: 6, color: '#ff7043' },
-                line: { color: '#ff7043', width: 1, dash: 'dot' },
-            },
-            {
-                x: data.map(d => d.hourmeter),
-                y: data.map(d => d.rolling_avg_rate),
-                name: 'Rolling Avg',
-                mode: 'lines',
-                line: { color: '#4fc3f7', width: 2 },
-            },
-        ];
-        Plotly.newPlot('oil-chart', traces, layout, { responsive: true });
+        // Oil-change markers as vertical red lines with hover
+        const shapes = [];
+        const annotations = [];
+        data.changes.forEach(c => {
+            shapes.push({
+                type: 'line', x0: c.hourmeter, x1: c.hourmeter,
+                y0: 0, y1: 1, yref: 'paper',
+                line: {color: '#ff5252', width: 2},
+            });
+            const hrs = c.hours_since_last_change != null
+                ? `${c.hours_since_last_change.toFixed(1)} hr since last change` : 'first change';
+            annotations.push({
+                x: c.hourmeter, y: 1, yref: 'paper',
+                text: 'Oil Change', showarrow: false,
+                font: {color: '#ff5252', size: 9},
+                textangle: -90, xshift: -8, yshift: -30,
+                hovertext: `Oil Change<br>${c.date}<br>Tach ${c.hourmeter.toFixed(1)}<br>${hrs}`,
+                captureevents: true,
+            });
+        });
 
-        // Table
-        const tbody = document.querySelector('#oil-table tbody');
-        data.forEach(d => {
+        const lyt = Object.assign({}, layout, {shapes, annotations});
+        Plotly.newPlot('oil-chart', traces, lyt, {responsive: true});
+
+        // Events table
+        const etb = document.querySelector('#events-table tbody');
+        etb.innerHTML = '';
+        data.events.forEach(e => {
+            etb.innerHTML += `<tr>
+                <td>${e.date}</td>
+                <td>${e.event_type}</td>
+                <td>${e.hourmeter.toFixed(1)}</td>
+                <td>${e.quarts_added} qt</td>
+                <td>${e.event_type === 'change' ? e.quarts_low + ' qt' : '-'}</td>
+                <td>${e.note || ''}</td>
+                <td><a href="#" onclick="deleteEvent(${e.id});return false;" style="color:#ff5252;">delete</a></td>
+            </tr>`;
+        });
+
+        // Consumption history table
+        const tb = document.querySelector('#oil-table tbody');
+        tb.innerHTML = '';
+        cons.forEach(d => {
             const rateCls = d.rate > 0.15 ? 'style="color:#ff7043;"' : '';
-            tbody.innerHTML += `<tr>
+            tb.innerHTML += `<tr>
                 <td>${d.date}</td>
                 <td>${d.hourmeter.toFixed(1)}</td>
+                <td>${d.event_type}</td>
                 <td>${d.oil_added} qt</td>
                 <td>${d.hours_since_last.toFixed(1)} hr</td>
                 <td ${rateCls}>${d.rate.toFixed(3)}</td>
-                <td>${d.rolling_avg_rate ? d.rolling_avg_rate.toFixed(3) : '-'}</td>
+                <td>${d.rolling_avg_rate != null ? d.rolling_avg_rate.toFixed(3) : '-'}</td>
             </tr>`;
         });
+
+        // Populate cutoff field
+        if (data.cutoff_date) document.getElementById('cutoff-date').value = data.cutoff_date;
     });
+}
+
+loadOil();
 </script>
 {% endblock %}

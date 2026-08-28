@@ -149,7 +149,21 @@ CREATE TABLE IF NOT EXISTS logbook (
     UNIQUE(date, departure_time, origin)
 );
 
+-- Oil events: single source of truth for oil tracking (changes + additions).
+-- Supersedes the logbook oil_added column.
+CREATE TABLE IF NOT EXISTS oil_events (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    date TEXT NOT NULL,                 -- YYYY-MM-DD
+    hourmeter REAL NOT NULL,            -- tach/hourmeter at the event
+    event_type TEXT NOT NULL,           -- 'change' or 'addition'
+    quarts_added REAL NOT NULL DEFAULT 0,
+    quarts_low REAL NOT NULL DEFAULT 0, -- how low before a change (counts as consumed)
+    note TEXT,
+    created_at TEXT NOT NULL
+);
+
 -- Indexes for common queries
+CREATE INDEX IF NOT EXISTS idx_oil_events_hourmeter ON oil_events(hourmeter);
 CREATE INDEX IF NOT EXISTS idx_fdl_data_operation ON fdl_data(operation_id);
 CREATE INDEX IF NOT EXISTS idx_fdl_data_timestamp ON fdl_data(timestamp);
 CREATE INDEX IF NOT EXISTS idx_fdl_data_op_ts ON fdl_data(operation_id, timestamp);
@@ -506,3 +520,77 @@ def _parse_int(val: str) -> Optional[int]:
         return int(val.strip())
     except ValueError:
         return None
+
+
+# ---------------------------------------------------------------------------
+# Oil events
+# ---------------------------------------------------------------------------
+
+def add_oil_event(date: str, hourmeter: float, event_type: str,
+                  quarts_added: float = 0.0, quarts_low: float = 0.0,
+                  note: str = "") -> int:
+    """Add an oil change or addition event.
+
+    Args:
+        date: YYYY-MM-DD.
+        hourmeter: Tach/hourmeter reading at the event.
+        event_type: 'change' or 'addition'.
+        quarts_added: Quarts of oil added.
+        quarts_low: For a change, how many quarts low it was before (counts
+            as consumed since the last event).
+        note: Optional free-text note.
+
+    Returns:
+        The new oil_events.id.
+    """
+    if event_type not in ("change", "addition"):
+        raise ValueError(f"event_type must be 'change' or 'addition', got {event_type!r}")
+
+    conn = get_db_connection()
+    try:
+        cur = conn.execute(
+            """INSERT INTO oil_events
+               (date, hourmeter, event_type, quarts_added, quarts_low, note, created_at)
+               VALUES (?,?,?,?,?,?,?)""",
+            (date, hourmeter, event_type, quarts_added, quarts_low, note,
+             datetime.now().isoformat())
+        )
+        conn.commit()
+        return cur.lastrowid
+    finally:
+        conn.close()
+
+
+def delete_oil_event(event_id: int):
+    """Delete an oil event by id."""
+    conn = get_db_connection()
+    try:
+        conn.execute("DELETE FROM oil_events WHERE id = ?", (event_id,))
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def get_oil_events(cutoff_date: str = "") -> list[dict]:
+    """Return oil events ordered by hourmeter, optionally filtered by cutoff date.
+
+    Args:
+        cutoff_date: If set (YYYY-MM-DD), only events on/after this date.
+
+    Returns:
+        List of dicts.
+    """
+    conn = get_db_connection()
+    try:
+        if cutoff_date:
+            rows = conn.execute(
+                "SELECT * FROM oil_events WHERE date >= ? ORDER BY hourmeter",
+                (cutoff_date,)
+            ).fetchall()
+        else:
+            rows = conn.execute(
+                "SELECT * FROM oil_events ORDER BY hourmeter"
+            ).fetchall()
+        return [dict(r) for r in rows]
+    finally:
+        conn.close()

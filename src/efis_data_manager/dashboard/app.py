@@ -284,11 +284,45 @@ def api_alerts():
 
 @app.route("/api/oil")
 def api_oil():
-    """Get oil consumption data."""
+    """Get oil consumption data + change markers."""
     config = load_config()
     window = config.get("trend_window_hours", 25)
-    data = compute_oil_consumption_rolling(window)
-    return jsonify(data)
+    from efis_data_manager.analysis import get_oil_changes
+    from efis_data_manager.database import get_oil_events
+    cutoff = config.get("oil_cutoff_date", "")
+    return jsonify({
+        "consumption": compute_oil_consumption_rolling(window),
+        "changes": get_oil_changes(),
+        "events": get_oil_events(cutoff_date=cutoff),
+        "cutoff_date": cutoff,
+    })
+
+
+@app.route("/api/oil/event", methods=["POST"])
+def api_add_oil_event():
+    """Add an oil change or addition event."""
+    from efis_data_manager.database import add_oil_event
+    data = request.get_json()
+    try:
+        event_id = add_oil_event(
+            date=data["date"],
+            hourmeter=float(data["hourmeter"]),
+            event_type=data["event_type"],
+            quarts_added=float(data.get("quarts_added", 0) or 0),
+            quarts_low=float(data.get("quarts_low", 0) or 0),
+            note=data.get("note", ""),
+        )
+        return jsonify({"status": "ok", "id": event_id})
+    except (KeyError, ValueError) as e:
+        return jsonify({"status": "error", "message": str(e)}), 400
+
+
+@app.route("/api/oil/event/<int:event_id>", methods=["DELETE"])
+def api_delete_oil_event(event_id):
+    """Delete an oil event."""
+    from efis_data_manager.database import delete_oil_event
+    delete_oil_event(event_id)
+    return jsonify({"status": "ok"})
 
 
 @app.route("/api/config", methods=["GET"])

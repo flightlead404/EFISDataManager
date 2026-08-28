@@ -183,13 +183,14 @@ def export_oil_consumption(output_path: Optional[str] = None) -> str:
     with open(output_path, "w", newline="") as f:
         writer = csv.writer(f)
         writer.writerow([
-            "Date", "Hourmeter", "Oil Added (qt)", "Hours Since Last",
+            "Date", "Hourmeter", "Event", "Consumed (qt)", "Hours Since Last",
             "Rate (qt/hr)", "Rolling Avg Rate (qt/hr)",
         ])
         for entry in data:
             writer.writerow([
                 entry["date"],
                 entry["hourmeter"],
+                entry.get("event_type", ""),
                 entry["oil_added"],
                 round(entry["hours_since_last"], 1),
                 round(entry["rate"], 4),

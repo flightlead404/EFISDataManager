@@ -31,6 +31,9 @@ DEFAULT_CONFIG = {
     # Dashboard
     "dashboard_port": 5050,
     "trend_window_hours": 25,
+    # Oil tracking: ignore oil events before this date (YYYY-MM-DD), for
+    # discarding unreliable historical data. Empty = use all.
+    "oil_cutoff_date": "",
 }
 
 

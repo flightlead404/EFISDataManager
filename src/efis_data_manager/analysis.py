@@ -668,52 +668,54 @@ def _find_min_timestamp(conn, operation_id: int, column: str,
 
 @dataclass
 class OilConsumptionPeriod:
-    """One oil consumption measurement period (between two oil additions)."""
+    """One oil consumption measurement period (between two oil events)."""
     start_date: str
     end_date: str
     start_hourmeter: float
     end_hourmeter: float
     hours_between: float
-    oil_added_quarts: float
+    oil_consumed_quarts: float      # oil consumed during this period
     rate_quarts_per_hour: float
+    end_event_type: str             # 'change' or 'addition'
 
 
 def compute_oil_consumption() -> list[OilConsumptionPeriod]:
-    """Compute oil consumption rate between each oil addition.
+    """Compute oil consumption rate between consecutive oil events.
 
-    Uses logbook entries where Oil Added > 0. The consumption rate for each
-    period is: quarts_added / hours_flown_since_last_addition.
+    Uses the oil_events table (respecting the configured cutoff date).
+    Oil consumed during a period = what was replenished at the period's end:
+      - addition: quarts_added
+      - change:   quarts_low (how low it had run before the change; the fresh
+                  fill is not "consumption")
 
     Returns:
-        List of OilConsumptionPeriod sorted by date.
+        List of OilConsumptionPeriod sorted by hourmeter.
     """
-    conn = get_db_connection()
-    try:
-        # Get all logbook entries with oil additions, ordered by hourmeter
-        oil_entries = conn.execute(
-            """SELECT date, hourmeter, oil_added
-               FROM logbook
-               WHERE oil_added IS NOT NULL AND oil_added > 0
-                     AND hourmeter IS NOT NULL
-               ORDER BY hourmeter""",
-        ).fetchall()
-    finally:
-        conn.close()
+    from efis_data_manager.database import get_oil_events
+    from efis_data_manager.config import load_config
 
-    if len(oil_entries) < 2:
+    cutoff = load_config().get("oil_cutoff_date", "")
+    events = get_oil_events(cutoff_date=cutoff)
+
+    if len(events) < 2:
         return []
 
     periods = []
-    for i in range(1, len(oil_entries)):
-        prev = oil_entries[i - 1]
-        curr = oil_entries[i]
+    for i in range(1, len(events)):
+        prev = events[i - 1]
+        curr = events[i]
 
         hours_between = curr["hourmeter"] - prev["hourmeter"]
         if hours_between <= 0:
             continue
 
-        # The oil added at 'curr' is what was consumed since 'prev'
-        rate = curr["oil_added"] / hours_between
+        # Oil consumed since previous event = what was replenished now
+        if curr["event_type"] == "change":
+            consumed = curr["quarts_low"]
+        else:
+            consumed = curr["quarts_added"]
+
+        rate = consumed / hours_between
 
         periods.append(OilConsumptionPeriod(
             start_date=prev["date"],
@@ -721,8 +723,9 @@ def compute_oil_consumption() -> list[OilConsumptionPeriod]:
             start_hourmeter=prev["hourmeter"],
             end_hourmeter=curr["hourmeter"],
             hours_between=hours_between,
-            oil_added_quarts=curr["oil_added"],
+            oil_consumed_quarts=consumed,
             rate_quarts_per_hour=rate,
+            end_event_type=curr["event_type"],
         ))
 
     return periods
@@ -735,7 +738,7 @@ def compute_oil_consumption_rolling(window_hours: float = 25.0) -> list[dict]:
         window_hours: Rolling window in engine hours.
 
     Returns:
-        List of dicts with {"date", "hourmeter", "rate", "rolling_avg_rate"}.
+        List of dicts with per-period rate, rolling avg, and event type.
     """
     periods = compute_oil_consumption()
     if not periods:
@@ -743,19 +746,16 @@ def compute_oil_consumption_rolling(window_hours: float = 25.0) -> list[dict]:
 
     results = []
     for i, p in enumerate(periods):
-        # Find all periods within window
-        window_rates = []
+        # Sum consumption + hours within the rolling window
         window_hours_total = 0
         window_oil_total = 0
         for j in range(i, -1, -1):
             pj = periods[j]
             if p.end_hourmeter - pj.start_hourmeter > window_hours:
                 break
-            window_rates.append(pj.rate_quarts_per_hour)
             window_hours_total += pj.hours_between
-            window_oil_total += pj.oil_added_quarts
+            window_oil_total += pj.oil_consumed_quarts
 
-        # Rolling average: total oil consumed / total hours in window
         rolling_rate = window_oil_total / window_hours_total if window_hours_total > 0 else None
 
         results.append({
@@ -763,8 +763,42 @@ def compute_oil_consumption_rolling(window_hours: float = 25.0) -> list[dict]:
             "hourmeter": p.end_hourmeter,
             "rate": p.rate_quarts_per_hour,
             "rolling_avg_rate": rolling_rate,
-            "oil_added": p.oil_added_quarts,
+            "oil_added": p.oil_consumed_quarts,
             "hours_since_last": p.hours_between,
+            "event_type": p.end_event_type,
         })
 
     return results
+
+
+def get_oil_changes() -> list[dict]:
+    """Return oil-change events with hours-since-last-change, for chart markers.
+
+    Respects the configured cutoff date.
+
+    Returns:
+        List of dicts: {date, hourmeter, quarts_added, quarts_low, note,
+                        hours_since_last_change}.
+    """
+    from efis_data_manager.database import get_oil_events
+    from efis_data_manager.config import load_config
+
+    cutoff = load_config().get("oil_cutoff_date", "")
+    events = get_oil_events(cutoff_date=cutoff)
+    changes = [e for e in events if e["event_type"] == "change"]
+
+    result = []
+    prev_change_hm = None
+    for c in changes:
+        hours_since = (c["hourmeter"] - prev_change_hm) if prev_change_hm is not None else None
+        result.append({
+            "date": c["date"],
+            "hourmeter": c["hourmeter"],
+            "quarts_added": c["quarts_added"],
+            "quarts_low": c["quarts_low"],
+            "note": c["note"],
+            "hours_since_last_change": hours_since,
+        })
+        prev_change_hm = c["hourmeter"]
+
+    return result
