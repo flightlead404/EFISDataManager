@@ -454,9 +454,14 @@ def import_logbook_csv(filepath: str) -> dict:
     import csv
 
     results = {"oil_events_created": 0, "operations_enriched": 0,
-               "legs_read": 0, "errors": []}
+               "legs_read": 0, "legs_skipped_old": 0, "errors": []}
     conn = get_db_connection()
     now = datetime.now().isoformat()
+
+    # Only import rows above the watermark (highest hourmeter previously imported).
+    # Handles 'download all' vs 'download new only' and avoids reprocessing.
+    watermark = get_logbook_watermark()
+    max_hourmeter_seen = watermark
 
     try:
         # Preload operations with a valid hourmeter range for matching
@@ -476,12 +481,20 @@ def import_logbook_csv(filepath: str) -> dict:
                     date = row.get("Date", "").strip()
                     if not date:
                         continue
-                    results["legs_read"] += 1
 
                     origin = row.get("Origin", "").strip() or None
                     destination = row.get("Destination", "").strip() or None
                     hourmeter = _parse_float(row.get("Hourmeter", ""))
                     oil_added = _parse_float(row.get("Oil Added", ""))
+
+                    # Skip entries at/below the watermark (already imported)
+                    if hourmeter is not None and hourmeter <= watermark:
+                        results["legs_skipped_old"] += 1
+                        continue
+
+                    results["legs_read"] += 1
+                    if hourmeter is not None and hourmeter > max_hourmeter_seen:
+                        max_hourmeter_seen = hourmeter
 
                     # 1. Oil additions -> oil_events (deduped by unique constraint)
                     if oil_added and oil_added > 0 and hourmeter is not None:
@@ -533,15 +546,23 @@ def import_logbook_csv(filepath: str) -> dict:
 
         conn.commit()
         logger.info(
-            f"Logbook enrichment: {results['legs_read']} legs read, "
+            f"Logbook enrichment: {results['legs_read']} new legs read "
+            f"({results['legs_skipped_old']} below watermark {watermark}), "
             f"{results['oil_events_created']} oil events created, "
             f"{results['operations_enriched']} operations enriched"
         )
     except Exception as e:
         conn.rollback()
         results["errors"].append(str(e))
+        conn.close()
+        return results
     finally:
         conn.close()
+
+    # Advance the watermark to the highest hourmeter seen (after successful commit)
+    if max_hourmeter_seen > watermark:
+        set_logbook_watermark(max_hourmeter_seen)
+        results["watermark"] = max_hourmeter_seen
 
     return results
 
@@ -569,6 +590,47 @@ def _parse_int(val: str) -> Optional[int]:
 # ---------------------------------------------------------------------------
 # Oil events
 # ---------------------------------------------------------------------------
+
+def get_logbook_watermark() -> float:
+    """Return the highest hourmeter imported from a logbook (0.0 if none).
+
+    Logbook imports only process rows with hourmeter above this watermark,
+    which handles both 'download all' and 'download new only' cases and avoids
+    re-processing already-imported entries.
+    """
+    conn = get_db_connection()
+    try:
+        row = conn.execute(
+            "SELECT value FROM schema_info WHERE key = 'logbook_hourmeter_watermark'"
+        ).fetchone()
+        if row and row["value"]:
+            try:
+                return float(row["value"])
+            except ValueError:
+                return 0.0
+        return 0.0
+    finally:
+        conn.close()
+
+
+def set_logbook_watermark(hourmeter: float):
+    """Set the logbook import watermark (highest imported hourmeter)."""
+    conn = get_db_connection()
+    try:
+        conn.execute(
+            """INSERT INTO schema_info (key, value) VALUES ('logbook_hourmeter_watermark', ?)
+               ON CONFLICT(key) DO UPDATE SET value = excluded.value""",
+            (str(hourmeter),)
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def reset_logbook_watermark():
+    """Reset the logbook watermark to 0 (forces a full re-import next time)."""
+    set_logbook_watermark(0.0)
+
 
 def add_oil_event(date: str, hourmeter: float, event_type: str,
                   quarts_added: float = 0.0, quarts_low: float = 0.0,

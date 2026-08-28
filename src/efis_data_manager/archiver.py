@@ -94,24 +94,42 @@ def archive_efis_drive(mount_point: str, progress_callback: Optional[Callable] =
         _status("Importing FDL data to database...")
         _import_fdl_to_database(fdl_archived_paths, results)
 
-    # Logbook CSV files (copy, don't delete from USB) — small, import now
+    # Logbook CSV files. The EFIS overwrites the logbook each save (same name,
+    # possibly same size), so we can't dedup by name+size. Flow:
+    #   1. Copy to archive with a date stamp (keeps each snapshot)
+    #   2. Verify with SHA-256
+    #   3. Import to DB (watermark ensures only new entries are processed)
+    #   4. Delete from USB once import is verified
     logbook_dest = archive_root / "Logbook"
-    logbook_paths = []
     for f in _find_files(mount_point, "Logbook*.csv"):
-        result = _copy_file(f, logbook_dest)
-        if result == "copied":
-            results["logbook_copied"] += 1
-            logbook_paths.append(logbook_dest / os.path.basename(f))
-        elif result == "skipped":
-            results["skipped"] += 1
-            # Still import to DB even if file copy was skipped (might have new entries)
-            logbook_paths.append(logbook_dest / os.path.basename(f))
-        else:
-            results["errors"].append(result)
+        name, ext = os.path.splitext(os.path.basename(f))
+        dated_name = f"{name}-{today}{ext}"
+        archived_path = logbook_dest / dated_name
 
-    # Import logbook into analysis DB
-    if logbook_paths:
-        _import_logbook_to_database(logbook_paths, results)
+        # Copy with verification
+        logbook_dest.mkdir(parents=True, exist_ok=True)
+        try:
+            shutil.copy2(f, archived_path)
+            if sha256_file(f) != sha256_file(str(archived_path)):
+                archived_path.unlink(missing_ok=True)
+                results["errors"].append(f"Logbook validation failed: {os.path.basename(f)}")
+                continue
+        except OSError as e:
+            results["errors"].append(f"Logbook copy failed: {e}")
+            continue
+
+        results["logbook_copied"] += 1
+
+        # Import to DB (watermark filters to new entries only)
+        import_ok = _import_logbook_to_database([archived_path], results)
+
+        # Delete from USB only after a verified copy + successful import
+        if import_ok:
+            try:
+                os.remove(f)
+                logger.info(f"Logbook imported and removed from USB: {os.path.basename(f)}")
+            except OSError as e:
+                results["errors"].append(f"Logbook delete failed (archived OK): {e}")
 
     # Settings .bak files (copy with date stamp, don't delete from USB)
     settings_dest = archive_root / "Settings"
@@ -317,19 +335,36 @@ def _import_fdl_to_database(fdl_paths: list[Path], results: dict):
         logger.info(f"Imported {imported} FDL file(s) to analysis database.")
 
 
-def _import_logbook_to_database(logbook_paths: list[Path], results: dict):
+def _import_logbook_to_database(logbook_paths: list[Path], results: dict) -> bool:
     """Import logbook CSV files into the analysis database.
 
-    Non-fatal: errors logged but don't affect archive pipeline.
+    Non-fatal: errors are logged but don't crash the pipeline.
+
+    Returns:
+        True if all imports completed without a hard error (safe to delete
+        the source from USB), False otherwise.
     """
     from efis_data_manager.database import import_logbook_csv
 
+    all_ok = True
     for path in logbook_paths:
         if not path.exists():
+            all_ok = False
             continue
         try:
             result = import_logbook_csv(str(path))
-            if result["imported"] > 0:
-                logger.info(f"Logbook DB import: {result['imported']} new entries from {path.name}")
+            if result.get("errors"):
+                all_ok = False
+                logger.error(f"Logbook import had errors for {path.name}: {result['errors'][:3]}")
+            else:
+                logger.info(
+                    f"Logbook DB import from {path.name}: "
+                    f"{result.get('legs_read', 0)} new legs, "
+                    f"{result.get('oil_events_created', 0)} oil events, "
+                    f"{result.get('operations_enriched', 0)} operations enriched"
+                )
         except Exception as e:
+            all_ok = False
             logger.error(f"Logbook database import failed for {path.name}: {e}")
+
+    return all_ok
