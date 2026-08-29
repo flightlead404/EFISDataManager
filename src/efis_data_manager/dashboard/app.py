@@ -95,6 +95,21 @@ def settings_page():
 # API endpoints
 # ---------------------------------------------------------------------------
 
+@app.route("/api/operations/delete", methods=["POST"])
+def api_delete_operations():
+    """Delete one or more operations (and their time-series data)."""
+    from efis_data_manager.database import delete_operation
+    ids = (request.get_json() or {}).get("ids", [])
+    deleted = 0
+    for op_id in ids:
+        try:
+            if delete_operation(int(op_id)):
+                deleted += 1
+        except (ValueError, TypeError):
+            pass
+    return jsonify({"status": "ok", "deleted": deleted})
+
+
 @app.route("/api/flights")
 def api_flights():
     """Get all operations with summary data.

@@ -1,5 +1,5 @@
 {% extends "base.html" %}
-{% block title %}Flights — EFIS Data Manager{% endblock %}
+{% block title %}Operations — EFIS Data Manager{% endblock %}
 {% block content %}
 <h1>Operations</h1>
 <div style="margin-bottom: 1rem; display: flex; align-items: center; gap: 1rem;">
@@ -7,11 +7,16 @@
     <label style="font-size: 0.85rem; color: #aaa; cursor: pointer;">
         <input type="checkbox" id="flights-only" style="vertical-align: middle;"> Flights only
     </label>
+    <button class="btn" id="delete-btn" onclick="deleteSelected()"
+            style="border-color:#ff5252;color:#ff5252;display:none;">
+        Delete Selected (<span id="sel-count">0</span>)
+    </button>
 </div>
 <div class="card">
     <table id="flights-table">
         <thead>
             <tr>
+                <th style="width:2rem;"><input type="checkbox" id="select-all" onclick="toggleAll(this)"></th>
                 <th>Date</th>
                 <th>Type</th>
                 <th>Duration</th>
@@ -40,18 +45,19 @@ function loadOperations() {
         .then(flights => {
             const tbody = document.querySelector('#flights-table tbody');
             tbody.innerHTML = '';
+            document.getElementById('select-all').checked = false;
             flights.forEach(f => {
                 const dur = (f.duration_seconds / 60).toFixed(0);
                 const air = (f.airborne_seconds / 60).toFixed(0);
                 const typeBadge = f.has_flight
                     ? '<span class="badge badge-ok">Flight</span>'
                     : '<span class="badge" style="background:#546e7a;color:#fff;">Ground</span>';
-                // Simple alert check
                 let alertBadge = '<span class="badge badge-ok">OK</span>';
                 if (f.max_cht && f.max_cht >= 420) alertBadge = '<span class="badge badge-warning">CHT</span>';
                 else if (f.max_cht && f.max_cht >= 380) alertBadge = '<span class="badge badge-caution">CHT</span>';
 
                 tbody.innerHTML += `<tr>
+                    <td><input type="checkbox" class="op-check" value="${f.id}" onclick="updateSelCount()"></td>
                     <td><a href="/flight/${f.id}" class="flight-link">${f.date}</a></td>
                     <td>${typeBadge}</td>
                     <td>${dur} min</td>
@@ -66,7 +72,36 @@ function loadOperations() {
                     <td>${alertBadge}</td>
                 </tr>`;
             });
+            updateSelCount();
         });
+}
+
+function toggleAll(cb) {
+    document.querySelectorAll('.op-check').forEach(c => c.checked = cb.checked);
+    updateSelCount();
+}
+
+function selectedIds() {
+    return [...document.querySelectorAll('.op-check:checked')].map(c => parseInt(c.value));
+}
+
+function updateSelCount() {
+    const n = selectedIds().length;
+    document.getElementById('sel-count').textContent = n;
+    document.getElementById('delete-btn').style.display = n > 0 ? 'inline-block' : 'none';
+}
+
+function deleteSelected() {
+    const ids = selectedIds();
+    if (ids.length === 0) return;
+    if (!confirm(`Delete ${ids.length} operation(s)? This removes their flight data and cannot be undone.`)) return;
+    fetch('/api/operations/delete', {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({ids}),
+    }).then(r => r.json()).then(res => {
+        loadOperations();
+    });
 }
 
 document.getElementById('flights-only').addEventListener('change', loadOperations);

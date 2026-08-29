@@ -602,6 +602,21 @@ def _parse_int(val: str) -> Optional[int]:
 # Oil events
 # ---------------------------------------------------------------------------
 
+def delete_operation(operation_id: int) -> bool:
+    """Delete an operation and all its time-series data.
+
+    Returns True if an operation was deleted.
+    """
+    conn = get_db_connection()
+    try:
+        conn.execute("DELETE FROM fdl_data WHERE operation_id = ?", (operation_id,))
+        cur = conn.execute("DELETE FROM operations WHERE id = ?", (operation_id,))
+        conn.commit()
+        return cur.rowcount > 0
+    finally:
+        conn.close()
+
+
 def get_logbook_watermark() -> float:
     """Return the highest hourmeter imported from a logbook (0.0 if none).
 
