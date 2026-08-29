@@ -48,6 +48,25 @@ def flight_detail(flight_id):
     return render_template("flight.html", flight_id=flight_id)
 
 
+@app.route("/flight/<int:flight_id>/gami")
+def gami_page(flight_id):
+    """GAMI lean test analysis view for an operation."""
+    return render_template("gami.html", flight_id=flight_id)
+
+
+@app.route("/api/flight/<int:flight_id>/gami")
+def api_gami(flight_id):
+    """Detected GAMI lean strokes + the EGT-vs-fuel-flow curve for each."""
+    from efis_data_manager.gami import detect_gami_strokes, stroke_to_dict, get_stroke_curves
+    strokes = detect_gami_strokes(flight_id)
+    out = []
+    for s in strokes:
+        d = stroke_to_dict(s)
+        d["curves"] = get_stroke_curves(flight_id, s.start_time, s.end_time)
+        out.append(d)
+    return jsonify(out)
+
+
 @app.route("/trends")
 def trends_page():
     """Trend analysis view."""

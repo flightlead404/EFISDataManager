@@ -68,6 +68,55 @@ def _smooth(vals, window=SMOOTH_WINDOW):
     return out
 
 
+def stroke_to_dict(s: "LeanStroke") -> dict:
+    """Serialize a LeanStroke for the API/UI."""
+    return {
+        "start_time": s.start_time,
+        "end_time": s.end_time,
+        "start_ff": s.start_ff,
+        "end_ff": s.end_ff,
+        "gami_spread": s.gami_spread,
+        "peak_order": s.peak_order,
+        "peaks": [
+            {"cyl": p.cyl, "peak_egt": p.peak_egt,
+             "ff_at_peak": p.ff_at_peak, "time_at_peak": p.time_at_peak}
+            for p in s.peaks
+        ],
+    }
+
+
+def get_stroke_curves(operation_id: int, start_time: str, end_time: str,
+                      num_cyl: int = None) -> dict:
+    """Return smoothed EGT-vs-fuel-flow curves for one stroke window, for the
+    classic GAMI plot (fuel flow on X, each EGT on Y).
+
+    Returns {"fuel_flow": [...], "egt1": [...], ...} over the stroke, ordered
+    by sample time.
+    """
+    if num_cyl is None:
+        from efis_data_manager.config import load_config
+        num_cyl = load_config().get("num_cylinders", NUM_CYL_DEFAULT)
+
+    conn = get_db_connection()
+    try:
+        rows = conn.execute(
+            """SELECT timestamp, fuel_flow, egt1, egt2, egt3, egt4, egt5, egt6
+               FROM fdl_data
+               WHERE operation_id = ? AND timestamp >= ? AND timestamp <= ?
+               ORDER BY timestamp""",
+            (operation_id, start_time, end_time)
+        ).fetchall()
+    finally:
+        conn.close()
+
+    egt_cols = [f"egt{i}" for i in range(1, num_cyl + 1)]
+    result = {"fuel_flow": _smooth([r["fuel_flow"] for r in rows]),
+              "time": [r["timestamp"] for r in rows]}
+    for c in egt_cols:
+        result[c] = _smooth([r[c] for r in rows])
+    return result
+
+
 def detect_gami_strokes(operation_id: int, num_cyl: int = None) -> list[LeanStroke]:
     """Detect and analyze GAMI lean strokes for an operation.
 
@@ -207,8 +256,9 @@ def _analyze_stroke(times, ff, egts, egt_cols, i0, i1) -> Optional[LeanStroke]:
     ffs = [p.ff_at_peak for p in peaks]
     gami_spread = round(max(ffs) - min(ffs), 2)
 
-    # Peak order leanest-peaking first = lowest FF at peak first
-    order = [p.cyl for p in sorted(peaks, key=lambda p: p.ff_at_peak)]
+    # Peak order rich-to-lean: the cylinder that peaks first (at the highest
+    # fuel flow) is richest and listed first, down to the leanest (lowest FF).
+    order = [p.cyl for p in sorted(peaks, key=lambda p: p.ff_at_peak, reverse=True)]
 
     return LeanStroke(
         start_time=times[i0], end_time=times[i1],

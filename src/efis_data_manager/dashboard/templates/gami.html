@@ -1,0 +1,119 @@
+{% extends "base.html" %}
+{% block title %}GAMI Lean Test — EFIS Data Manager{% endblock %}
+{% block content %}
+<h1>GAMI Lean Test</h1>
+<div style="margin-bottom:1rem;">
+    <a href="/flight/{{ flight_id }}" class="btn">&larr; Back to Flight</a>
+</div>
+<div id="gami-content"></div>
+<p id="no-strokes" style="display:none;color:#888;">
+    No GAMI lean strokes detected in this operation.
+</p>
+{% endblock %}
+{% block scripts %}
+<script>
+const flightId = {{ flight_id }};
+const CYL_COLORS = ['#4fc3f7','#ff7043','#66bb6a','#ffa726','#ab47bc','#26c6da'];
+
+const layout = (title) => ({
+    paper_bgcolor: '#16213e', plot_bgcolor: '#1a2744',
+    font: {color: '#e0e0e0', size: 11},
+    margin: {l: 55, r: 20, t: 30, b: 45},
+    legend: {orientation: 'h', y: -0.2, font: {size: 10}},
+    title: {text: title, font: {size: 13, color: '#81d4fa'}},
+    hovermode: 'x unified',
+    // Fuel flow decreases as you lean — show rich (high FF) on the left,
+    // lean (low FF) on the right by reversing the axis.
+    xaxis: {
+        gridcolor: '#0f3460', title: 'Fuel Flow (GPH)', autorange: 'reversed',
+        showspikes: true, spikemode: 'across', spikesnap: 'cursor',
+        spikecolor: '#4fc3f7', spikethickness: 1, spikedash: 'solid',
+    },
+    yaxis: {
+        gridcolor: '#0f3460', title: 'EGT (°F)',
+        showspikes: true, spikemode: 'across', spikesnap: 'cursor',
+        spikecolor: '#4fc3f7', spikethickness: 1, spikedash: 'dot',
+    },
+});
+const config = {responsive: true, displaylogo: false};
+
+function timeShort(iso) { return iso ? (iso.split('T')[1] || iso) : ''; }
+
+fetch(`/api/flight/${flightId}/gami`).then(r => r.json()).then(strokes => {
+    if (!strokes || strokes.length === 0) {
+        document.getElementById('no-strokes').style.display = 'block';
+        return;
+    }
+    const root = document.getElementById('gami-content');
+
+    strokes.forEach((s, si) => {
+        const card = document.createElement('div');
+        card.className = 'card';
+        const chartId = `gami-chart-${si}`;
+
+        // Spread quality hint
+        let spreadCls = 'badge-ok';
+        if (s.gami_spread > 0.5) spreadCls = 'badge-caution';
+        if (s.gami_spread > 1.0) spreadCls = 'badge-warning';
+
+        // Peak order rich→lean (cylinder that peaks first/richest listed first)
+        const orderStr = s.peak_order.map(c => `Cyl ${c}`).join(' → ');
+
+        card.innerHTML = `
+            <h2>Lean Stroke ${si + 1}
+                <span style="font-size:0.8rem;color:#888;">
+                    ${timeShort(s.start_time)}–${timeShort(s.end_time)},
+                    FF ${s.start_ff} → ${s.end_ff} GPH
+                </span>
+            </h2>
+            <div style="margin-bottom:0.75rem;">
+                <span class="badge ${spreadCls}">GAMI spread: ${s.gami_spread} GPH</span>
+                <span style="margin-left:1rem;color:#aaa;font-size:0.9rem;">
+                    Peak order (rich→lean): ${orderStr}
+                </span>
+            </div>
+            <div id="${chartId}" style="height:360px;"></div>
+            <table style="margin-top:0.75rem;">
+                <thead><tr><th>Cylinder</th><th>Peak EGT (°F)</th><th>Fuel Flow at Peak (GPH)</th><th>Time</th></tr></thead>
+                <tbody>
+                    ${s.peaks.map(p => `<tr>
+                        <td>Cyl ${p.cyl}</td>
+                        <td>${p.peak_egt.toFixed(0)}</td>
+                        <td>${p.ff_at_peak.toFixed(2)}</td>
+                        <td>${timeShort(p.time_at_peak)}</td>
+                    </tr>`).join('')}
+                </tbody>
+            </table>
+        `;
+        root.appendChild(card);
+
+        // Build EGT-vs-fuel-flow curves
+        const c = s.curves;
+        const traces = [];
+        let ci = 0;
+        Object.keys(c).forEach(k => {
+            if (!k.startsWith('egt')) return;
+            const cylNum = parseInt(k.replace('egt', ''));
+            traces.push({
+                x: c.fuel_flow, y: c[k],
+                name: `Cyl ${cylNum}`, mode: 'lines+markers',
+                line: {width: 1.5, color: CYL_COLORS[(cylNum-1) % CYL_COLORS.length]},
+                marker: {size: 3},
+            });
+            ci++;
+        });
+        // Mark each cylinder's peak with a star
+        s.peaks.forEach(p => {
+            traces.push({
+                x: [p.ff_at_peak], y: [p.peak_egt],
+                name: `Cyl ${p.cyl} peak`, mode: 'markers',
+                marker: {size: 11, symbol: 'star', color: CYL_COLORS[(p.cyl-1) % CYL_COLORS.length]},
+                showlegend: false,
+            });
+        });
+
+        Plotly.newPlot(chartId, traces, layout(`EGT vs Fuel Flow`), config);
+    });
+});
+</script>
+{% endblock %}
