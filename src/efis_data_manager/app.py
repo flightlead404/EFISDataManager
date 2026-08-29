@@ -834,6 +834,7 @@ class EFISDataManagerApp(rumps.App):
             ok="Quit", cancel="Cancel",
         )
         if response == 1:
+            logger.info("User quit the app via menu.")
             # Shut down the dashboard server if we started it
             if self._dashboard_process and self._dashboard_process.poll() is None:
                 try:
