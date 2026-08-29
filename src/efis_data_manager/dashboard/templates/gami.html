@@ -22,6 +22,7 @@ const layout = (title) => ({
     legend: {orientation: 'h', y: -0.2, font: {size: 10}},
     title: {text: title, font: {size: 13, color: '#81d4fa'}},
     hovermode: 'x unified',
+    dragmode: 'pan',
     // Fuel flow decreases as you lean — show rich (high FF) on the left,
     // lean (low FF) on the right by reversing the axis.
     xaxis: {
@@ -35,7 +36,7 @@ const layout = (title) => ({
         spikecolor: '#4fc3f7', spikethickness: 1, spikedash: 'dot',
     },
 });
-const config = {responsive: true, displaylogo: false};
+const config = {responsive: true, displaylogo: false, scrollZoom: true};
 
 function timeShort(iso) { return iso ? (iso.split('T')[1] || iso) : ''; }
 
