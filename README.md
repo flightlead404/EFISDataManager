@@ -47,43 +47,69 @@ analyzing what your engine and airframe are doing.
 
 ## Prerequisites
 
-- **macOS** (Apple Silicon or Intel).
-- **Python 3.11 or newer** (`python3 --version`). If you don't have it:
-  `brew install python` (install [Homebrew](https://brew.sh) first if needed).
+- **A Mac** running macOS (Apple Silicon or Intel).
 - A **Seattle Avionics chart subscription** (for chart/nav downloads).
 - A **GRT EFIS USB drive** (or a blank USB stick to prepare one).
+- An internet connection for the first install.
 
-## Install
+You do **not** need to install Python or anything else yourself — the installer
+sets up everything it needs.
+
+## Install (recommended, no technical steps)
+
+1. Go to the [latest release](https://github.com/flightlead404/EFISDataManager/releases/latest)
+   and download **`EFISDataManager.zip`** (under "Assets").
+2. In your **Downloads** folder, double-click the ZIP to unzip it. You'll get a
+   folder named `EFISDataManager`.
+3. Open that folder and **right-click `install.command` → Open**. (Right-click →
+   Open is needed the first time because the app isn't from the App Store — see
+   [First launch security note](#first-launch-security-note) below. A normal
+   double-click may be blocked by macOS.)
+4. A Terminal window opens and the installer runs. Follow the on-screen prompts:
+   - On a new Mac, macOS may ask to install **Command Line Tools** — click
+     **Install** and accept.
+   - You may be asked for your **Mac password** (to install Homebrew/Python).
+   - The installer then downloads everything and sets up the app. The one-time
+     browser download is ~100 MB, so give it a few minutes.
+5. When it says **"All done,"** the **EFIS Data Manager** icon appears in your
+   menu bar (top-right) and in your Applications folder.
+
+That's it. The installer handles Homebrew, Python, the app dependencies, the
+menu-bar app, and starting it at login — all using **your** home folder, nothing
+hardcoded.
+
+### First launch security note
+
+Because this is a free, un-notarized app (not distributed through the App
+Store), macOS Gatekeeper will warn you the first time. This is expected:
+
+- For `install.command`: **right-click it → Open**, then click **Open** in the
+  dialog. You only need to do this once.
+- If macOS still blocks it, go to **System Settings → Privacy & Security**,
+  scroll down, and click **Open Anyway**.
+
+### Install with git (for developers)
+
+If you're comfortable with the terminal and have git:
 
 ```bash
-# 1. Get the project (a specific tested release)
-git clone --branch v0.9.4 --depth 1 https://github.com/flightlead404/EFISDataManager.git
+git clone --branch v0.9.5 --depth 1 https://github.com/flightlead404/EFISDataManager.git
 cd EFISDataManager
-
-# 2. Run the installer (creates venv, installs deps + browser, sets up the app)
 ./install.sh
 ```
 
-To update later, fetch the newer release tag and re-run the installer:
+To update later:
 
 ```bash
 git fetch --tags
-git checkout v0.9.5   # whichever release you're moving to
+git checkout v0.9.6   # whichever release you're moving to
 ./install.sh
 ```
-
-The installer:
-- Creates a Python virtual environment and installs dependencies.
-- Installs the Playwright Chromium browser (one-time, ~100 MB — required for
-  GRT nav-database checks).
-- Installs a menu-bar app to `/Applications/EFIS Data Manager.app` and a login
-  item so it starts automatically after you log in. Both are generated with
-  **your** home directory — nothing is hardcoded.
 
 ## First-time setup
 
 1. Launch **EFIS Data Manager** from `/Applications` (or it starts at next login).
-   Look for the `EFIS` icon in the menu bar.
+   Look for the small attitude-indicator (PFD) icon in the menu bar, top-right.
 2. **Settings…** — set your **aircraft tail number**, choose your Archive and
    USB Image folders, and select **which chart products to download** (VFR
    sectionals, IFR low, IFR high, approach plates) to match your subscription.
