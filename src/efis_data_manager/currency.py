@@ -1,3 +1,13 @@
+# EFIS Data Manager - GRT HXr EFIS ground support automation.
+# Copyright (C) 2026 Martin C. Walker
+#
+# This program is free software: you can redistribute it and/or modify
+# it under the terms of the GNU Affero General Public License as published
+# by the Free Software Foundation, either version 3 of the License, or
+# (at your option) any later version. See the LICENSE file for details.
+#
+# SPDX-License-Identifier: AGPL-3.0-or-later
+
 """Currency management for Seattle Avionics charts and GRT software/nav DB.
 
 Handles:
@@ -42,8 +52,34 @@ HEADERS = {
     )
 }
 
-# Excluded chart types (not needed for this aircraft)
-EXCLUDED_SUBSTRINGS = ["high altitude"]
+# Map each user-selectable chart type (config "chart_types" keys) to the
+# substrings that identify it in the Seattle Avionics download-table
+# "description" column. A row is kept if it matches an ENABLED type.
+CHART_TYPE_MATCHERS = {
+    "sectional": ["sectional", "scanned charts"],
+    "ifr_low": ["ifr low", "low altitude"],
+    "ifr_high": ["ifr high", "high altitude"],
+    "approach_plates": ["approach plates", "airport diagrams"],
+}
+
+# Default chart-type selection, used if config is missing the key (matches
+# config.DEFAULT_CONFIG["chart_types"]).
+DEFAULT_CHART_TYPES = {
+    "sectional": True,
+    "ifr_low": True,
+    "ifr_high": False,
+    "approach_plates": True,
+}
+
+
+def _enabled_chart_substrings(config: dict) -> list[str]:
+    """Return the list of description substrings for the user's enabled chart types."""
+    selected = config.get("chart_types", DEFAULT_CHART_TYPES)
+    subs = []
+    for key, enabled in selected.items():
+        if enabled:
+            subs.extend(CHART_TYPE_MATCHERS.get(key, []))
+    return subs
 
 # Local metadata file tracking what cycles we have
 CYCLE_METADATA_FILE = APP_SUPPORT_DIR / "chart_cycles.json"
@@ -260,15 +296,26 @@ def parse_download_table(session: requests.Session) -> list[dict]:
         seen.add(row["download_url"])
         deduped.append(row)
 
-    # Filter out excluded types
-    filtered = [
-        r for r in deduped
-        if not any(sub in r["description"].lower() for sub in EXCLUDED_SUBSTRINGS)
-    ]
+    # Keep only chart types the user has enabled in settings. If a description
+    # matches none of the known matchers, keep it (fail-open) so an unexpected
+    # SA product isn't silently dropped.
+    enabled_subs = _enabled_chart_substrings(load_config())
+    all_known_subs = [s for subs in CHART_TYPE_MATCHERS.values() for s in subs]
+
+    def _in_scope(desc: str) -> bool:
+        d = desc.lower()
+        if any(sub in d for sub in enabled_subs):
+            return True
+        # Unknown/uncategorized product: keep it rather than drop silently.
+        if not any(sub in d for sub in all_known_subs):
+            return True
+        return False
+
+    filtered = [r for r in deduped if _in_scope(r["description"])]
 
     logger.info(
-        f"Parsed {len(deduped)} chart entries ({len(deduped) - len(filtered)} excluded), "
-        f"{len(filtered)} in scope."
+        f"Parsed {len(deduped)} chart entries ({len(deduped) - len(filtered)} excluded "
+        f"by chart-type selection), {len(filtered)} in scope."
     )
     return filtered
 

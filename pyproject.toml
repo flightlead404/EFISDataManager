@@ -4,9 +4,15 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "efis-data-manager"
-version = "0.9.1"
+version = "0.9.2"
 description = "GRT HXr EFIS Ground Support Automation"
+readme = "README.md"
 requires-python = ">=3.11"
+license = "AGPL-3.0-or-later"
+license-files = ["LICENSE"]
+authors = [
+    { name = "Martin C. Walker" },
+]
 dependencies = [
     "rumps>=0.4.0",
     "requests>=2.31.0",

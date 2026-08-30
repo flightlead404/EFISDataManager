@@ -1,3 +1,13 @@
+# EFIS Data Manager - GRT HXr EFIS ground support automation.
+# Copyright (C) 2026 Martin C. Walker
+#
+# This program is free software: you can redistribute it and/or modify
+# it under the terms of the GNU Affero General Public License as published
+# by the Free Software Foundation, either version 3 of the License, or
+# (at your option) any later version. See the LICENSE file for details.
+#
+# SPDX-License-Identifier: AGPL-3.0-or-later
+
 """Configuration management for EFIS Data Manager.
 
 Settings are persisted as JSON in ~/Library/Application Support/EFISDataManager/config.json.
@@ -15,7 +25,17 @@ CONFIG_FILE = APP_SUPPORT_DIR / "config.json"
 DEFAULT_CONFIG = {
     "archive_path": str(Path.home() / "Documents" / "EFIS_Archive"),
     "usb_image_path": str(Path.home() / "Documents" / "EFIS_USBImage"),
-    "tail_number": "N488BF",
+    "tail_number": "",
+    # Which Seattle Avionics chart products to download. Users select based on
+    # their subscription and needs; e.g. VFR-only pilots turn off IFR low/high
+    # and approach plates. Keys map to SA download-table description substrings
+    # in currency.CHART_TYPE_MATCHERS.
+    "chart_types": {
+        "sectional": True,
+        "ifr_low": True,
+        "ifr_high": False,
+        "approach_plates": True,
+    },
     "check_charts_interval_hours": 12,
     "check_nav_interval_hours": 24,
     "check_software_interval_hours": 24,

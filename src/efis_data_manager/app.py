@@ -1,3 +1,13 @@
+# EFIS Data Manager - GRT HXr EFIS ground support automation.
+# Copyright (C) 2026 Martin C. Walker
+#
+# This program is free software: you can redistribute it and/or modify
+# it under the terms of the GNU Affero General Public License as published
+# by the Free Software Foundation, either version 3 of the License, or
+# (at your option) any later version. See the LICENSE file for details.
+#
+# SPDX-License-Identifier: AGPL-3.0-or-later
+
 """Main menu bar application for EFIS Data Manager.
 
 Uses rumps to create a persistent macOS menu bar item with status display,
@@ -851,6 +861,9 @@ class EFISDataManagerApp(rumps.App):
 
         lines = []
         lines.append(f"Project v{__version__}  (menu bar {MENUBAR_VERSION}, dashboard {DASHBOARD_VERSION})")
+        lines.append("Copyright (C) 2026 Martin C. Walker. Licensed under AGPL-3.0-or-later")
+        lines.append("Source: https://github.com/flightlead404/EFISDataManager")
+        lines.append("This program comes with ABSOLUTELY NO WARRANTY.")
         lines.append("")
 
         # Config paths
@@ -1027,7 +1040,36 @@ class EFISDataManagerApp(rumps.App):
             self.title = "EFIS"
 
 
+def _acquire_single_instance_lock():
+    """Ensure only one menu-bar instance runs at a time.
+
+    Both the login item (launchd) and a manual double-click of the .app can
+    try to start the app. We take an exclusive advisory lock on a file in the
+    log directory; if another instance already holds it, we exit cleanly.
+
+    Returns the open lock-file object (must be kept alive for the process
+    lifetime), or None if another instance is already running.
+    """
+    import fcntl
+
+    lock_path = os.path.join(_log_dir, "app.lock")
+    lock_file = open(lock_path, "w")
+    try:
+        fcntl.flock(lock_file, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except OSError:
+        lock_file.close()
+        return None
+    return lock_file
+
+
 def main():
+    lock = _acquire_single_instance_lock()
+    if lock is None:
+        logger.info("Another EFIS Data Manager instance is already running; exiting.")
+        return
+    # Keep a reference so the lock is held for the life of the process.
+    globals()["_INSTANCE_LOCK"] = lock
+
     from AppKit import NSApplication, NSApplicationActivationPolicyAccessory
     ns_app = NSApplication.sharedApplication()
     ns_app.setActivationPolicy_(NSApplicationActivationPolicyAccessory)
