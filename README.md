@@ -57,7 +57,7 @@ analyzing what your engine and airframe are doing.
 
 ```bash
 # 1. Get the project (a specific tested release)
-git clone --branch v0.9.2 --depth 1 https://github.com/flightlead404/EFISDataManager.git
+git clone --branch v0.9.3 --depth 1 https://github.com/flightlead404/EFISDataManager.git
 cd EFISDataManager
 
 # 2. Run the installer (creates venv, installs deps + browser, sets up the app)
@@ -68,7 +68,7 @@ To update later, fetch the newer release tag and re-run the installer:
 
 ```bash
 git fetch --tags
-git checkout v0.9.3   # whichever release you're moving to
+git checkout v0.9.4   # whichever release you're moving to
 ./install.sh
 ```
 
@@ -93,9 +93,49 @@ The installer:
 4. **Analysis Dashboard…** — opens the browser dashboard. In its Settings, set
    your **number of cylinders** and engine parameter thresholds.
 
-Then insert your EFIS USB drive: the tool archives your flight data, imports it
-for analysis, and brings the drive current. Chart/nav data downloads run on a
-background schedule.
+## How to use
+
+Once set up, the tool lives in your menu bar and works mostly on its own.
+
+**Everyday use — just plug in your drive.** When you insert your EFIS USB drive,
+the tool automatically archives the flight data your EFIS wrote (FDL logs, DEMO
+recordings, snapshots, settings, logbook), imports it for analysis, and brings
+the drive's charts and nav data current. Chart/nav update checks also run on a
+background schedule, so the local copy stays fresh between insertions.
+
+**USB drive naming — how a drive is recognized.** The tool treats a mounted
+volume as an EFIS drive if **either** of these is true:
+
+- The volume is named **`EFIS`** (case-insensitive). A trailing number with an
+  optional space, underscore, or hyphen is also accepted, so macOS's automatic
+  suffixes and rotating drives work too: `EFIS`, `EFIS1`, `EFIS 2`, `EFIS_3`,
+  `EFIS-4`. Names with extra words (like `EFIS_BACKUP`) are **not** matched.
+- **or** the volume contains a **`GRTCHARTS/`** folder at its root — so an
+  already-provisioned GRT drive is detected regardless of its name.
+
+**Preparing a fresh USB stick (Prepare Drive…).** To turn a blank or repurposed
+USB stick into an EFIS drive, use the menu bar's **Prepare Drive…** item. It:
+
+1. Lists your removable volumes and asks you to type the exact name of the one
+   to use (internal and Time Machine drives are excluded).
+2. Asks for a second explicit confirmation — **this erases everything on the
+   drive.**
+3. Reformats the entire drive as **FAT32** with an **MBR** partition map (the
+   layout GRT EFIS expects) and **names the volume `EFIS` for you**.
+4. Creates the `GRTCHARTS/` folder and populates the drive with your current
+   chart and nav data.
+
+You don't name the drive yourself when using Prepare Drive — it's labeled `EFIS`
+automatically. Manual naming only matters if you format a stick yourself instead
+of using Prepare Drive; in that case, format it FAT32 and name it `EFIS`.
+
+> **Prepare Drive is destructive.** It erases the whole target disk. Double-check
+> the volume name before confirming, and never point it at a drive holding data
+> you want to keep.
+
+**Other menu items:** Settings…, Seattle Avionics Login…, Analysis Dashboard…,
+Diagnostics… (versions, paths, and a self-check), plus a Recent Errors view.
+Quitting from the menu is logged.
 
 ## Notes & limitations
 
