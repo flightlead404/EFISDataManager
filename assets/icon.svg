@@ -1,0 +1,92 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg width="1024" height="1024" viewBox="0 0 1024 1024" xmlns="http://www.w3.org/2000/svg">
+  <defs>
+    <clipPath id="rounded">
+      <rect x="64" y="64" width="896" height="896" rx="200" ry="200"/>
+    </clipPath>
+    <!-- Screen area clip so the tilted attitude scene stays inside the display -->
+    <clipPath id="screen">
+      <rect x="150" y="150" width="724" height="724"/>
+    </clipPath>
+    <!-- GRT-ish cyan sky -->
+    <linearGradient id="sky" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#12a3e0"/>
+      <stop offset="1" stop-color="#0784c9"/>
+    </linearGradient>
+    <linearGradient id="ground" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#7a4a1e"/>
+      <stop offset="1" stop-color="#5b3312"/>
+    </linearGradient>
+    <linearGradient id="bezel" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#3a3f47"/>
+      <stop offset="1" stop-color="#1c1f24"/>
+    </linearGradient>
+  </defs>
+
+  <g clip-path="url(#rounded)">
+    <!-- Instrument bezel -->
+    <rect x="64" y="64" width="896" height="896" fill="url(#bezel)"/>
+
+    <!-- Attitude scene: tilted ~8 degrees about the screen center (512,512) -->
+    <g clip-path="url(#screen)">
+      <g transform="rotate(-8 512 512)">
+        <!-- oversized so corners stay covered when rotated -->
+        <rect x="-200" y="-200" width="1424" height="912" fill="url(#sky)"/>
+        <rect x="-200" y="536" width="1424" height="888" fill="url(#ground)"/>
+        <rect x="-200" y="528" width="1424" height="10" fill="#ffffff"/>
+
+        <!-- Pitch ladder marks (rotate with the scene) -->
+        <g stroke="#ffffff" stroke-width="6" opacity="0.9">
+          <line x1="452" y1="432" x2="572" y2="432"/>
+          <line x1="472" y1="352" x2="552" y2="352"/>
+          <line x1="452" y1="624" x2="572" y2="624"/>
+          <line x1="472" y1="704" x2="552" y2="704"/>
+        </g>
+      </g>
+    </g>
+
+    <!-- Bank arc + roll pointer (fixed to airframe, at top) -->
+    <g clip-path="url(#screen)">
+      <path d="M 320 250 A 250 250 0 0 1 704 250" fill="none" stroke="#ffffff" stroke-width="6" opacity="0.85"/>
+      <!-- roll pointer sits on the arc, offset to reflect the bank -->
+      <polygon points="470,205 452,241 488,241" fill="#ffd400"/>
+    </g>
+
+    <!-- Fixed aircraft reference symbol (always level) -->
+    <g fill="#ffd400" stroke="#000000" stroke-width="3">
+      <rect x="330" y="504" width="120" height="16" rx="4"/>
+      <rect x="574" y="504" width="120" height="16" rx="4"/>
+      <rect x="500" y="496" width="24" height="32" rx="4"/>
+    </g>
+
+    <!-- Airspeed tape (left) -->
+    <rect x="150" y="380" width="96" height="316" fill="#000000" opacity="0.55"/>
+    <rect x="150" y="490" width="96" height="44" fill="#000000" opacity="0.85"/>
+    <g fill="#ffffff" font-family="Helvetica, Arial, sans-serif" font-weight="bold">
+      <text x="198" y="524" font-size="40" text-anchor="middle">120</text>
+      <text x="198" y="448" font-size="28" text-anchor="middle" opacity="0.7">130</text>
+      <text x="198" y="598" font-size="28" text-anchor="middle" opacity="0.7">110</text>
+    </g>
+
+    <!-- Altitude tape (right) -->
+    <rect x="778" y="380" width="96" height="316" fill="#000000" opacity="0.55"/>
+    <rect x="778" y="490" width="96" height="44" fill="#000000" opacity="0.85"/>
+    <g fill="#ffffff" font-family="Helvetica, Arial, sans-serif" font-weight="bold">
+      <text x="826" y="524" font-size="36" text-anchor="middle">5500</text>
+      <text x="826" y="448" font-size="26" text-anchor="middle" opacity="0.7">5600</text>
+      <text x="826" y="598" font-size="26" text-anchor="middle" opacity="0.7">5400</text>
+    </g>
+
+    <!-- Heading strip (bottom) -->
+    <rect x="150" y="812" width="724" height="62" fill="#000000" opacity="0.6"/>
+    <polygon points="512,806 500,830 524,830" fill="#ffd400"/>
+    <g fill="#ffffff" font-family="Helvetica, Arial, sans-serif" font-weight="bold">
+      <text x="512" y="858" font-size="34" text-anchor="middle">360</text>
+      <text x="360" y="858" font-size="26" text-anchor="middle" opacity="0.6">33</text>
+      <text x="664" y="858" font-size="26" text-anchor="middle" opacity="0.6">03</text>
+    </g>
+
+    <!-- Screen inner border -->
+    <rect x="150" y="150" width="724" height="724" fill="none" stroke="#000000" stroke-width="6" opacity="0.6"/>
+  </g>
+</svg>

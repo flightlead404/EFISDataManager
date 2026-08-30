@@ -107,7 +107,8 @@ class EFISDataManagerApp(rumps.App):
     def __init__(self):
         super().__init__(
             name="EFIS Data Manager",
-            title="EFIS",
+            icon=_menubar_icon_path(),
+            template=False,  # color icon (not a monochrome template)
             quit_button=None,
         )
         self.config = load_config()
@@ -1015,10 +1016,10 @@ class EFISDataManagerApp(rumps.App):
                         item.title = alert_title
                         break
 
-                # If there are new warnings, reflect in the menu bar title
+                # If there are new warnings, show a warning glyph beside the icon
                 warnings = [a for a in anomalies if a.severity == "warning"]
                 if warnings:
-                    self.title = "\u26A0 EFIS"  # ⚠ EFIS
+                    self.title = "\u26A0"  # ⚠ (icon carries the branding)
 
             except Exception as e:
                 logger.error(f"Alert refresh failed: {e}")
@@ -1029,15 +1030,26 @@ class EFISDataManagerApp(rumps.App):
         """Set the menu bar title based on current state."""
         drive_connected = getattr(self, '_drive_connected', False)
 
+        # The color PFD icon carries the branding; the title is now just a
+        # compact status glyph shown next to it (empty when idle/disconnected).
         if "..." in status_text or "Downloading" in status_text:
             # Active work
-            self.title = "\u21BB EFIS"  # ↻ EFIS
+            self.title = "\u21BB"  # ↻
         elif drive_connected:
             # Drive connected, idle
-            self.title = "\u25CF EFIS"  # ● EFIS (filled circle = connected)
+            self.title = "\u25CF"  # ● (filled circle = connected)
         else:
-            # No drive, idle
-            self.title = "EFIS"
+            # No drive, idle — icon only
+            self.title = ""
+
+
+def _menubar_icon_path() -> str:
+    """Absolute path to the menu bar icon PNG shipped in the package.
+
+    The sibling 'menubar@2x.png' is picked up automatically by AppKit on
+    Retina displays.
+    """
+    return os.path.join(os.path.dirname(__file__), "resources", "menubar.png")
 
 
 def _acquire_single_instance_lock():

@@ -56,6 +56,12 @@ mkdir -p "$LOG_DIR"
 echo "==> Installing menu-bar app to $APP_DIR"
 rm -rf "$APP_DIR"
 mkdir -p "$APP_DIR/Contents/MacOS"
+mkdir -p "$APP_DIR/Contents/Resources"
+
+# App icon (banked-PFD design)
+if [ -f "$PROJECT_DIR/assets/EFISDataManager.icns" ]; then
+    cp "$PROJECT_DIR/assets/EFISDataManager.icns" "$APP_DIR/Contents/Resources/EFISDataManager.icns"
+fi
 
 cat > "$APP_DIR/Contents/Info.plist" <<PLISTEOF
 <?xml version="1.0" encoding="UTF-8"?>
@@ -65,6 +71,9 @@ cat > "$APP_DIR/Contents/Info.plist" <<PLISTEOF
     <key>CFBundleName</key><string>EFIS Data Manager</string>
     <key>CFBundleIdentifier</key><string>com.efisdatamanager.app</string>
     <key>CFBundleExecutable</key><string>launch</string>
+    <key>CFBundleIconFile</key><string>EFISDataManager</string>
+    <key>CFBundleShortVersionString</key><string>0.9.4</string>
+    <key>CFBundleVersion</key><string>0.9.4</string>
     <key>CFBundlePackageType</key><string>APPL</string>
     <key>LSUIElement</key><true/>
 </dict>
@@ -103,6 +112,10 @@ LDEOF
 # Load (or reload) the login item
 launchctl unload "$PLIST" 2>/dev/null || true
 launchctl load "$PLIST"
+
+# Register the bundle so Finder/Dock pick up the icon immediately
+/System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister \
+    -f "$APP_DIR" 2>/dev/null || true
 
 echo ""
 echo "Install complete."

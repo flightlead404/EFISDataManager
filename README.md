@@ -57,7 +57,7 @@ analyzing what your engine and airframe are doing.
 
 ```bash
 # 1. Get the project (a specific tested release)
-git clone --branch v0.9.3 --depth 1 https://github.com/flightlead404/EFISDataManager.git
+git clone --branch v0.9.4 --depth 1 https://github.com/flightlead404/EFISDataManager.git
 cd EFISDataManager
 
 # 2. Run the installer (creates venv, installs deps + browser, sets up the app)
@@ -68,7 +68,7 @@ To update later, fetch the newer release tag and re-run the installer:
 
 ```bash
 git fetch --tags
-git checkout v0.9.4   # whichever release you're moving to
+git checkout v0.9.5   # whichever release you're moving to
 ./install.sh
 ```
 

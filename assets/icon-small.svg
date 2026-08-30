@@ -1,0 +1,42 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- Simplified variant for 16/32px icon slots: no tapes/text, bold shapes. -->
+<svg width="1024" height="1024" viewBox="0 0 1024 1024" xmlns="http://www.w3.org/2000/svg">
+  <defs>
+    <clipPath id="rounded">
+      <rect x="64" y="64" width="896" height="896" rx="200" ry="200"/>
+    </clipPath>
+    <linearGradient id="sky" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#12a3e0"/>
+      <stop offset="1" stop-color="#0784c9"/>
+    </linearGradient>
+    <linearGradient id="ground" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#7a4a1e"/>
+      <stop offset="1" stop-color="#5b3312"/>
+    </linearGradient>
+    <linearGradient id="bezel" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#3a3f47"/>
+      <stop offset="1" stop-color="#1c1f24"/>
+    </linearGradient>
+  </defs>
+
+  <g clip-path="url(#rounded)">
+    <!-- Thin bezel so the attitude fills more of the tile at tiny sizes -->
+    <rect x="64" y="64" width="896" height="896" fill="url(#bezel)"/>
+    <clipPath id="screenS"><rect x="128" y="128" width="768" height="768"/></clipPath>
+
+    <g clip-path="url(#screenS)">
+      <g transform="rotate(-8 512 512)">
+        <rect x="-260" y="-260" width="1544" height="972" fill="url(#sky)"/>
+        <rect x="-260" y="512" width="1544" height="1012" fill="url(#ground)"/>
+        <rect x="-260" y="500" width="1544" height="24" fill="#ffffff"/>
+      </g>
+    </g>
+
+    <!-- Bold, level aircraft wings -->
+    <g fill="#ffd400" stroke="#000000" stroke-width="6">
+      <rect x="250" y="486" width="180" height="34" rx="8"/>
+      <rect x="594" y="486" width="180" height="34" rx="8"/>
+      <rect x="484" y="470" width="56" height="66" rx="8"/>
+    </g>
+  </g>
+</svg>

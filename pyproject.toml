@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "efis-data-manager"
-version = "0.9.3"
+version = "0.9.4"
 description = "GRT HXr EFIS Ground Support Automation"
 readme = "README.md"
 requires-python = ">=3.11"
@@ -34,6 +34,10 @@ efis-dashboard = "efis_data_manager.dashboard.app:run_dashboard"
 
 [tool.setuptools.packages.find]
 where = ["src"]
+
+[tool.setuptools.package-data]
+"efis_data_manager" = ["resources/*.png"]
+"efis_data_manager.dashboard" = ["templates/*.html"]
 
 [tool.ruff]
 line-length = 100
