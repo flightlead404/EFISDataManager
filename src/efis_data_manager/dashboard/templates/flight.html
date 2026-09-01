@@ -8,6 +8,8 @@
     <div id="alert-list" style="margin-top: 0.75rem;"></div>
 </div>
 
+<div id="jump-buttons" class="card" style="display:none;"></div>
+
 <div id="panels"></div>
 
 <div style="margin-top: 1rem;">
@@ -66,6 +68,9 @@ let FLIGHT_DATA = null;   // {timestamps, engine:{...}, flight:{...}}
 let panels = [];          // [{id, title, params:Set, normalize:bool, div}]
 let panelSeq = 0;
 let syncing = false;
+// Persistent marker line (from a jump-to action), kept separate from the
+// transient hover crosshair so hovering between panels doesn't erase it.
+let alertShape = null;    // a Plotly line-shape at the jump timestamp, or null
 
 const baseLayout = () => ({
     paper_bgcolor: '#16213e', plot_bgcolor: '#1a2744',
@@ -116,25 +121,83 @@ fetch(`/api/flight/${flightId}`).then(r => r.json()).then(stats => {
         html += '</tbody></table>';
         document.getElementById('cylinder-stats').innerHTML = html;
     }
-    if (stats.alerts && stats.alerts.length > 0) {
-        let html = '<h2>Alerts <span style="font-size:0.75rem;color:#888;">(click to jump)</span></h2><div>';
-        stats.alerts.forEach((a, idx) => {
-            const cls = a.startsWith('WARNING') ? 'badge-warning' : 'badge-caution';
-            html += `<span class="badge ${cls}" style="margin-right:0.5rem;cursor:pointer;" onclick="jumpToAlert(${idx})">${a}</span>`;
-        });
-        html += '</div>';
-        document.getElementById('alert-list').innerHTML = html;
-    }
-    fetch('/api/alerts').then(r => r.json()).then(alerts => {
-        window.flightAlerts = alerts.filter(a => a.flight_id === flightId && a.timestamp);
+    // Episodes: each exceedance excursion is its own badge (hysteresis on the
+    // backend). Severity drives color; a toggle hides cautions; click jumps to
+    // the episode's start. Capped with a "…N more" note.
+    fetch(`/api/flight/${flightId}/episodes`).then(r => r.json()).then(eps => {
+        window.flightEpisodes = eps || [];
+        renderEpisodes();
     });
     document.getElementById('export-raw').href = `/api/export/raw/${stats.operation_id}`;
 });
+
+// Whether caution-level episodes are shown (redline/warning always show).
+let showCautions = true;
+const EPISODE_CAP = 20;   // max badges shown before "…N more"
+
+function renderEpisodes() {
+    const eps = window.flightEpisodes || [];
+    const el = document.getElementById('alert-list');
+    if (!eps.length) { el.innerHTML = ''; return; }
+
+    const nCaution = eps.filter(e => e.severity === 'caution').length;
+    let html = '<h2 style="display:inline-block;">Alerts '
+        + '<span style="font-size:0.75rem;color:#888;">(click to jump)</span></h2>';
+    if (nCaution > 0) {
+        html += `<label style="font-size:0.8rem;color:#aaa;margin-left:1rem;cursor:pointer;">`
+            + `<input type="checkbox" ${showCautions ? 'checked' : ''} `
+            + `onchange="showCautions=this.checked;renderEpisodes();"> Show cautions (${nCaution})</label>`;
+    }
+    html += '<div style="margin-top:0.4rem;">';
+
+    const visible = eps.filter(e => !(e.severity === 'caution' && !showCautions));
+    const shown = visible.slice(0, EPISODE_CAP);
+    shown.forEach(e => {
+        const idx = eps.indexOf(e);
+        const cls = e.severity === 'warning' ? 'badge-warning' : 'badge-caution';
+        // Concise but unambiguous: names the severity/direction that was
+        // violated. e.g. "CHT Caution 417°F", "EGT Redline 1467°F",
+        // "Oil Press Low 49psi", "Fuel Press High 37psi". Full sentence on hover.
+        const unit = unitFor(e.parameter);
+        // Temperature params carry caution/redline severity; pressure params are
+        // single-severity and distinguished by direction (Low/High).
+        const isTemp = (e.parameter === 'CHT' || e.parameter === 'EGT' || e.parameter === 'Oil Temp');
+        const qualifier = isTemp
+            ? (e.severity === 'warning' ? 'Redline' : 'Caution')
+            : (e.direction === 'low' ? 'Low' : 'High');
+        // Shorten long parameter names so badges stay compact.
+        const shortParam = e.parameter
+            .replace('Oil Pressure', 'Oil Press')
+            .replace('Fuel Pressure', 'Fuel Press');
+        const label = `${shortParam} ${qualifier} ${e.peak_value.toFixed(0)}${unit}`;
+        html += `<span class="badge ${cls}" style="margin-right:0.5rem;margin-bottom:0.35rem;cursor:pointer;" `
+            + `title="${e.message || ''}" onclick="jumpToEpisode(${idx})">${label}</span>`;
+    });
+    const hidden = visible.length - shown.length;
+    if (hidden > 0) {
+        html += `<span style="font-size:0.8rem;color:#888;margin-left:0.25rem;">…and ${hidden} more</span>`;
+    }
+    html += '</div>';
+    el.innerHTML = html;
+}
+
+function unitFor(param) {
+    if (param === 'CHT' || param === 'EGT' || param === 'Oil Temp') return '°F';
+    return 'psi';
+}
+
+function jumpToEpisode(idx) {
+    const eps = window.flightEpisodes || [];
+    const e = eps[idx]; if (!e) return;
+    const color = e.severity === 'warning' ? '#ff5252' : '#ffb300';
+    jumpToTimestamp(e.start_timestamp, `${e.parameter} ${e.peak_value.toFixed(0)}${unitFor(e.parameter)}`, color);
+}
 
 // --- Load time-series and build panels ---
 fetch(`/api/flight/${flightId}/data`).then(r => r.json()).then(data => {
     FLIGHT_DATA = data;
     DEFAULT_PANELS.forEach(p => createPanel(p.title, p.params));
+    loadJumpButtons();
 });
 
 function paramValues(key) {
@@ -360,18 +423,20 @@ function wireAutoY(div) {
 //     line on all the others at the same timestamp. hover/unhover are not
 //     triggered by relayout, so no re-entrancy guard is needed. ---
 function drawSpikeAt(exceptDiv, x) {
+    const spike = {type:'line', x0:x, x1:x, y0:0, y1:1, yref:'paper',
+                   line:{color:'#4fc3f7', width:1}};
     panels.forEach(p => {
         if (p.div === exceptDiv) return;  // native spike handles the hovered panel
-        Plotly.relayout(p.div, {
-            shapes: [{type:'line', x0:x, x1:x, y0:0, y1:1, yref:'paper',
-                      line:{color:'#4fc3f7', width:1}}]
-        });
+        // Keep any persistent alert marker underneath the transient crosshair.
+        const shapes = alertShape ? [alertShape, spike] : [spike];
+        Plotly.relayout(p.div, {shapes});
     });
 }
 function clearSpikes(exceptDiv) {
     panels.forEach(p => {
         if (p.div === exceptDiv) return;
-        Plotly.relayout(p.div, {shapes: []});
+        // Restore the persistent alert marker (if any) instead of clearing all.
+        Plotly.relayout(p.div, {shapes: alertShape ? [alertShape] : []});
     });
 }
 function wireSpike(div) {
@@ -382,26 +447,83 @@ function wireSpike(div) {
     div.on('plotly_unhover', () => clearSpikes(div));
 }
 
-// --- Jump to alert timestamp: zoom all panels to a window + marker ---
-function jumpToAlert(idx) {
-    const alerts = window.flightAlerts || [];
-    if (idx >= alerts.length) return;
-    const a = alerts[idx]; if (!a || !a.timestamp) return;
-    const ts = new Date(a.timestamp), w = 60000;
-    const t0 = new Date(ts.getTime() - w).toISOString();
-    const t1 = new Date(ts.getTime() + w).toISOString();
+// --- Jump to alert timestamp: zoom all panels to a 10-minute window centered
+//     on the alert, with a red vertical line on the exact event. ---
+//
+// IMPORTANT: the plot x-values are naive local ISO strings (e.g.
+// "2026-08-22T18:37:21", no timezone). We must build the window bounds in the
+// SAME naive format — using Date.toISOString() would convert to UTC and shift
+// the range off the data entirely (which previously blanked all the traces).
+function addNaiveSeconds(isoNaive, secs) {
+    // Parse as UTC so we don't apply the local offset, shift, then re-emit the
+    // same naive "YYYY-MM-DDTHH:MM:SS" format.
+    const d = new Date(isoNaive + 'Z');
+    d.setTime(d.getTime() + secs * 1000);
+    return d.toISOString().slice(0, 19);  // drop the trailing .000Z
+}
+
+// Shared jump: zoom all panels to a 10-min window centered on `timestamp`,
+// drop a marker line + top-panel label. `color` distinguishes alerts (red)
+// from the neutral "jump to extreme" buttons (blue).
+function jumpToTimestamp(timestamp, label, color) {
+    if (!timestamp) return;
+    const HALF = 5 * 60;  // 5 min each side -> 10-minute window, centered
+    const t0 = addNaiveSeconds(timestamp, -HALF);
+    const t1 = addNaiveSeconds(timestamp,  HALF);
+
+    // Remember the marker so the hover crosshair preserves it.
+    alertShape = {type:'line', x0:timestamp, x1:timestamp, y0:0, y1:1,
+                  yref:'paper', line:{color:color, width:2, dash:'dot'}};
+
     syncing = true;
     try {
         panels.forEach((p, i) => {
-            const relayout = {'xaxis.range': [t0, t1],
-                shapes: [{type:'line', x0:a.timestamp, x1:a.timestamp, y0:0, y1:1,
-                          yref:'paper', line:{color:'#ff5252', width:2, dash:'dot'}}]};
-            if (i === 0) relayout.annotations = [{x:a.timestamp, y:1, yref:'paper',
-                text:a.parameter, showarrow:true, arrowhead:2, arrowcolor:'#ff5252',
-                font:{color:'#ff5252', size:11}, bgcolor:'#1a1a2e', bordercolor:'#ff5252'}];
+            const relayout = {
+                'xaxis.range': [t0, t1],
+                'xaxis.autorange': false,
+                shapes: [alertShape],
+            };
+            if (i === 0) relayout.annotations = [{x:timestamp, y:0.97, yref:'paper',
+                text:label, showarrow:true, arrowhead:2, arrowcolor:color,
+                ax:0, ay:28,  // arrow points DOWN to the event; label sits inside the plot
+                font:{color:color, size:11}, bgcolor:'#1a1a2e', bordercolor:color,
+                borderpad:3, yanchor:'top'}];
             Plotly.relayout(p.div, relayout);
         });
-    } finally { setTimeout(() => { syncing = false; }, 0); }
+    } finally {
+        setTimeout(() => {
+            syncing = false;
+            panels.forEach(p => fitYToWindow(p.div));
+        }, 0);
+    }
+}
+
+// --- Standard "jump to extreme" buttons (Max CHT, Min Oil Press, etc.) ---
+function loadJumpButtons() {
+    fetch(`/api/flight/${flightId}/extremes`).then(r => r.json()).then(items => {
+        if (!items || !items.length) return;
+        const el = document.getElementById('jump-buttons');
+        el.style.display = 'block';
+        const fmt = (v, unit) => {
+            const dp = (unit === 'gph' || unit === 'V' || unit === '"') ? 1 : 0;
+            return `${v.toFixed(dp)}${unit ? (unit === 'V' || unit === 'A' || unit === '"' ? unit : ' ' + unit) : ''}`;
+        };
+        el.innerHTML =
+            '<div style="font-size:0.8rem;color:#888;margin-bottom:0.4rem;">Jump to:</div>'
+            + '<div style="display:flex;flex-wrap:wrap;gap:0.4rem;">'
+            + items.map((it, i) =>
+                `<button class="btn" style="font-size:0.8rem;" onclick="jumpToExtreme(${i})">`
+                + `${it.label} <span style="color:#81d4fa;">${fmt(it.value, it.unit)}</span></button>`
+              ).join('')
+            + '</div>';
+        window.flightExtremes = items;
+    });
+}
+
+function jumpToExtreme(idx) {
+    const items = window.flightExtremes || [];
+    const it = items[idx]; if (!it) return;
+    jumpToTimestamp(it.timestamp, `${it.label} ${it.value.toFixed(it.unit === 'gph' || it.unit === 'V' ? 1 : 0)}${it.unit}`, '#4fc3f7');
 }
 </script>
 {% endblock %}

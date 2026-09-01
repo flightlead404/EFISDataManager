@@ -3,17 +3,25 @@
 {% block content %}
 <h1>Settings</h1>
 
+<div class="note">
+    These settings control how this Analysis dashboard interprets and displays your
+    flight data. Some settings live elsewhere: your <strong>tail number</strong>,
+    archive &amp; USB-image folders, chart-product selection, and Seattle Avionics
+    login are in the <strong>Data Manager</strong> (the menu-bar app) under
+    <em>Settings…</em>. Changes here take effect after you click <em>Save Settings</em>.
+</div>
+
 <div class="card">
     <h2>Engine Configuration</h2>
     <div class="form-row">
-        <label>Number of Cylinders</label>
+        <label>Number of Cylinders<span class="help" tabindex="-1">?<span class="tip">How many cylinders your engine has (4 or 6). Sets how many CHT/EGT bars and per-cylinder analyses (GAMI spread, hottest-cylinder alerts) are shown. Set this to match your engine.</span></span></label>
         <select id="num_cylinders">
             <option value="4">4</option>
             <option value="6">6</option>
         </select>
     </div>
     <div class="form-row">
-        <label>Engine Type</label>
+        <label>Engine Type<span class="help" tabindex="-1">?<span class="tip">A label for your engine (e.g. IO-360). Informational only — it's shown for reference and doesn't change any calculations.</span></span></label>
         <input type="text" id="engine_type" placeholder="IO-360">
     </div>
 </div>
@@ -21,32 +29,34 @@
 <div class="card">
     <h2>Flight Detection</h2>
     <div class="form-row">
-        <label>Airborne IAS Threshold (kts)</label>
+        <label>Airborne IAS Threshold (kts)<span class="help" tabindex="-1">?<span class="tip">Indicated airspeed above which an operation is treated as a flight rather than a ground run. Used to separate real flights from taxi/run-ups in the Operations list. Lower it if short hops are being missed; raise it if fast taxi is being counted as flight.</span></span></label>
         <input type="number" id="airborne_ias_threshold" step="5">
     </div>
     <div class="form-row">
-        <label>Cruise VS Threshold (fpm)</label>
+        <label>Cruise VS Threshold (fpm)<span class="help" tabindex="-1">?<span class="tip">Maximum vertical speed (climb/descent rate) for a segment to count as level cruise. Cruise segments are what trend and lean analyses use, so this keeps climbs and descents out of those numbers.</span></span></label>
         <input type="number" id="cruise_vs_threshold" step="50">
     </div>
     <div class="form-row">
-        <label>Cruise RPM Minimum</label>
+        <label>Cruise RPM Minimum<span class="help" tabindex="-1">?<span class="tip">Minimum engine RPM for a segment to count as cruise. Filters out idle/descent-at-low-power time so cruise-only statistics aren't skewed.</span></span></label>
         <input type="number" id="cruise_rpm_min" step="100">
     </div>
 </div>
 
 <div class="card">
-    <h2>Analysis Thresholds</h2>
+    <h2>Analysis Thresholds
+        <span class="help" tabindex="-1">?<span class="tip">Limits used to flag Alerts and color-code readings. A "caution" is an early warning; a "redline" is a hard limit. Set these to your engine's published limits and your personal margins — they don't change the data, only when it's flagged.</span></span>
+    </h2>
     <div id="thresholds-form"></div>
 </div>
 
 <div class="card">
     <h2>Dashboard</h2>
     <div class="form-row">
-        <label>Trend Window (hours)</label>
+        <label>Trend Window (hours)<span class="help" tabindex="-1">?<span class="tip">Engine-hours window for the rolling averages on the Trends and Oil screens (e.g. 25 = average over the last 25 hours of operation). Smaller reacts faster to recent changes; larger smooths more.</span></span></label>
         <input type="number" id="trend_window_hours" step="5">
     </div>
     <div class="form-row">
-        <label>Dashboard Port</label>
+        <label>Dashboard Port<span class="help" tabindex="-1">?<span class="tip">The local network port this dashboard runs on (default 5050); the address is http://localhost:&lt;port&gt;. Only change it if another program already uses 5050. After changing, restart the dashboard from the Data Manager menu.</span></span></label>
         <input type="number" id="dashboard_port">
     </div>
 </div>
@@ -73,7 +83,43 @@ const thresholdLabels = {
     g_load_limit: 'G-Load Limit',
     voltage_low: 'Voltage Low (V)',
     voltage_high: 'Voltage High (V)',
+    fuel_flow_lean_threshold: 'Fuel Flow Lean Threshold (gph)',
+    oil_pressure_high: 'Oil Pressure High (psi)',
+    fuel_pressure_low: 'Fuel Pressure Low (psi)',
+    fuel_pressure_high: 'Fuel Pressure High (psi)',
+    episode_min_gap_s: 'Episode Min Gap (sec)',
+    episode_deadband_temp: 'Episode Deadband — Temp (°F)',
+    episode_deadband_oil_press: 'Episode Deadband — Oil Press (psi)',
+    episode_deadband_fuel_press: 'Episode Deadband — Fuel Press (psi)',
+    trend_cht_rise_rate: 'CHT Rise Rate Trend (°F/hr)',
     trend_oil_consumption_high: 'Oil Consumption High (qt/hr)',
+};
+
+const thresholdTips = {
+    cht_caution: 'Cylinder head temp that raises a caution. An early "watch this" level below redline.',
+    cht_redline: 'Cylinder head temp hard limit. Readings at or above this are flagged as warnings.',
+    cht_spread_caution: 'Max acceptable difference between the hottest and coolest cylinder CHT. A large spread can indicate baffling or induction issues.',
+    egt_caution: 'Exhaust gas temp that raises a caution.',
+    egt_redline: 'Exhaust gas temp hard limit. Absolute EGT limits vary by engine — many operators watch trends rather than an absolute number.',
+    egt_spread_caution: 'Max acceptable spread between cylinders\u2019 EGTs. Useful for spotting injector/induction imbalance (relates to GAMI spread).',
+    oil_temp_caution: 'Oil temperature that raises a caution.',
+    oil_temp_redline: 'Oil temperature hard limit; readings at/above are flagged as warnings.',
+    oil_pressure_low: 'Minimum acceptable oil pressure in general operation. Below this is flagged.',
+    oil_pressure_low_cruise: 'Minimum acceptable oil pressure specifically in cruise, where it may be higher than idle minimums.',
+    g_load_caution: 'G-load that raises a caution — an early flag before your structural limit.',
+    g_load_limit: 'G-load treated as a hard limit (e.g. your aircraft\u2019s maneuvering/structural limit).',
+    voltage_low: 'Bus voltage below this is flagged (possible charging/alternator issue).',
+    voltage_high: 'Bus voltage above this is flagged (possible overvoltage/regulator issue).',
+    fuel_flow_lean_threshold: 'Fuel flow (gallons per hour) below which cruise is treated as likely lean-of-peak. Used to classify LOP operation in the analysis.',
+    oil_pressure_high: 'Upper normal oil-pressure limit. Time spent above this is flagged as a high-oil-pressure episode.',
+    fuel_pressure_low: 'Minimum fuel pressure (from your engine manual). Time below this is flagged as a low-fuel-pressure episode.',
+    fuel_pressure_high: 'Maximum fuel pressure. Time above this is flagged as a high-fuel-pressure episode.',
+    episode_min_gap_s: 'How long (seconds) a parameter must stay recovered past its deadband before an exceedance episode is considered ended. Prevents one bouncy excursion from producing many alerts. Larger = fewer, merged episodes.',
+    episode_deadband_temp: 'Recovery margin (°F) for CHT/EGT/oil-temp episodes. The value must fall this far back below the limit (and stay there for the min gap) before the episode ends.',
+    episode_deadband_oil_press: 'Recovery margin (psi) for oil-pressure episodes, applied on the appropriate side of the limit before an episode ends.',
+    episode_deadband_fuel_press: 'Recovery margin (psi) for fuel-pressure episodes before an episode ends.',
+    trend_cht_rise_rate: 'Flags a rising CHT trend if the rolling average climbs faster than this (degrees F per flight hour) \u2014 an early indicator of a developing engine issue.',
+    trend_oil_consumption_high: 'Oil consumption rate (quarts per hour) above which consumption is flagged as high on the Oil screen.',
 };
 
 // Load current config
@@ -93,8 +139,12 @@ fetch('/api/config')
             const form = document.getElementById('thresholds-form');
             for (const [key, value] of Object.entries(thresholds)) {
                 const label = thresholdLabels[key] || key;
+                const tip = thresholdTips[key];
+                const help = tip
+                    ? ` <span class="help" tabindex="-1">?<span class="tip">${tip}</span></span>`
+                    : '';
                 form.innerHTML += `<div class="form-row">
-                    <label>${label}</label>
+                    <label>${label}${help}</label>
                     <input type="number" id="thresh_${key}" value="${value}" step="any">
                 </div>`;
             }

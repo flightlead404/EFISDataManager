@@ -34,7 +34,7 @@ logger = logging.getLogger(__name__)
 DEFAULT_THRESHOLDS = {
     # CHT limits (degrees F)
     "cht_caution": 380,       # Yellow arc start
-    "cht_redline": 420,       # Never exceed
+    "cht_redline": 430,       # Never exceed
     "cht_spread_caution": 50, # Max CHT spread across cylinders
 
     # EGT limits (degrees F)
@@ -47,9 +47,20 @@ DEFAULT_THRESHOLDS = {
     "oil_temp_redline": 245,
     "oil_pressure_low": 25,     # psi (hot idle minimum)
     "oil_pressure_low_cruise": 55,  # psi (cruise minimum)
+    "oil_pressure_high": 95,    # psi (upper normal limit)
 
     # Fuel
     "fuel_flow_lean_threshold": 6.0,  # GPH — below this, likely LOP
+    "fuel_pressure_low": 15,    # psi (minimum)
+    "fuel_pressure_high": 35,   # psi (maximum)
+
+    # Episode detection hysteresis: a parameter must recover past the limit by
+    # its deadband AND stay recovered for episode_min_gap_s before an episode is
+    # considered ended. Prevents one noisy excursion from spawning many alerts.
+    "episode_min_gap_s": 30,
+    "episode_deadband_temp": 10,      # deg F (CHT/EGT/oil temp)
+    "episode_deadband_oil_press": 5,  # psi
+    "episode_deadband_fuel_press": 3, # psi
 
     # Performance
     "g_load_caution": 3.0,
@@ -437,7 +448,7 @@ def detect_anomalies(window_hours: float = 25.0) -> list[Anomaly]:
             anomalies.append(Anomaly(
                 flight_id=fid, date=fdate, parameter="CHT",
                 severity="warning",
-                message=f"CHT reached {flight['max_cht']:.0f}°F (redline {thresholds['cht_redline']}°F){ground_note}",
+                message=f"CHT Redline Exceeded ({flight['max_cht']:.0f}°F max, redline {thresholds['cht_redline']:.0f}°F){ground_note}",
                 value=flight["max_cht"], threshold=thresholds["cht_redline"],
                 timestamp=ts,
             ))
@@ -446,7 +457,7 @@ def detect_anomalies(window_hours: float = 25.0) -> list[Anomaly]:
             anomalies.append(Anomaly(
                 flight_id=fid, date=fdate, parameter="CHT",
                 severity="caution",
-                message=f"CHT reached {flight['max_cht']:.0f}°F (caution {thresholds['cht_caution']}°F){ground_note}",
+                message=f"CHT Caution Limit Exceeded ({flight['max_cht']:.0f}°F max, caution {thresholds['cht_caution']:.0f}°F){ground_note}",
                 value=flight["max_cht"], threshold=thresholds["cht_caution"],
                 timestamp=ts,
             ))
@@ -456,8 +467,17 @@ def detect_anomalies(window_hours: float = 25.0) -> list[Anomaly]:
             anomalies.append(Anomaly(
                 flight_id=fid, date=fdate, parameter="EGT",
                 severity="warning",
-                message=f"EGT reached {flight['max_egt']:.0f}°F (redline {thresholds['egt_redline']}°F){ground_note}",
+                message=f"EGT Redline Exceeded ({flight['max_egt']:.0f}°F max, redline {thresholds['egt_redline']:.0f}°F){ground_note}",
                 value=flight["max_egt"], threshold=thresholds["egt_redline"],
+                timestamp=ts,
+            ))
+        elif flight["max_egt"] and flight["max_egt"] >= thresholds["egt_caution"]:
+            ts = _find_exceedance_timestamp(conn, op_id, "egt", thresholds["egt_caution"])
+            anomalies.append(Anomaly(
+                flight_id=fid, date=fdate, parameter="EGT",
+                severity="caution",
+                message=f"EGT Caution Limit Exceeded ({flight['max_egt']:.0f}°F max, caution {thresholds['egt_caution']:.0f}°F){ground_note}",
+                value=flight["max_egt"], threshold=thresholds["egt_caution"],
                 timestamp=ts,
             ))
 
@@ -484,6 +504,25 @@ def detect_anomalies(window_hours: float = 25.0) -> list[Anomaly]:
                 value=flight["min_oil_pressure"], threshold=thresholds["oil_pressure_low_cruise"],
                 timestamp=ts,
             ))
+
+        # --- Cylinder spread (CHT/EGT imbalance) ---
+        # Spread isn't stored on the operations row, so compute it from the raw
+        # data. Timestamp points to the instant of maximum spread.
+        for label, prefix, thr_key, min_valid in (
+            ("CHT", "cht", "cht_spread_caution", 200),
+            ("EGT", "egt", "egt_spread_caution", 500),
+        ):
+            spread_val, spread_ts = _find_max_spread_timestamp(
+                conn, op_id, prefix, min_valid)
+            if spread_val is not None and spread_val >= thresholds[thr_key]:
+                anomalies.append(Anomaly(
+                    flight_id=fid, date=fdate, parameter=f"{label} Spread",
+                    severity="caution",
+                    message=f"{label} Spread Caution Limit Exceeded "
+                            f"({spread_val:.0f}°F max, caution {thresholds[thr_key]:.0f}°F){ground_note}",
+                    value=spread_val, threshold=thresholds[thr_key],
+                    timestamp=spread_ts,
+                ))
 
     # --- Trend anomalies ---
     # Flag flights where a parameter is > 2 std deviations above rolling avg
@@ -658,6 +697,37 @@ def _find_exceedance_timestamp(conn, operation_id: int, param_type: str,
     return row["timestamp"] if row else None
 
 
+def _find_max_spread_timestamp(conn, operation_id: int, prefix: str,
+                               min_valid: float) -> tuple[Optional[float], Optional[str]]:
+    """Find the maximum cylinder spread and the timestamp at which it occurred.
+
+    prefix is 'cht' or 'egt'; scans cht1..cht6 / egt1..egt6 present in the data.
+    Returns (max_spread, timestamp) or (None, None) if not computable.
+    """
+    cols = [f"{prefix}{i}" for i in range(1, 7)]
+    existing = {r[1] for r in conn.execute("PRAGMA table_info(fdl_data)")}
+    cols = [c for c in cols if c in existing]
+    if len(cols) < 2:
+        return None, None
+
+    rows = conn.execute(
+        f"SELECT timestamp, {', '.join(cols)} FROM fdl_data "
+        f"WHERE operation_id = ? ORDER BY timestamp",
+        (operation_id,),
+    ).fetchall()
+
+    best_spread = 0.0
+    best_ts = None
+    for r in rows:
+        vals = [r[c] for c in cols if r[c] is not None and r[c] >= min_valid]
+        if len(vals) >= 2:
+            spread = max(vals) - min(vals)
+            if spread > best_spread:
+                best_spread = spread
+                best_ts = r["timestamp"]
+    return (best_spread, best_ts) if best_spread > 0 else (None, None)
+
+
 def _find_min_timestamp(conn, operation_id: int, column: str,
                          threshold: float) -> Optional[str]:
     """Find the first timestamp where a parameter dropped below a threshold."""
@@ -683,7 +753,8 @@ class OilConsumptionPeriod:
     end_date: str
     start_hourmeter: float
     end_hourmeter: float
-    hours_between: float
+    hours_between: float            # interval since the previous event (drives rate)
+    hours_since_change: Optional[float]  # hours since the most recent oil change (None if none on record)
     oil_consumed_quarts: float      # oil consumed during this period
     rate_quarts_per_hour: float
     end_event_type: str             # 'change' or 'addition'
@@ -710,6 +781,11 @@ def compute_oil_consumption() -> list[OilConsumptionPeriod]:
     if len(events) < 2:
         return []
 
+    # Track the hourmeter of the most recent oil change so we can report, for
+    # each event, how many engine hours have accumulated since that change.
+    # Seed from the first event if it is itself a change.
+    last_change_hm = events[0]["hourmeter"] if events[0]["event_type"] == "change" else None
+
     periods = []
     for i in range(1, len(events)):
         prev = events[i - 1]
@@ -717,6 +793,10 @@ def compute_oil_consumption() -> list[OilConsumptionPeriod]:
 
         hours_between = curr["hourmeter"] - prev["hourmeter"]
         if hours_between <= 0:
+            # Still advance the last-change marker on a (zero/negative-interval)
+            # change so later rows reference the right change.
+            if curr["event_type"] == "change":
+                last_change_hm = curr["hourmeter"]
             continue
 
         # Oil consumed since previous event = what was replenished now
@@ -727,16 +807,31 @@ def compute_oil_consumption() -> list[OilConsumptionPeriod]:
 
         rate = consumed / hours_between
 
+        # Hours since the most recent oil change. A change row resets to 0.
+        # If there is no oil change on record yet, leave it None so the UI shows
+        # "-" rather than a misleading 0.
+        if curr["event_type"] == "change":
+            hours_since_change = 0.0
+        elif last_change_hm is not None:
+            hours_since_change = curr["hourmeter"] - last_change_hm
+        else:
+            hours_since_change = None  # no prior change on record to measure from
+
         periods.append(OilConsumptionPeriod(
             start_date=prev["date"],
             end_date=curr["date"],
             start_hourmeter=prev["hourmeter"],
             end_hourmeter=curr["hourmeter"],
             hours_between=hours_between,
+            hours_since_change=hours_since_change,
             oil_consumed_quarts=consumed,
             rate_quarts_per_hour=rate,
             end_event_type=curr["event_type"],
         ))
+
+        # Update the last-change marker AFTER computing this row's value.
+        if curr["event_type"] == "change":
+            last_change_hm = curr["hourmeter"]
 
     return periods
 
@@ -775,6 +870,7 @@ def compute_oil_consumption_rolling(window_hours: float = 25.0) -> list[dict]:
             "rolling_avg_rate": rolling_rate,
             "oil_added": p.oil_consumed_quarts,
             "hours_since_last": p.hours_between,
+            "hours_since_change": p.hours_since_change,
             "event_type": p.end_event_type,
         })
 
@@ -812,3 +908,207 @@ def get_oil_changes() -> list[dict]:
         prev_change_hm = c["hourmeter"]
 
     return result
+
+
+# ---------------------------------------------------------------------------
+# Per-episode exceedance detection (hysteresis)
+# ---------------------------------------------------------------------------
+
+@dataclass
+class Episode:
+    """One continuous exceedance episode of a parameter beyond a limit."""
+    parameter: str          # e.g. "CHT", "Oil Pressure"
+    direction: str          # "high" or "low"
+    severity: str           # "caution" or "warning" (worst reached in episode)
+    start_timestamp: str    # first sample of the excursion (jump target)
+    peak_timestamp: str     # sample of worst value
+    peak_value: float       # worst value reached (max for high, min for low)
+    threshold: float        # the limit that was crossed
+    duration_s: float       # seconds from start to end of episode
+    message: str = ""
+
+
+def _elapsed_s(t_from: str, t_to: str) -> float:
+    """Seconds between two naive ISO timestamps."""
+    return (datetime.fromisoformat(t_to) - datetime.fromisoformat(t_from)).total_seconds()
+
+
+def _detect_episodes_series(samples, direction, threshold, deadband,
+                            min_gap_s, redline=None):
+    """Core hysteresis engine over a list of (timestamp, value) samples.
+
+    An episode opens when value crosses `threshold` (>= for high, <= for low).
+    It stays open until value recovers past `threshold -/+ deadband` AND remains
+    recovered for at least `min_gap_s` seconds; only then can a new episode open.
+    This prevents one noisy excursion from producing many episodes.
+
+    If `redline` is given (high direction only), an episode that reaches redline
+    is marked severity "warning"; otherwise "caution". One episode per excursion
+    (no nesting).
+
+    Returns a list of dicts describing each episode.
+    """
+    def exceeds(v):
+        return v >= threshold if direction == "high" else v <= threshold
+
+    def recovered(v):
+        if direction == "high":
+            return v < (threshold - deadband)
+        return v > (threshold + deadband)
+
+    episodes = []
+    in_episode = False
+    ep = None
+    recovering_since = None  # timestamp when the value first became "recovered"
+
+    for ts, v in samples:
+        if v is None:
+            continue
+        if not in_episode:
+            if exceeds(v):
+                in_episode = True
+                ep = {"start": ts, "peak_ts": ts, "peak": v, "reached_redline": False}
+                if redline is not None and v >= redline:
+                    ep["reached_redline"] = True
+                recovering_since = None
+        else:
+            # Track worst value
+            better = (v > ep["peak"]) if direction == "high" else (v < ep["peak"])
+            if better:
+                ep["peak"] = v
+                ep["peak_ts"] = ts
+            if redline is not None and v >= redline:
+                ep["reached_redline"] = True
+
+            if recovered(v):
+                if recovering_since is None:
+                    recovering_since = ts
+                elif _elapsed_s(recovering_since, ts) >= min_gap_s:
+                    # Episode ended at the point recovery began.
+                    ep["end"] = recovering_since
+                    episodes.append(ep)
+                    in_episode = False
+                    ep = None
+                    recovering_since = None
+            else:
+                # Popped back above the limit before the gap elapsed — same episode.
+                recovering_since = None
+
+    # Close a still-open episode at the last sample.
+    if in_episode and ep is not None:
+        ep["end"] = samples[-1][0]
+        episodes.append(ep)
+
+    return episodes
+
+
+def detect_episodes(operation_id: int) -> list[Episode]:
+    """Detect all exceedance episodes for one flight/operation.
+
+    Computed on the fly from the raw data (not cached), so it always reflects
+    the current thresholds. Scoped to a single operation — cheap.
+
+    Covers: CHT (high), EGT (high), Oil Temp (high), Oil Pressure (low+high),
+    Fuel Pressure (low+high). CHT/EGT use the hottest cylinder at each instant
+    and support caution+redline (one episode at worst severity, no nesting).
+    """
+    t = get_thresholds()
+    from efis_data_manager.config import load_config
+    num_cyl = load_config().get("num_cylinders", 4)
+    min_gap = t.get("episode_min_gap_s", 30)
+    db_temp = t.get("episode_deadband_temp", 10)
+    db_oilp = t.get("episode_deadband_oil_press", 5)
+    db_fp = t.get("episode_deadband_fuel_press", 3)
+
+    conn = get_db_connection()
+    try:
+        existing = {r[1] for r in conn.execute("PRAGMA table_info(fdl_data)")}
+        cht_cols = [f"cht{i}" for i in range(1, num_cyl + 1) if f"cht{i}" in existing]
+        egt_cols = [f"egt{i}" for i in range(1, num_cyl + 1) if f"egt{i}" in existing]
+        rows = conn.execute(
+            """SELECT timestamp, oil_temp, oil_pressure, aux3 AS fuel_pressure,
+                      cht1, cht2, cht3, cht4, cht5, cht6,
+                      egt1, egt2, egt3, egt4, egt5, egt6
+               FROM fdl_data WHERE operation_id = ? ORDER BY timestamp""",
+            (operation_id,),
+        ).fetchall()
+    finally:
+        conn.close()
+
+    if not rows:
+        return []
+
+    def cyl_series(cols, min_valid):
+        """Series of (timestamp, hottest-cylinder-value) ignoring dummies."""
+        out = []
+        for r in rows:
+            vals = [r[c] for c in cols if r[c] is not None and r[c] >= min_valid]
+            out.append((r["timestamp"], max(vals) if vals else None))
+        return out
+
+    def col_series(col, min_valid=None):
+        out = []
+        for r in rows:
+            v = r[col]
+            if v is not None and min_valid is not None and v < min_valid:
+                v = None
+            out.append((r["timestamp"], v))
+        return out
+
+    results: list[Episode] = []
+
+    def add(param, direction, raw_eps, threshold, unit, deadband_label):
+        for e in raw_eps:
+            sev = "warning" if e.get("reached_redline") else "caution"
+            peak = e["peak"]
+            dur = _elapsed_s(e["start"], e["end"])
+            if direction == "high":
+                verb = "exceeded" if sev == "caution" else "REDLINE exceeded"
+                msg = (f"{param} {verb} ({peak:.0f}{unit} peak, "
+                       f"limit {threshold:.0f}{unit}, {dur:.0f}s)")
+            else:
+                msg = (f"{param} below limit ({peak:.0f}{unit} min, "
+                       f"limit {threshold:.0f}{unit}, {dur:.0f}s)")
+            results.append(Episode(
+                parameter=param, direction=direction, severity=sev,
+                start_timestamp=e["start"], peak_timestamp=e["peak_ts"],
+                peak_value=peak, threshold=threshold, duration_s=dur, message=msg,
+            ))
+
+    # CHT (high, caution + redline)
+    if cht_cols:
+        s = cyl_series(cht_cols, 100)
+        eps = _detect_episodes_series(s, "high", t["cht_caution"], db_temp,
+                                      min_gap, redline=t["cht_redline"])
+        add("CHT", "high", eps, t["cht_caution"], "°F", "temp")
+
+    # EGT (high, caution + redline)
+    if egt_cols:
+        s = cyl_series(egt_cols, 100)
+        eps = _detect_episodes_series(s, "high", t["egt_caution"], db_temp,
+                                      min_gap, redline=t["egt_redline"])
+        add("EGT", "high", eps, t["egt_caution"], "°F", "temp")
+
+    # Oil temp (high, caution + redline)
+    s = col_series("oil_temp", min_valid=50)
+    eps = _detect_episodes_series(s, "high", t["oil_temp_caution"], db_temp,
+                                  min_gap, redline=t["oil_temp_redline"])
+    add("Oil Temp", "high", eps, t["oil_temp_caution"], "°F", "temp")
+
+    # Oil pressure (low, single severity; and high, single severity)
+    s = col_series("oil_pressure", min_valid=1)
+    eps = _detect_episodes_series(s, "low", t["oil_pressure_low_cruise"], db_oilp, min_gap)
+    add("Oil Pressure", "low", eps, t["oil_pressure_low_cruise"], "psi", "oil_press")
+    eps = _detect_episodes_series(s, "high", t["oil_pressure_high"], db_oilp, min_gap)
+    add("Oil Pressure", "high", eps, t["oil_pressure_high"], "psi", "oil_press")
+
+    # Fuel pressure (low and high, single severity)
+    s = col_series("fuel_pressure", min_valid=0)
+    eps = _detect_episodes_series(s, "low", t["fuel_pressure_low"], db_fp, min_gap)
+    add("Fuel Pressure", "low", eps, t["fuel_pressure_low"], "psi", "fuel_press")
+    eps = _detect_episodes_series(s, "high", t["fuel_pressure_high"], db_fp, min_gap)
+    add("Fuel Pressure", "high", eps, t["fuel_pressure_high"], "psi", "fuel_press")
+
+    # Sort by start time
+    results.sort(key=lambda e: e.start_timestamp)
+    return results

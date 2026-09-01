@@ -17,9 +17,33 @@ const layout = {
     font: { color: '#e0e0e0', size: 11 },
     margin: { l: 50, r: 20, t: 30, b: 40 },
     legend: { orientation: 'h', y: -0.2 },
-    xaxis: { gridcolor: '#0f3460', title: 'Date' },
+    dragmode: 'pan',   // drag to pan (matches the flight-detail panels)
+    xaxis: {
+        gridcolor: '#0f3460',
+        title: 'Date',
+        type: 'date',
+        // Quick timeframe presets
+        rangeselector: {
+            bgcolor: '#0f3460',
+            activecolor: '#4fc3f7',
+            font: { color: '#e0e0e0' },
+            x: 0, y: 1.12,
+            buttons: [
+                { count: 30,  label: '30d', step: 'day',   stepmode: 'backward' },
+                { count: 90,  label: '90d', step: 'day',   stepmode: 'backward' },
+                { count: 6,   label: '6m',  step: 'month', stepmode: 'backward' },
+                { count: 1,   label: '1y',  step: 'year',  stepmode: 'backward' },
+                { step: 'all', label: 'All' },
+            ],
+        },
+        // Range slider for free-form timeframe selection
+        rangeslider: { bgcolor: '#1a2744', bordercolor: '#0f3460', thickness: 0.08 },
+    },
     yaxis: { gridcolor: '#0f3460' },
 };
+
+// Scroll to zoom + drag to pan, consistent with the flight-detail view.
+const config = { responsive: true, scrollZoom: true };
 
 fetch('/api/trends')
     .then(r => r.json())
@@ -50,7 +74,7 @@ fetch('/api/trends')
             });
             i++;
         }
-        Plotly.newPlot('trend-chart', traces, layout, { responsive: true });
+        Plotly.newPlot('trend-chart', traces, layout, config);
     });
 </script>
 {% endblock %}

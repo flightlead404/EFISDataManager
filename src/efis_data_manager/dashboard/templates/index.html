@@ -28,7 +28,6 @@
                 <th>Oil Temp</th>
                 <th>Oil Press</th>
                 <th>Fuel</th>
-                <th>Alerts</th>
             </tr>
         </thead>
         <tbody></tbody>
@@ -52,9 +51,6 @@ function loadOperations() {
                 const typeBadge = f.has_flight
                     ? '<span class="badge badge-ok">Flight</span>'
                     : '<span class="badge" style="background:#546e7a;color:#fff;">Ground</span>';
-                let alertBadge = '<span class="badge badge-ok">OK</span>';
-                if (f.max_cht && f.max_cht >= 420) alertBadge = '<span class="badge badge-warning">CHT</span>';
-                else if (f.max_cht && f.max_cht >= 380) alertBadge = '<span class="badge badge-caution">CHT</span>';
 
                 tbody.innerHTML += `<tr>
                     <td><input type="checkbox" class="op-check" value="${f.id}" onclick="updateSelCount()"></td>
@@ -69,7 +65,6 @@ function loadOperations() {
                     <td>${f.max_oil_temp ? f.max_oil_temp.toFixed(0) : '-'}°F</td>
                     <td>${f.min_oil_pressure ? f.min_oil_pressure.toFixed(0) : '-'} psi</td>
                     <td>${f.fuel_used ? f.fuel_used.toFixed(1) : '-'} gal</td>
-                    <td>${alertBadge}</td>
                 </tr>`;
             });
             updateSelCount();

@@ -3,37 +3,48 @@
 {% block content %}
 <h1>Oil Consumption</h1>
 
+<div class="note">
+    Track oil consumption over time. Log each top-off and oil change below; the tool
+    computes consumption rate (quarts per engine hour) between events and a rolling
+    average. Consumption is measured from what you replenish, so accurate tach
+    readings and quart amounts matter. Oil events are stored in the Analysis tool,
+    separate from the flight data imported by the Data Manager.
+</div>
+
 <div class="card">
+    <h2>Consumption Rate
+        <span class="help" tabindex="-1">?<span class="tip">Consumption rate (qt/hr) vs engine tach time. Orange dots/line are per-period rate; the blue line is the rolling average over your Trend Window. Vertical red lines mark oil changes. Scroll to zoom, drag to pan.</span></span>
+    </h2>
     <div id="oil-chart" class="chart-container" style="height: 380px;"></div>
 </div>
 
 <div class="card">
     <h2>Record Oil Event</h2>
     <div class="form-row">
-        <label>Type</label>
+        <label>Type<span class="help" tabindex="-1">?<span class="tip">Addition = a top-off between changes (enter quarts added). Oil Change = a full change; also enter how low it had run beforehand so consumption up to the change is counted.</span></span></label>
         <select id="ev-type" onchange="toggleLowField()">
             <option value="addition">Addition (top-off)</option>
             <option value="change">Oil Change</option>
         </select>
     </div>
     <div class="form-row">
-        <label>Date</label>
+        <label>Date<span class="help" tabindex="-1">?<span class="tip">Calendar date of the event. Shown in tables; consumption math uses the tach reading, not the date.</span></span></label>
         <input type="date" id="ev-date">
     </div>
     <div class="form-row">
-        <label>Tach / Hourmeter</label>
+        <label>Tach / Hourmeter<span class="help" tabindex="-1">?<span class="tip">Engine tach/hourmeter reading at the event. This drives all consumption intervals and rates, so enter it accurately. Events are ordered by this value.</span></span></label>
         <input type="number" id="ev-hourmeter" step="0.1" placeholder="e.g. 455.0">
     </div>
     <div class="form-row">
-        <label>Quarts Added</label>
+        <label>Quarts Added<span class="help" tabindex="-1">?<span class="tip">How many quarts you added at this event. For a top-off this is the consumption since the last event. For a change, this is the fresh fill (not counted as consumption).</span></span></label>
         <input type="number" id="ev-added" step="0.5" placeholder="e.g. 1.0">
     </div>
     <div class="form-row" id="low-row" style="display:none;">
-        <label>Quarts Low (before change)</label>
+        <label>Quarts Low (before change)<span class="help" tabindex="-1">?<span class="tip">Only for an oil change: how many quarts down the sump had run just before draining. This is the oil consumed since the previous event; the fresh refill is not consumption.</span></span></label>
         <input type="number" id="ev-low" step="0.5" placeholder="e.g. 0.5">
     </div>
     <div class="form-row">
-        <label>Note</label>
+        <label>Note<span class="help" tabindex="-1">?<span class="tip">Optional free-text note (e.g. oil brand, filter change, analysis sent). Informational only.</span></span></label>
         <input type="text" id="ev-note" placeholder="optional" style="width:300px;">
     </div>
     <button class="btn" onclick="addEvent()">Add Event</button>
@@ -43,7 +54,7 @@
 <div class="card">
     <h2>Oil Events</h2>
     <div class="form-row">
-        <label>Ignore events before</label>
+        <label>Ignore events before<span class="help" tabindex="-1">?<span class="tip">Exclude oil events before this date from all consumption calculations and charts. Use it to drop unreliable early history without deleting the records.</span></span></label>
         <input type="date" id="cutoff-date">
         <button class="btn" onclick="saveCutoff()">Apply Cutoff</button>
         <span id="cutoff-status" style="margin-left:0.5rem;color:#66bb6a;"></span>
@@ -57,10 +68,12 @@
 </div>
 
 <div class="card">
-    <h2>Consumption History</h2>
+    <h2>Consumption History
+        <span class="help" tabindex="-1">?<span class="tip">One row per oil event. Consumed = quarts of oil used since the previous event. Rate = Consumed ÷ hours between events. Hours Since Oil Change counts up from the last change (resets to 0 at each change). Rolling Avg smooths the rate over your Trend Window.</span></span>
+    </h2>
     <table id="oil-table">
         <thead>
-            <tr><th>Date</th><th>Tach</th><th>Type</th><th>Consumed</th><th>Hours Since Last</th><th>Rate (qt/hr)</th><th>Rolling Avg</th></tr>
+            <tr><th>Date</th><th>Tach</th><th>Type</th><th>Consumed</th><th>Hours Since Oil Change</th><th>Rate (qt/hr)</th><th>Rolling Avg</th></tr>
         </thead>
         <tbody></tbody>
     </table>
@@ -98,6 +111,10 @@ function addEvent() {
         if (res.status === 'ok') {
             document.getElementById('add-status').style.color = '#66bb6a';
             document.getElementById('add-status').textContent = 'Added';
+            // Clear the input fields so the next entry starts fresh (avoids
+            // accidental duplicate submissions). Leaves Type as selected.
+            ['ev-date', 'ev-hourmeter', 'ev-added', 'ev-low', 'ev-note']
+                .forEach(id => document.getElementById(id).value = '');
             loadOil();
             setTimeout(() => document.getElementById('add-status').textContent = '', 2000);
         } else {
@@ -131,9 +148,15 @@ const layout = {
     font: {color: '#e0e0e0', size: 11},
     margin: {l: 50, r: 20, t: 30, b: 40},
     legend: {orientation: 'h', y: -0.15},
+    dragmode: 'pan',   // drag to pan the time (X) axis
     xaxis: {gridcolor: '#0f3460', title: 'Tach / Hourmeter'},
-    yaxis: {gridcolor: '#0f3460', title: 'qt/hr'},
+    // Y is fixed to the data range (set per-load below) and does not zoom/pan,
+    // so consumption rates stay comparable at any X zoom level.
+    yaxis: {gridcolor: '#0f3460', title: 'qt/hr', fixedrange: true, rangemode: 'tozero'},
 };
+
+// Scroll to zoom + drag to pan on the X (time) axis only.
+const oilChartConfig = {responsive: true, scrollZoom: true};
 
 function loadOil() {
     fetch('/api/oil').then(r => r.json()).then(data => {
@@ -175,8 +198,18 @@ function loadOil() {
             });
         });
 
+        // Fix the Y axis to the data: 0 to just above the max of the per-period
+        // rate and the rolling average. Y stays put while X zooms/pans.
+        let yMax = 0;
+        cons.forEach(d => {
+            if (d.rate != null) yMax = Math.max(yMax, d.rate);
+            if (d.rolling_avg_rate != null) yMax = Math.max(yMax, d.rolling_avg_rate);
+        });
+        yMax = yMax > 0 ? yMax * 1.1 : 1;  // 10% headroom; fallback if no data
+
         const lyt = Object.assign({}, layout, {shapes, annotations});
-        Plotly.newPlot('oil-chart', traces, lyt, {responsive: true});
+        lyt.yaxis = Object.assign({}, layout.yaxis, {range: [0, yMax], autorange: false});
+        Plotly.newPlot('oil-chart', traces, lyt, oilChartConfig);
 
         // Events table
         const etb = document.querySelector('#events-table tbody');
@@ -203,7 +236,7 @@ function loadOil() {
                 <td>${d.hourmeter.toFixed(1)}</td>
                 <td>${d.event_type}</td>
                 <td>${d.oil_added} qt</td>
-                <td>${d.hours_since_last.toFixed(1)} hr</td>
+                <td>${d.hours_since_change != null ? d.hours_since_change.toFixed(1) + ' hr' : '-'}</td>
                 <td ${rateCls}>${d.rate.toFixed(3)}</td>
                 <td>${d.rolling_avg_rate != null ? d.rolling_avg_rate.toFixed(3) : '-'}</td>
             </tr>`;

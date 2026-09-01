@@ -270,6 +270,118 @@ def api_flight_data(flight_id):
         conn.close()
 
 
+@app.route("/api/flight/<int:flight_id>/extremes")
+def api_flight_extremes(flight_id):
+    """Compute the standard 'jump to' extremes (value + timestamp) for a flight.
+
+    Returns a list of {key, label, value, unit, timestamp, mode} in display order.
+    mode is 'max' or 'min' (affects nothing on the client; informational).
+    Field resolution matches /api/flight/<id>/data (aux1=amps, aux2=MAP, aux3=FP).
+    """
+    from efis_data_manager.database import get_db_connection
+    conn = get_db_connection()
+    try:
+        rows = conn.execute(
+            """SELECT timestamp, rpm1, aux2 AS map, aux1 AS amps, eis_volts,
+                      fuel_flow, oil_temp, oil_pressure, indicated_airspeed,
+                      cht1, cht2, cht3, cht4, cht5, cht6,
+                      egt1, egt2, egt3, egt4, egt5, egt6
+               FROM fdl_data WHERE operation_id = ? ORDER BY timestamp""",
+            (flight_id,),
+        ).fetchall()
+        if not rows:
+            return jsonify([])
+
+        cht_cols = ["cht1", "cht2", "cht3", "cht4", "cht5", "cht6"]
+        egt_cols = ["egt1", "egt2", "egt3", "egt4", "egt5", "egt6"]
+
+        def extreme_single(col, mode, min_valid=None):
+            """Return (value, timestamp) of the max/min of a single column."""
+            best_v, best_t = None, None
+            for r in rows:
+                v = r[col]
+                if v is None:
+                    continue
+                if min_valid is not None and v < min_valid:
+                    continue
+                if best_v is None or (mode == "max" and v > best_v) or (mode == "min" and v < best_v):
+                    best_v, best_t = v, r["timestamp"]
+            return best_v, best_t
+
+        def extreme_cyl(cols, min_valid):
+            """Max across a set of per-cylinder columns (hottest instant)."""
+            best_v, best_t = None, None
+            for r in rows:
+                for c in cols:
+                    v = r[c]
+                    if v is None or v < min_valid:
+                        continue
+                    if best_v is None or v > best_v:
+                        best_v, best_t = v, r["timestamp"]
+            return best_v, best_t
+
+        def extreme_spread(cols, min_valid):
+            """Max cylinder spread and the instant it occurred."""
+            best_v, best_t = None, None
+            for r in rows:
+                vals = [r[c] for c in cols if r[c] is not None and r[c] >= min_valid]
+                if len(vals) >= 2:
+                    s = max(vals) - min(vals)
+                    if best_v is None or s > best_v:
+                        best_v, best_t = s, r["timestamp"]
+            return best_v, best_t
+
+        # (key, label, unit, computation)
+        specs = [
+            ("max_cht",   "Max CHT",        "°F",  lambda: extreme_cyl(cht_cols, 100)),
+            ("max_egt",   "Max EGT",        "°F",  lambda: extreme_cyl(egt_cols, 100)),
+            ("max_cht_spread", "Max CHT Spread", "°F", lambda: extreme_spread(cht_cols, 200)),
+            ("max_oil_temp", "Max Oil Temp", "°F", lambda: extreme_single("oil_temp", "max")),
+            ("min_oil_press", "Min Oil Press", "psi", lambda: extreme_single("oil_pressure", "min", min_valid=1)),
+            ("max_oil_press", "Max Oil Press", "psi", lambda: extreme_single("oil_pressure", "max")),
+            ("max_rpm",   "Max RPM",        "",    lambda: extreme_single("rpm1", "max")),
+            ("max_map",   "Max MAP",        '"',   lambda: extreme_single("map", "max")),
+            ("max_ff",    "Max Fuel Flow",  "gph", lambda: extreme_single("fuel_flow", "max")),
+            ("max_ias",   "Max IAS",        "kt",  lambda: extreme_single("indicated_airspeed", "max")),
+            ("min_volts", "Min Volts",      "V",   lambda: extreme_single("eis_volts", "min", min_valid=1)),
+            ("max_volts", "Max Volts",      "V",   lambda: extreme_single("eis_volts", "max")),
+            ("min_amps",  "Min Amps",       "A",   lambda: extreme_single("amps", "min")),
+            ("max_amps",  "Max Amps",       "A",   lambda: extreme_single("amps", "max")),
+        ]
+
+        out = []
+        for key, label, unit, fn in specs:
+            v, t = fn()
+            if v is None or t is None:
+                continue  # skip extremes with no usable data
+            out.append({"key": key, "label": label, "value": v,
+                        "unit": unit, "timestamp": t})
+        return jsonify(out)
+    finally:
+        conn.close()
+
+
+@app.route("/api/flight/<int:flight_id>/episodes")
+def api_flight_episodes(flight_id):
+    """Per-episode exceedances for one flight (hysteresis, on the fly)."""
+    from efis_data_manager.analysis import detect_episodes
+    episodes = detect_episodes(flight_id)
+    return jsonify([
+        {
+            "parameter": e.parameter,
+            "direction": e.direction,
+            "severity": e.severity,
+            "start_timestamp": e.start_timestamp,
+            "peak_timestamp": e.peak_timestamp,
+            "peak_value": e.peak_value,
+            "threshold": e.threshold,
+            "duration_s": e.duration_s,
+            "message": e.message,
+        }
+        for e in episodes
+    ])
+
+
 @app.route("/api/trends")
 def api_trends():
     """Get trend data for all tracked parameters."""

@@ -93,7 +93,7 @@ Store), macOS Gatekeeper will warn you the first time. This is expected:
 If you're comfortable with the terminal and have git:
 
 ```bash
-git clone --branch v0.9.5 --depth 1 https://github.com/flightlead404/EFISDataManager.git
+git clone --branch v0.9.6 --depth 1 https://github.com/flightlead404/EFISDataManager.git
 cd EFISDataManager
 ./install.sh
 ```
@@ -102,7 +102,7 @@ To update later:
 
 ```bash
 git fetch --tags
-git checkout v0.9.6   # whichever release you're moving to
+git checkout v0.9.7   # whichever release you're moving to
 ./install.sh
 ```
 
