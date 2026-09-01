@@ -23,20 +23,26 @@
 <script>
 const flightId = {{ flight_id }};
 
-// --- Parameter catalog: key -> {label, group, data-path} ---
-// data-path is "engine"/"flight" bucket + field name in the API response.
+// --- Parameter catalog: key -> {label, group, precision?} ---
+// group is the "engine"/"flight" bucket the series lives in within the API
+// response; the key doubles as the field name in that bucket.
+//
+// Aux-derived engine parameters (amps, manifold_pressure, fuel_pressure,
+// fuel_level_*, vacuum, coolant_pressure, carb_temp, custom) are NOT hardcoded
+// here. The server resolves the user's aux-channel mapping and sends the
+// mapped ones in data.aux_params; we merge them in at load (mergeAuxParams).
+// So only channels the user actually mapped ever appear in pickers/panels,
+// and unmapped channels produce no entry (Req 3.1, 3.2).
 const PARAMS = {
     egt1:  {label: 'EGT1',  group: 'engine'}, egt2: {label: 'EGT2', group: 'engine'},
     egt3:  {label: 'EGT3',  group: 'engine'}, egt4: {label: 'EGT4', group: 'engine'},
     cht1:  {label: 'CHT1',  group: 'engine'}, cht2: {label: 'CHT2', group: 'engine'},
     cht3:  {label: 'CHT3',  group: 'engine'}, cht4: {label: 'CHT4', group: 'engine'},
-    rpm:   {label: 'RPM',   group: 'engine'}, map:  {label: 'MAP',  group: 'engine'},
+    rpm:   {label: 'RPM',   group: 'engine'},
     fuel_flow:     {label: 'Fuel Flow',     group: 'engine'},
-    fuel_pressure: {label: 'Fuel Press',    group: 'engine'},
     oil_temp:      {label: 'Oil Temp',      group: 'engine'},
     oil_pressure:  {label: 'Oil Press',     group: 'engine'},
     eis_volts:     {label: 'Volts',         group: 'engine'},
-    amps:          {label: 'Amps',          group: 'engine'},
     ias:   {label: 'IAS',   group: 'flight'}, tas: {label: 'TAS', group: 'flight'},
     ground_speed: {label: 'GS',           group: 'flight'},
     pressure_alt: {label: 'Press Alt',    group: 'flight'},
@@ -51,10 +57,13 @@ const PARAMS = {
 
 // Default panels: title + list of parameter keys shown by default.
 // Keep panels focused (prefer <=3 traces; the 4 cylinders are the exception).
+// NOTE: MAP is keyed 'manifold_pressure' (matches the server's parameter_key).
+// It only exists in PARAMS if the user mapped an aux channel to MAP; the Power
+// panel omits it gracefully otherwise (createPanel drops unknown keys) (Req 3.3).
 const DEFAULT_PANELS = [
     {title: 'EGT',    params: ['egt1','egt2','egt3','egt4']},
     {title: 'CHT',    params: ['cht1','cht2','cht3','cht4']},
-    {title: 'Power',  params: ['rpm','map','fuel_flow']},
+    {title: 'Power',  params: ['rpm','manifold_pressure','fuel_flow']},
     {title: 'Flight', params: ['ias','tas','pressure_alt','vertical_speed','oat']},
 ];
 
@@ -193,9 +202,25 @@ function jumpToEpisode(idx) {
     jumpToTimestamp(e.start_timestamp, `${e.parameter} ${e.peak_value.toFixed(0)}${unitFor(e.parameter)}`, color);
 }
 
+// Merge the server-resolved aux parameters into PARAMS. Only mapped channels
+// are present in data.aux_params (the server's resolver is the sole gate), so
+// this is what makes amps/MAP/fuel_pressure/custom/etc. appear — with the
+// user's configured label and precision — in the picker and panels. Unmapped
+// channels are simply absent, so they never get a PARAMS entry (Req 3.1, 3.2).
+function mergeAuxParams(auxParams) {
+    (auxParams || []).forEach(p => {
+        PARAMS[p.key] = {
+            label: p.label,
+            group: p.group || 'engine',
+            precision: p.precision,
+        };
+    });
+}
+
 // --- Load time-series and build panels ---
 fetch(`/api/flight/${flightId}/data`).then(r => r.json()).then(data => {
     FLIGHT_DATA = data;
+    mergeAuxParams(data.aux_params);
     DEFAULT_PANELS.forEach(p => createPanel(p.title, p.params));
     loadJumpButtons();
 });
@@ -215,13 +240,17 @@ function normalize(arr) {
     return arr.map(v => (v == null || !isFinite(v)) ? null : (v - min) / range);
 }
 
-// Reasonable decimal places per parameter for hover display
+// Reasonable decimal places per parameter for hover display. Aux-derived
+// params carry their precision from the server (merged into PARAMS), so honor
+// that first; fall back to the fixed rules for the built-in params.
 function precisionFor(key) {
+    const p = PARAMS[key];
+    if (p && typeof p.precision === 'number') return p.precision;
     if (key === 'fuel_flow' || key === 'g_load') return 1;
     if (key === 'roll' || key === 'pitch') return 1;
-    if (key === 'map' || key === 'fuel_pressure' || key === 'oat') return 1;
+    if (key === 'oat') return 1;
     if (key === 'eis_volts') return 1;
-    return 0;  // rpm, cht, egt, amps, altitude, speeds, heading, etc.
+    return 0;  // rpm, cht, egt, altitude, speeds, heading, etc.
 }
 
 function buildTraces(panel) {
@@ -248,7 +277,11 @@ function buildTraces(panel) {
 
 function createPanel(title, paramKeys) {
     const id = 'panel-' + (panelSeq++);
-    const panel = {id, title, params: new Set(paramKeys), normalize: false, div: null};
+    // Drop any keys not in PARAMS. A default panel may reference an aux param
+    // (e.g. 'manifold_pressure') that the user hasn't mapped; it simply won't
+    // exist in PARAMS, so the panel omits it gracefully (Req 3.3).
+    const known = (paramKeys || []).filter(k => PARAMS[k]);
+    const panel = {id, title, params: new Set(known), normalize: false, div: null};
     panels.push(panel);
 
     const wrap = document.createElement('div');

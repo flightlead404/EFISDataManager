@@ -18,6 +18,7 @@ from datetime import datetime
 from flask import Flask, render_template, jsonify, request, send_file
 
 from efis_data_manager.config import load_config, save_config
+from efis_data_manager.aux_map import resolve_aux, PARAM_CATALOG, AUX_CHANNELS
 from efis_data_manager.database import get_db_connection
 from efis_data_manager.analysis import (
     get_flight_stats, get_all_flight_stats, compute_trends,
@@ -206,36 +207,61 @@ def api_flight_data(flight_id):
                       rpm1, cht1, cht2, cht3, cht4,
                       egt1, egt2, egt3, egt4,
                       fuel_flow, oil_temp, oil_pressure, eis_volts,
-                      aux1, aux2, aux3
+                      aux1, aux2, aux3, aux4, aux5, aux6
                FROM fdl_data
                WHERE operation_id = ? ORDER BY timestamp""",
             (flight["operation_id"],)
         ).fetchall()
 
-        # Build response as column arrays
+        # Resolve the aux channel -> parameter mapping. This is the ONE place
+        # aux meaning is derived; only MAPPED channels are returned, keyed by
+        # parameter_key, so unmapped channels never surface (Req 2.1, 3.2).
+        resolved_aux = resolve_aux()
+
+        # Build response as column arrays. Fixed engine params first, then one
+        # empty series per mapped aux parameter (keyed by parameter_key).
+        engine = {
+            "rpm": [],
+            "cht1": [], "cht2": [], "cht3": [], "cht4": [],
+            "egt1": [], "egt2": [], "egt3": [], "egt4": [],
+            "fuel_flow": [], "oil_temp": [], "oil_pressure": [],
+            "eis_volts": [],
+        }
+        for param_key in resolved_aux:
+            engine[param_key] = []
+
         data = {
             "timestamps": [],
             "point_count": len(rows),
-            "engine": {
-                "rpm": [], "map": [],
-                "cht1": [], "cht2": [], "cht3": [], "cht4": [],
-                "egt1": [], "egt2": [], "egt3": [], "egt4": [],
-                "fuel_flow": [], "oil_temp": [], "oil_pressure": [],
-                "eis_volts": [], "amps": [], "fuel_pressure": [],
-            },
+            "engine": engine,
             "flight": {
                 "ias": [], "tas": [], "ground_speed": [],
                 "pressure_alt": [], "gps_alt": [], "density_alt": [],
                 "vertical_speed": [], "oat": [], "g_load": [],
                 "roll": [], "pitch": [], "mag_heading": [], "track": [],
             },
+            # Mapped aux parameters for the client to merge into its PARAMS
+            # table (label + precision). Only mapped channels appear here.
+            "aux_params": [
+                {
+                    "key": param_key,
+                    "label": info["label"],
+                    "group": "engine",
+                    "precision": info["precision"],
+                }
+                for param_key, info in resolved_aux.items()
+            ],
         }
+
+        # (parameter_key, source column) pairs for the mapped aux series.
+        aux_series = [
+            (param_key, info["channel"])
+            for param_key, info in resolved_aux.items()
+        ]
 
         for row in rows:
             data["timestamps"].append(row["timestamp"])
             data["engine"]["rpm"].append(row["rpm1"])
-            # MAP is on aux2 for this install (the Internal MAP column is empty)
-            data["engine"]["map"].append(row["aux2"])
             data["engine"]["cht1"].append(row["cht1"])
             data["engine"]["cht2"].append(row["cht2"])
             data["engine"]["cht3"].append(row["cht3"])
@@ -248,8 +274,8 @@ def api_flight_data(flight_id):
             data["engine"]["oil_temp"].append(row["oil_temp"])
             data["engine"]["oil_pressure"].append(row["oil_pressure"])
             data["engine"]["eis_volts"].append(row["eis_volts"])
-            data["engine"]["amps"].append(row["aux1"])            # aux1 = amps
-            data["engine"]["fuel_pressure"].append(row["aux3"])   # aux3 = fuel pressure
+            for param_key, col in aux_series:
+                data["engine"][param_key].append(row[col])
             data["flight"]["ias"].append(row["indicated_airspeed"])
             data["flight"]["tas"].append(row["true_airspeed"])
             data["flight"]["ground_speed"].append(row["ground_speed"])
@@ -276,14 +302,17 @@ def api_flight_extremes(flight_id):
 
     Returns a list of {key, label, value, unit, timestamp, mode} in display order.
     mode is 'max' or 'min' (affects nothing on the client; informational).
-    Field resolution matches /api/flight/<id>/data (aux1=amps, aux2=MAP, aux3=FP).
+    Aux-derived extremes (amps, MAP) are built only when those parameters are
+    mapped, resolved through the single resolver (resolve_aux) so display,
+    extremes, and episodes never disagree (Req 2.1, 2.2).
     """
     from efis_data_manager.database import get_db_connection
     conn = get_db_connection()
     try:
         rows = conn.execute(
-            """SELECT timestamp, rpm1, aux2 AS map, aux1 AS amps, eis_volts,
+            """SELECT timestamp, rpm1, eis_volts,
                       fuel_flow, oil_temp, oil_pressure, indicated_airspeed,
+                      aux1, aux2, aux3, aux4, aux5, aux6,
                       cht1, cht2, cht3, cht4, cht5, cht6,
                       egt1, egt2, egt3, egt4, egt5, egt6
                FROM fdl_data WHERE operation_id = ? ORDER BY timestamp""",
@@ -291,6 +320,9 @@ def api_flight_extremes(flight_id):
         ).fetchall()
         if not rows:
             return jsonify([])
+
+        # Resolve the aux mapping once; only mapped parameters get extremes.
+        resolved_aux = resolve_aux()
 
         cht_cols = ["cht1", "cht2", "cht3", "cht4", "cht5", "cht6"]
         egt_cols = ["egt1", "egt2", "egt3", "egt4", "egt5", "egt6"]
@@ -331,7 +363,8 @@ def api_flight_extremes(flight_id):
                         best_v, best_t = s, r["timestamp"]
             return best_v, best_t
 
-        # (key, label, unit, computation)
+        # Fixed (non-aux) extremes, in display order. MAP and amps are inserted
+        # only when mapped (below), preserving today's display order.
         specs = [
             ("max_cht",   "Max CHT",        "°F",  lambda: extreme_cyl(cht_cols, 100)),
             ("max_egt",   "Max EGT",        "°F",  lambda: extreme_cyl(egt_cols, 100)),
@@ -340,14 +373,36 @@ def api_flight_extremes(flight_id):
             ("min_oil_press", "Min Oil Press", "psi", lambda: extreme_single("oil_pressure", "min", min_valid=1)),
             ("max_oil_press", "Max Oil Press", "psi", lambda: extreme_single("oil_pressure", "max")),
             ("max_rpm",   "Max RPM",        "",    lambda: extreme_single("rpm1", "max")),
-            ("max_map",   "Max MAP",        '"',   lambda: extreme_single("map", "max")),
+        ]
+
+        # MAP extreme: only when manifold_pressure is mapped. Read the resolved
+        # channel column, not a hardcoded aux column (Req 2.2, 2.3).
+        if "manifold_pressure" in resolved_aux:
+            map_info = resolved_aux["manifold_pressure"]
+            map_col = map_info["channel"]
+            specs.append(
+                ("max_map", "Max MAP", map_info["unit"] or '"',
+                 lambda c=map_col: extreme_single(c, "max"))
+            )
+
+        specs += [
             ("max_ff",    "Max Fuel Flow",  "gph", lambda: extreme_single("fuel_flow", "max")),
             ("max_ias",   "Max IAS",        "kt",  lambda: extreme_single("indicated_airspeed", "max")),
             ("min_volts", "Min Volts",      "V",   lambda: extreme_single("eis_volts", "min", min_valid=1)),
             ("max_volts", "Max Volts",      "V",   lambda: extreme_single("eis_volts", "max")),
-            ("min_amps",  "Min Amps",       "A",   lambda: extreme_single("amps", "min")),
-            ("max_amps",  "Max Amps",       "A",   lambda: extreme_single("amps", "max")),
         ]
+
+        # Amps extremes (min + max): only when amps is mapped.
+        if "amps" in resolved_aux:
+            amps_info = resolved_aux["amps"]
+            amps_col = amps_info["channel"]
+            amps_unit = amps_info["unit"] or "A"
+            specs += [
+                ("min_amps", "Min Amps", amps_unit,
+                 lambda c=amps_col: extreme_single(c, "min")),
+                ("max_amps", "Max Amps", amps_unit,
+                 lambda c=amps_col: extreme_single(c, "max")),
+            ]
 
         out = []
         for key, label, unit, fn in specs:
@@ -480,6 +535,25 @@ def api_save_config():
 def api_thresholds():
     """Get current thresholds (defaults + overrides)."""
     return jsonify(get_thresholds())
+
+
+@app.route("/api/param-catalog")
+def api_param_catalog():
+    """Expose the fixed aux parameter catalog for the Settings mapping UI.
+
+    Returns an ordered list of {key, label, unit, precision}. "none" and
+    "custom" are included so the client can build the per-channel dropdown.
+    The default_label for "custom" is empty (label/unit come from the user).
+    """
+    catalog = [{"key": "none", "label": "None", "unit": "", "precision": 0}]
+    for key, (label, unit, precision) in PARAM_CATALOG.items():
+        catalog.append({
+            "key": key,
+            "label": label if label is not None else "Custom",
+            "unit": unit if unit is not None else "",
+            "precision": precision,
+        })
+    return jsonify({"catalog": catalog, "channels": list(AUX_CHANNELS)})
 
 
 @app.route("/api/export/flights")

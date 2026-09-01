@@ -40,8 +40,21 @@ DEFAULT_CONFIG = {
     "check_nav_interval_hours": 24,
     "check_software_interval_hours": 24,
     # Engine/aircraft configuration
+    "engine_category": "traditional",  # "traditional" | "water_cooled"
     "num_cylinders": 4,
     "engine_type": "IO-360",
+    # EIS auxiliary channel mapping. Each aux channel maps to a parameter with a
+    # display label and unit. Defaults preserve the original hardcoded install
+    # convention (aux1=amps, aux2=MAP, aux3=fuel pressure) so existing installs
+    # are unaffected. aux4-6 are unmapped ("none") by default.
+    "aux_mapping": {
+        "aux1": {"parameter": "amps", "label": "Amps", "unit": "A"},
+        "aux2": {"parameter": "manifold_pressure", "label": "MAP", "unit": "\""},
+        "aux3": {"parameter": "fuel_pressure", "label": "Fuel Press", "unit": "psi"},
+        "aux4": {"parameter": "none", "label": "", "unit": ""},
+        "aux5": {"parameter": "none", "label": "", "unit": ""},
+        "aux6": {"parameter": "none", "label": "", "unit": ""},
+    },
     # Analysis thresholds (overridable)
     "analysis_thresholds": {},
     # Flight detection

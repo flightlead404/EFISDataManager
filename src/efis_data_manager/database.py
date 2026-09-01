@@ -140,10 +140,15 @@ CREATE TABLE IF NOT EXISTS fdl_data (
     -- Other
     hourmeter REAL,
     internal_map REAL,
-    -- EIS aux channels (this install: aux1=amps, aux2=MAP, aux3=fuel pressure)
+    -- EIS aux channels. Meaning is user-configurable (see aux_map.py); the
+    -- legacy default is aux1=amps, aux2=MAP, aux3=fuel pressure. aux4-aux6 are
+    -- stored so owners with other wiring can map them.
     aux1 REAL,
     aux2 REAL,
-    aux3 REAL
+    aux3 REAL,
+    aux4 REAL,
+    aux5 REAL,
+    aux6 REAL
 );
 
 -- Oil events: single source of truth for oil tracking (changes + additions).
@@ -203,7 +208,7 @@ def _ensure_schema(conn: sqlite3.Connection):
         conn.execute("ALTER TABLE oil_events ADD COLUMN source TEXT NOT NULL DEFAULT 'manual'")
 
     fdl_cols = _columns("fdl_data")
-    for c in ("aux1", "aux2", "aux3"):
+    for c in ("aux1", "aux2", "aux3", "aux4", "aux5", "aux6"):
         if fdl_cols and c not in fdl_cols:
             conn.execute(f"ALTER TABLE fdl_data ADD COLUMN {c} REAL")
 
@@ -311,7 +316,7 @@ def _insert_fdl_data(conn: sqlite3.Connection, operation_id: int,
             r.egt1, r.egt2, r.egt3, r.egt4, r.egt5, r.egt6,
             r.fuel_flow, r.fuel_total, r.oil_temp, r.oil_pressure,
             r.eis_volts, r.volts1, r.hourmeter, r.internal_map,
-            r.aux1, r.aux2, r.aux3,
+            r.aux1, r.aux2, r.aux3, r.aux4, r.aux5, r.aux6,
         ))
 
     conn.executemany(
@@ -327,8 +332,8 @@ def _insert_fdl_data(conn: sqlite3.Connection, operation_id: int,
             egt1, egt2, egt3, egt4, egt5, egt6,
             fuel_flow, fuel_total, oil_temp, oil_pressure,
             eis_volts, volts1, hourmeter, internal_map,
-            aux1, aux2, aux3)
-           VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+            aux1, aux2, aux3, aux4, aux5, aux6)
+           VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
         rows,
     )
 

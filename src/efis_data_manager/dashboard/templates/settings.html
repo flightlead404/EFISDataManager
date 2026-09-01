@@ -14,16 +14,44 @@
 <div class="card">
     <h2>Engine Configuration</h2>
     <div class="form-row">
-        <label>Number of Cylinders<span class="help" tabindex="-1">?<span class="tip">How many cylinders your engine has (4 or 6). Sets how many CHT/EGT bars and per-cylinder analyses (GAMI spread, hottest-cylinder alerts) are shown. Set this to match your engine.</span></span></label>
-        <select id="num_cylinders">
-            <option value="4">4</option>
-            <option value="6">6</option>
+        <label>Engine Category<span class="help" tabindex="-1">?<span class="tip">The broad engine family. "Traditional (air-cooled)" covers the typical Lycoming/Continental engines in most Vans/RV aircraft. "Water-Cooled (e.g. Rotax)" is not yet supported — selecting it hides the traditional engine settings.</span></span></label>
+        <select id="engine_category" onchange="updateEngineCategory()">
+            <option value="traditional">Traditional (air-cooled)</option>
+            <option value="water_cooled">Water-Cooled (e.g. Rotax)</option>
         </select>
     </div>
-    <div class="form-row">
-        <label>Engine Type<span class="help" tabindex="-1">?<span class="tip">A label for your engine (e.g. IO-360). Informational only — it's shown for reference and doesn't change any calculations.</span></span></label>
-        <input type="text" id="engine_type" placeholder="IO-360">
+    <div id="traditional-engine-fields">
+        <div class="form-row">
+            <label>Engine Type<span class="help" tabindex="-1">?<span class="tip">A label for your engine (e.g. IO-360). Informational only — it's shown for reference and doesn't change any calculations.</span></span></label>
+            <input type="text" id="engine_type" placeholder="IO-360">
+        </div>
+        <div class="form-row">
+            <label>Number of Cylinders<span class="help" tabindex="-1">?<span class="tip">How many cylinders your engine has (4 or 6). Sets how many CHT/EGT bars and per-cylinder analyses (GAMI spread, hottest-cylinder alerts) are shown. Set this to match your engine.</span></span></label>
+            <select id="num_cylinders">
+                <option value="4">4</option>
+                <option value="6">6</option>
+            </select>
+        </div>
     </div>
+    <div id="water-cooled-note" class="note" style="display: none;">
+        Water-cooled/Rotax support (coolant temperature surfacing, 2-cylinder
+        handling, high-RPM scaling) is not yet implemented. If you fly a
+        water-cooled engine and would like to help test this, please get in
+        touch — volunteer testers are welcome.
+    </div>
+</div>
+
+<div class="card" id="aux-mapping-section">
+    <h2>Aux Channel Mapping
+        <span class="help" tabindex="-1">?<span class="tip">Your GRT EIS has six auxiliary inputs (Aux1–Aux6). Which sensor is wired to each channel varies by install, so tell the dashboard what each channel represents. Only channels you map here appear in the flight view, extreme buttons, and episode detection. The EIS applies each sensor's scale/offset internally, so these values are already in engineering units — no conversion happens here.</span></span>
+    </h2>
+    <div class="note">
+        Assign each aux channel to the parameter wired to it. Choose
+        <em>None</em> for unused channels. Choose <em>Custom</em> to enter your
+        own display label and unit. Unmapped channels are hidden everywhere in
+        the dashboard.
+    </div>
+    <div id="aux-mapping-rows"></div>
 </div>
 
 <div class="card">
@@ -122,12 +150,25 @@ const thresholdTips = {
     trend_oil_consumption_high: 'Oil consumption rate (quarts per hour) above which consumption is flagged as high on the Oil screen.',
 };
 
+// Aux channel mapping state, populated once the param catalog + config load.
+let paramCatalog = [];   // [{key,label,unit,precision}, ...]
+let auxChannels = [];    // ["aux1", ... "aux6"]
+
 // Load current config
 fetch('/api/config')
     .then(r => r.json())
     .then(config => {
+        document.getElementById('engine_category').value = config.engine_category || 'traditional';
         document.getElementById('num_cylinders').value = config.num_cylinders || 4;
         document.getElementById('engine_type').value = config.engine_type || '';
+        updateEngineCategory();
+
+        // Build the aux channel mapping rows from the fixed param catalog.
+        fetch('/api/param-catalog').then(r => r.json()).then(data => {
+            paramCatalog = data.catalog;
+            auxChannels = data.channels;
+            buildAuxMappingRows(config.aux_mapping || {});
+        });
         document.getElementById('airborne_ias_threshold').value = config.airborne_ias_threshold || 40;
         document.getElementById('cruise_vs_threshold').value = config.cruise_vs_threshold || 300;
         document.getElementById('cruise_rpm_min').value = config.cruise_rpm_min || 1800;
@@ -151,8 +192,105 @@ fetch('/api/config')
         });
     });
 
+function buildAuxMappingRows(auxMapping) {
+    const container = document.getElementById('aux-mapping-rows');
+    container.innerHTML = '';
+    auxChannels.forEach((channel, idx) => {
+        const entry = auxMapping[channel] || {};
+        const parameter = entry.parameter || 'none';
+        const label = entry.label || '';
+        const unit = entry.unit || '';
+        const n = idx + 1;
+
+        const options = paramCatalog.map(p =>
+            `<option value="${p.key}"${p.key === parameter ? ' selected' : ''}>${p.label}</option>`
+        ).join('');
+
+        const isCustom = parameter === 'custom';
+        const row = document.createElement('div');
+        row.className = 'form-row';
+        row.innerHTML = `
+            <label>Aux ${n}<span class="help" tabindex="-1">?<span class="tip">What is wired to EIS auxiliary input ${n}? Pick the matching parameter, or None if this channel is unused. Choose Custom to supply your own label and unit.</span></span></label>
+            <select id="aux_param_${channel}" data-channel="${channel}" onchange="onAuxParamChange('${channel}')">${options}</select>
+            <input type="text" id="aux_label_${channel}" placeholder="Label" value="${escapeAttr(label)}" style="margin-left: 0.5rem; ${isCustom ? '' : 'display: none;'}">
+            <input type="text" id="aux_unit_${channel}" placeholder="Unit" value="${escapeAttr(unit)}" style="width: 5rem; margin-left: 0.5rem; ${isCustom ? '' : 'display: none;'}">
+        `;
+        container.appendChild(row);
+    });
+}
+
+function escapeAttr(s) {
+    return String(s).replace(/&/g, '&amp;').replace(/"/g, '&quot;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+}
+
+function onAuxParamChange(channel) {
+    const sel = document.getElementById('aux_param_' + channel);
+    const value = sel.value;
+    const labelInput = document.getElementById('aux_label_' + channel);
+    const unitInput = document.getElementById('aux_unit_' + channel);
+
+    // Custom enables the label/unit inputs; anything else hides them.
+    const isCustom = value === 'custom';
+    labelInput.style.display = isCustom ? '' : 'none';
+    unitInput.style.display = isCustom ? '' : 'none';
+    if (!isCustom) {
+        // "None" clears any leftover custom label/unit so nothing is persisted.
+        if (value === 'none') {
+            labelInput.value = '';
+            unitInput.value = '';
+        }
+    }
+
+    // Duplicate handling: a real parameter (not none/custom) may map to only one
+    // channel. If the user picks a parameter already used elsewhere, reset the
+    // other channel to None so the mapping stays unambiguous.
+    if (value !== 'none' && value !== 'custom') {
+        auxChannels.forEach(other => {
+            if (other === channel) return;
+            const otherSel = document.getElementById('aux_param_' + other);
+            if (otherSel && otherSel.value === value) {
+                otherSel.value = 'none';
+                onAuxParamChange(other);
+            }
+        });
+    }
+}
+
+function collectAuxMapping() {
+    const auxMapping = {};
+    auxChannels.forEach(channel => {
+        const sel = document.getElementById('aux_param_' + channel);
+        if (!sel) return;
+        const parameter = sel.value;
+        let label = '';
+        let unit = '';
+        if (parameter === 'custom') {
+            label = document.getElementById('aux_label_' + channel).value.trim();
+            unit = document.getElementById('aux_unit_' + channel).value.trim();
+        } else if (parameter !== 'none') {
+            // Use the catalog's canonical label/unit for known parameters.
+            const cat = paramCatalog.find(p => p.key === parameter);
+            if (cat) { label = cat.label; unit = cat.unit; }
+        }
+        auxMapping[channel] = { parameter, label, unit };
+    });
+    return auxMapping;
+}
+
+function updateEngineCategory() {
+    const category = document.getElementById('engine_category').value;
+    const traditional = category === 'traditional';
+    document.getElementById('traditional-engine-fields').style.display = traditional ? '' : 'none';
+    document.getElementById('water-cooled-note').style.display = traditional ? 'none' : '';
+    // Aux Channel Mapping section is traditional-only (added in a later task);
+    // hide it for water-cooled if present.
+    const auxSection = document.getElementById('aux-mapping-section');
+    if (auxSection) auxSection.style.display = traditional ? '' : 'none';
+}
+
 function saveSettings() {
     const config = {
+        engine_category: document.getElementById('engine_category').value,
         num_cylinders: parseInt(document.getElementById('num_cylinders').value),
         engine_type: document.getElementById('engine_type').value,
         airborne_ias_threshold: parseInt(document.getElementById('airborne_ias_threshold').value),
@@ -160,6 +298,7 @@ function saveSettings() {
         cruise_rpm_min: parseInt(document.getElementById('cruise_rpm_min').value),
         trend_window_hours: parseInt(document.getElementById('trend_window_hours').value),
         dashboard_port: parseInt(document.getElementById('dashboard_port').value),
+        aux_mapping: collectAuxMapping(),
     };
 
     // Collect thresholds

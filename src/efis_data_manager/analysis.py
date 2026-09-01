@@ -1020,13 +1020,29 @@ def detect_episodes(operation_id: int) -> list[Episode]:
     db_oilp = t.get("episode_deadband_oil_press", 5)
     db_fp = t.get("episode_deadband_fuel_press", 3)
 
+    # Resolve the aux mapping through the single resolver. Fuel-pressure
+    # episodes run only when fuel_pressure is mapped, and read the resolved
+    # channel column instead of a hardcoded aux3 (Req 2.2, 2.3).
+    from efis_data_manager.aux_map import resolve_aux
+    resolved_aux = resolve_aux()
+    fuel_press_channel = None
+    if "fuel_pressure" in resolved_aux:
+        fuel_press_channel = resolved_aux["fuel_pressure"]["channel"]
+
     conn = get_db_connection()
     try:
         existing = {r[1] for r in conn.execute("PRAGMA table_info(fdl_data)")}
         cht_cols = [f"cht{i}" for i in range(1, num_cyl + 1) if f"cht{i}" in existing]
         egt_cols = [f"egt{i}" for i in range(1, num_cyl + 1) if f"egt{i}" in existing]
+        # Select the mapped fuel-pressure channel (if any) aliased to a stable
+        # name, so the episode logic below is channel-agnostic.
+        fp_select = (
+            f"{fuel_press_channel} AS fuel_pressure"
+            if fuel_press_channel
+            else "NULL AS fuel_pressure"
+        )
         rows = conn.execute(
-            """SELECT timestamp, oil_temp, oil_pressure, aux3 AS fuel_pressure,
+            f"""SELECT timestamp, oil_temp, oil_pressure, {fp_select},
                       cht1, cht2, cht3, cht4, cht5, cht6,
                       egt1, egt2, egt3, egt4, egt5, egt6
                FROM fdl_data WHERE operation_id = ? ORDER BY timestamp""",
@@ -1102,12 +1118,14 @@ def detect_episodes(operation_id: int) -> list[Episode]:
     eps = _detect_episodes_series(s, "high", t["oil_pressure_high"], db_oilp, min_gap)
     add("Oil Pressure", "high", eps, t["oil_pressure_high"], "psi", "oil_press")
 
-    # Fuel pressure (low and high, single severity)
-    s = col_series("fuel_pressure", min_valid=0)
-    eps = _detect_episodes_series(s, "low", t["fuel_pressure_low"], db_fp, min_gap)
-    add("Fuel Pressure", "low", eps, t["fuel_pressure_low"], "psi", "fuel_press")
-    eps = _detect_episodes_series(s, "high", t["fuel_pressure_high"], db_fp, min_gap)
-    add("Fuel Pressure", "high", eps, t["fuel_pressure_high"], "psi", "fuel_press")
+    # Fuel pressure (low and high, single severity) — only when fuel_pressure
+    # is mapped to a channel. Unmapped => skip entirely (Req 2.3).
+    if fuel_press_channel:
+        s = col_series("fuel_pressure", min_valid=0)
+        eps = _detect_episodes_series(s, "low", t["fuel_pressure_low"], db_fp, min_gap)
+        add("Fuel Pressure", "low", eps, t["fuel_pressure_low"], "psi", "fuel_press")
+        eps = _detect_episodes_series(s, "high", t["fuel_pressure_high"], db_fp, min_gap)
+        add("Fuel Pressure", "high", eps, t["fuel_pressure_high"], "psi", "fuel_press")
 
     # Sort by start time
     results.sort(key=lambda e: e.start_timestamp)

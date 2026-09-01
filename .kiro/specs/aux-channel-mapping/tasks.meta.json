@@ -1,0 +1,136 @@
+{
+  "pbtResults": {},
+  "executionHistory": {
+    "1. Add config schema + parameter catalog + resolver": [
+      {
+        "executionId": "058dab2b-ca5a-449f-a8a6-d34990b0f7ab",
+        "chatSessionId": "sess_fd89a686-1cd1-4e1e-acd9-79c49b204d98",
+        "timestamp": 1788288372618
+      },
+      {
+        "executionId": "058dab2b-ca5a-449f-a8a6-d34990b0f7ab",
+        "chatSessionId": "sess_fd89a686-1cd1-4e1e-acd9-79c49b204d98",
+        "timestamp": 1788288379409
+      },
+      {
+        "executionId": "058dab2b-ca5a-449f-a8a6-d34990b0f7ab",
+        "chatSessionId": "sess_fd89a686-1cd1-4e1e-acd9-79c49b204d98",
+        "timestamp": 1788289376902
+      }
+    ],
+    "2. Persist aux4-aux6 in the database": [
+      {
+        "executionId": "058dab2b-ca5a-449f-a8a6-d34990b0f7ab",
+        "chatSessionId": "sess_fd89a686-1cd1-4e1e-acd9-79c49b204d98",
+        "timestamp": 1788288372661
+      },
+      {
+        "executionId": "058dab2b-ca5a-449f-a8a6-d34990b0f7ab",
+        "chatSessionId": "sess_fd89a686-1cd1-4e1e-acd9-79c49b204d98",
+        "timestamp": 1788289384529
+      },
+      {
+        "executionId": "058dab2b-ca5a-449f-a8a6-d34990b0f7ab",
+        "chatSessionId": "sess_fd89a686-1cd1-4e1e-acd9-79c49b204d98",
+        "timestamp": 1788290048254
+      }
+    ],
+    "3. Route `/api/flight/<id>/data` through the resolver": [
+      {
+        "executionId": "058dab2b-ca5a-449f-a8a6-d34990b0f7ab",
+        "chatSessionId": "sess_fd89a686-1cd1-4e1e-acd9-79c49b204d98",
+        "timestamp": 1788288372690
+      },
+      {
+        "executionId": "058dab2b-ca5a-449f-a8a6-d34990b0f7ab",
+        "chatSessionId": "sess_fd89a686-1cd1-4e1e-acd9-79c49b204d98",
+        "timestamp": 1788290055458
+      },
+      {
+        "executionId": "058dab2b-ca5a-449f-a8a6-d34990b0f7ab",
+        "chatSessionId": "sess_fd89a686-1cd1-4e1e-acd9-79c49b204d98",
+        "timestamp": 1788290817932
+      }
+    ],
+    "4. Route extremes + episodes through the resolver": [
+      {
+        "executionId": "058dab2b-ca5a-449f-a8a6-d34990b0f7ab",
+        "chatSessionId": "sess_fd89a686-1cd1-4e1e-acd9-79c49b204d98",
+        "timestamp": 1788288372723
+      },
+      {
+        "executionId": "058dab2b-ca5a-449f-a8a6-d34990b0f7ab",
+        "chatSessionId": "sess_fd89a686-1cd1-4e1e-acd9-79c49b204d98",
+        "timestamp": 1788290820566
+      },
+      {
+        "executionId": "a02e668f-e6f0-40ec-bef3-a2444bc148e9",
+        "chatSessionId": "sess_fd89a686-1cd1-4e1e-acd9-79c49b204d98",
+        "timestamp": 1788292068398
+      }
+    ],
+    "5. Make flight.html PARAMS dynamic": [
+      {
+        "executionId": "058dab2b-ca5a-449f-a8a6-d34990b0f7ab",
+        "chatSessionId": "sess_fd89a686-1cd1-4e1e-acd9-79c49b204d98",
+        "timestamp": 1788288372756
+      },
+      {
+        "executionId": "a02e668f-e6f0-40ec-bef3-a2444bc148e9",
+        "chatSessionId": "sess_fd89a686-1cd1-4e1e-acd9-79c49b204d98",
+        "timestamp": 1788292071199
+      },
+      {
+        "executionId": "a02e668f-e6f0-40ec-bef3-a2444bc148e9",
+        "chatSessionId": "sess_fd89a686-1cd1-4e1e-acd9-79c49b204d98",
+        "timestamp": 1788292281576
+      }
+    ],
+    "6. Settings: engine category selector + reorder": [
+      {
+        "executionId": "058dab2b-ca5a-449f-a8a6-d34990b0f7ab",
+        "chatSessionId": "sess_fd89a686-1cd1-4e1e-acd9-79c49b204d98",
+        "timestamp": 1788288372784
+      },
+      {
+        "executionId": "a02e668f-e6f0-40ec-bef3-a2444bc148e9",
+        "chatSessionId": "sess_fd89a686-1cd1-4e1e-acd9-79c49b204d98",
+        "timestamp": 1788292284578
+      },
+      {
+        "executionId": "a02e668f-e6f0-40ec-bef3-a2444bc148e9",
+        "chatSessionId": "sess_fd89a686-1cd1-4e1e-acd9-79c49b204d98",
+        "timestamp": 1788292467340
+      }
+    ],
+    "7. Settings: aux channel mapping UI": [
+      {
+        "executionId": "058dab2b-ca5a-449f-a8a6-d34990b0f7ab",
+        "chatSessionId": "sess_fd89a686-1cd1-4e1e-acd9-79c49b204d98",
+        "timestamp": 1788288372807
+      },
+      {
+        "executionId": "a02e668f-e6f0-40ec-bef3-a2444bc148e9",
+        "chatSessionId": "sess_fd89a686-1cd1-4e1e-acd9-79c49b204d98",
+        "timestamp": 1788292470264
+      },
+      {
+        "executionId": "a02e668f-e6f0-40ec-bef3-a2444bc148e9",
+        "chatSessionId": "sess_fd89a686-1cd1-4e1e-acd9-79c49b204d98",
+        "timestamp": 1788292646955
+      }
+    ],
+    "8. Regression + release": [
+      {
+        "executionId": "058dab2b-ca5a-449f-a8a6-d34990b0f7ab",
+        "chatSessionId": "sess_fd89a686-1cd1-4e1e-acd9-79c49b204d98",
+        "timestamp": 1788288372828
+      },
+      {
+        "executionId": "a02e668f-e6f0-40ec-bef3-a2444bc148e9",
+        "chatSessionId": "sess_fd89a686-1cd1-4e1e-acd9-79c49b204d98",
+        "timestamp": 1788292651206
+      }
+    ]
+  }
+}
