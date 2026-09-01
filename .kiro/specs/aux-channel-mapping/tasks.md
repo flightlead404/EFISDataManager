@@ -52,7 +52,7 @@
   - Round-trip test: set a mapping, save, reload, confirm persisted + applied.
   - _Requirements: 1.1, 1.2, 1.3, 1.4_
 
-- [-] 8. Regression + release
+- [x] 8. Regression + release
   - With default config, confirm flight 3 Power panel, extreme buttons, and
     episodes match current output (no regression).
   - Bump version + DASHBOARD_VERSION, update README clone tag, commit, tag,

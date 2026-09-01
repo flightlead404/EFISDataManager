@@ -85,15 +85,23 @@ Store), macOS Gatekeeper will warn you the first time. This is expected:
 
 - For `install.command`: **right-click it → Open**, then click **Open** in the
   dialog. You only need to do this once.
-- If macOS still blocks it, go to **System Settings → Privacy & Security**,
-  scroll down, and click **Open Anyway**.
+- **On macOS Sequoia (15) and later**, right-click → Open no longer offers an
+  override for scripts. Instead, after the first blocked attempt, go to
+  **System Settings → Privacy & Security**, scroll to the message naming
+  `install.command`, and click **Open Anyway**. Then run it again.
+- If it still won't open, clear the download quarantine flag in Terminal and
+  run it once more:
+
+  ```bash
+  xattr -d com.apple.quarantine ~/Downloads/EFISDataManager/install.command
+  ```
 
 ### Install with git (for developers)
 
 If you're comfortable with the terminal and have git:
 
 ```bash
-git clone --branch v0.10.0 --depth 1 https://github.com/flightlead404/EFISDataManager.git
+git clone --branch v1.0.0 --depth 1 https://github.com/flightlead404/EFISDataManager.git
 cd EFISDataManager
 ./install.sh
 ```
@@ -102,7 +110,7 @@ To update later:
 
 ```bash
 git fetch --tags
-git checkout v0.10.0   # whichever release you're moving to
+git checkout v1.0.0   # whichever release you're moving to
 ./install.sh
 ```
 
