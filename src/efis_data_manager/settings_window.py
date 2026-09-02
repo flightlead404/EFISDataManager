@@ -70,6 +70,12 @@ class SettingsDelegate(NSObject):
         )
         self.window.setTitle_("EFIS Data Manager - Settings")
         self.window.setLevel_(3)
+        # Cocoa windows default to being released when closed. That frees the
+        # NSWindow out from under the Python delegate (which still holds
+        # self.window and its subviews), so a later teardown touches freed
+        # memory and crashes with EXC_BAD_ACCESS. Keep the window's lifetime
+        # tied to the Python reference instead.
+        self.window.setReleasedWhenClosed_(False)
 
         content = self.window.contentView()
         y = height - 50
@@ -235,11 +241,33 @@ class SettingsDelegate(NSObject):
         except (ValueError, TypeError):
             pass
         self.on_save(self.config)
-        self.window.close()
+        self._dismiss()
 
     @objc.IBAction
     def cancelClicked_(self, sender):
-        self.window.close()
+        self._dismiss()
+
+    def _dismiss(self):
+        """Close the window and drop references so the delegate reports closed.
+
+        With releasedWhenClosed=False the NSWindow is not freed by Cocoa on
+        close, so it is safe to release our reference here; the window is
+        deallocated when the last Python reference (self.window) goes away.
+        """
+        if self.window is not None:
+            self.window.orderOut_(None)
+            self.window.close()
+            self.window = None
+
+    def is_open(self):
+        """True if the settings window is currently on screen."""
+        return self.window is not None and bool(self.window.isVisible())
+
+    def focus(self):
+        """Bring an already-open settings window to the front."""
+        if self.window is not None:
+            self.window.makeKeyAndOrderFront_(None)
+            NSApp.activateIgnoringOtherApps_(True)
 
     def _pick_folder(self, current_path):
         """Open a native folder picker."""

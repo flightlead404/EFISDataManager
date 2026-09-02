@@ -703,6 +703,15 @@ class EFISDataManagerApp(rumps.App):
     def open_settings(self, _):
         from efis_data_manager.settings_window import show_settings
 
+        # If a settings window is already open, just bring it to the front.
+        # Building a new delegate on top of a live one releases the previous
+        # delegate mid-flight, which under PyObjC can tear down its Cocoa
+        # objects unsafely. Reusing the open window avoids that entirely.
+        existing = getattr(self, "_settings_delegate", None)
+        if existing is not None and existing.is_open():
+            existing.focus()
+            return
+
         def on_save(new_config):
             self.config = new_config
             save_config(self.config)
