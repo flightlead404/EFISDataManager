@@ -181,18 +181,57 @@ identity file cannot cause a needed sync to be skipped — the marker/payload
 check still forces a correct resync. This is what makes the `rm -rf *` foot-gun
 harmless.
 
-### Resolution + adoption
+### Detection is identity-only (no label matching)
+
+**A drive is "ours" if and only if it carries our identity file** with
+`kind == "efis-chart-drive"`. The volume label plays NO role in detection — the
+old `EFIS`/`EFIS_N` regex is removed entirely (it was a personal labeling
+convention, not a GRT-ecosystem signal, and mount paths reshuffle anyway).
+`is_efis_drive` is renamed `is_managed_drive` and checks only for a valid
+identity file.
 
 `resolve_drive_id(mount_point) -> str | None`:
-1. `wait_for_mount_ready(mount_point)` first (mount-readiness race, already in
-   place).
+1. `wait_for_mount_ready(mount_point)` first (mount-readiness race).
 2. If `EFIS_DRIVE_ID.json` exists and parses with `kind == "efis-chart-drive"`,
-   return its `id`. Opportunistically capture `VolumeUUID` (via
-   `diskutil info -plist`) and warn on mismatch with the stored `volume_uuid`.
-3. Else, if the volume is a recognized EFIS drive (existing GRTCHARTS/name
-   heuristics), **adopt** it: generate a UUID, write the identity file, return
-   the new `id`.
-4. Else return `None` (not one of ours / unreadable) -> callers fail safe.
+   return its `id`. Opportunistically capture `VolumeUUID` and warn on mismatch.
+3. Else return `None`. **There is no lazy adoption on mount.** A drive without
+   our identity file is not ours; the USB monitor takes no automatic action on
+   it. Adoption happens ONLY through the explicit Prepare Drive flow below.
+
+### Mount auto-action is identity-gated
+
+The USB monitor's mount handler auto-archives + auto-syncs a drive ONLY when
+`resolve_drive_id` returns an id (identity file present). A never-before-seen
+drive — even one with a `GRTCHARTS/` folder or a chart payload — triggers no
+automatic action. This is the deliberate "not ours until the identity JSON is
+written" model: first contact with any drive is an explicit user action.
+
+### Prepare Drive: provisioning, adoption, and data safety
+
+`GRTCHARTS/` (and/or `ChartData/`) is used ONLY here, as the signal that a drive
+is a *previously-used GRT chart drive* that can be adopted rather than
+reformatted. Prepare Drive inspects the selected volume and branches:
+
+- **No identity file, has `GRTCHARTS/`/`ChartData/`** (Windows-tool drive, or an
+  older app version): offer
+  - **Start clean** — reformat (destructive) + write identity + full populate.
+  - **Adopt & update** — NON-destructive: write the identity file onto the
+    existing drive, then `update_drive` (incremental; reuses everything that
+    already matches, syncs only the delta). This is the migration path into our
+    ecosystem for an existing drive without re-copying ~9 GB.
+- **No identity file, blank / no GRTCHARTS**: only "Start clean" applies.
+- **Has our identity file**: already managed; a normal update (optionally offer
+  re-clean).
+
+**Flight-data safety (both paths).** Before provisioning, Prepare Drive checks
+whether the drive holds unarchived flight data / logbooks (FDL, DEMO, snapshots,
+settings, logbook — what `archive_efis_drive` handles). If so, it prompts:
+**Import/Archive** (run the archive first, preserving the data) vs **Erase**
+(discard). This gates BOTH "Start clean" (destructive) and "Adopt & update"
+(may overwrite settings), so flight data is never silently lost.
+
+Prepare Drive still sets a cosmetic label (`EFIS_<suffix>` by default) purely
+for Finder clarity; nothing keys on it.
 
 ### Provenance updates
 
@@ -205,17 +244,26 @@ cycles behind" without introducing per-drive roles.
 
 ### Failure-safe behavior
 
-If `resolve_drive_id` returns `None` (diskutil hiccup, unreadable root, or a
-never-adopted drive that also fails detection), the app does NOT consult or
-apply any interrupted-sync state (which is keyed by id), performs a normal
-marker-based currency check + update, and logs a WARNING. No drive is ever
-bricked by an identity-resolution failure.
+If `resolve_drive_id` returns `None` (unreadable root, a read error, or simply a
+drive with no identity file), the app does NOT consult or apply any
+interrupted-sync state (which is keyed by id) and logs a WARNING where relevant.
+Currency decisions never depend on the identity file — the on-drive commit
+markers + payload remain the sole source of truth. No drive is ever bricked by
+an identity-resolution failure.
 
-### No roles; every drive refreshed
+### No roles; every managed drive refreshed
 
-There are no per-drive roles. Any recognized EFIS drive that mounts — including
-the n-1 emergency drive brought back from the airplane — is archived and
-refreshed to current. Unique labels are a documented recommendation only.
+There are no per-drive roles. Any MANAGED drive (identity file present) that
+mounts — including the n-1 emergency drive brought back from the airplane — is
+archived and refreshed to current. Labels are cosmetic; a distinct label per
+drive is a documented convenience only.
+
+### Migration note
+
+Because detection is now identity-only, users whose drives were previously
+auto-detected by label must **adopt each drive once** (Prepare Drive →
+"Adopt & update", non-destructive) before auto-sync resumes for it. Documented
+in the README and release notes.
 
 ## Interruption handling
 

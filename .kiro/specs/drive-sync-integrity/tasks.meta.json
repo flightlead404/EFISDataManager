@@ -289,6 +289,57 @@
         "chatSessionId": "sess_fe59a3b1-3a1b-4a1f-8d2d-744533b0b06b",
         "timestamp": 1788454645473
       }
+    ],
+    "18. Identity-only detection (drop label matching)": [
+      {
+        "executionId": "e23c8b2c-1059-4636-ad2a-aabccd67fd63",
+        "chatSessionId": "sess_fe59a3b1-3a1b-4a1f-8d2d-744533b0b06b",
+        "timestamp": 1788462914624
+      },
+      {
+        "executionId": "e23c8b2c-1059-4636-ad2a-aabccd67fd63",
+        "chatSessionId": "sess_fe59a3b1-3a1b-4a1f-8d2d-744533b0b06b",
+        "timestamp": 1788462922032
+      },
+      {
+        "executionId": "e23c8b2c-1059-4636-ad2a-aabccd67fd63",
+        "chatSessionId": "sess_fe59a3b1-3a1b-4a1f-8d2d-744533b0b06b",
+        "timestamp": 1788463485206
+      }
+    ],
+    "19. Identity-gated mount auto-action": [
+      {
+        "executionId": "e23c8b2c-1059-4636-ad2a-aabccd67fd63",
+        "chatSessionId": "sess_fe59a3b1-3a1b-4a1f-8d2d-744533b0b06b",
+        "timestamp": 1788462914802
+      },
+      {
+        "executionId": "e23c8b2c-1059-4636-ad2a-aabccd67fd63",
+        "chatSessionId": "sess_fe59a3b1-3a1b-4a1f-8d2d-744533b0b06b",
+        "timestamp": 1788463489401
+      },
+      {
+        "executionId": "e23c8b2c-1059-4636-ad2a-aabccd67fd63",
+        "chatSessionId": "sess_fe59a3b1-3a1b-4a1f-8d2d-744533b0b06b",
+        "timestamp": 1788463774651
+      }
+    ],
+    "20. Prepare Drive: adopt-vs-clean + flight-data safety": [
+      {
+        "executionId": "e23c8b2c-1059-4636-ad2a-aabccd67fd63",
+        "chatSessionId": "sess_fe59a3b1-3a1b-4a1f-8d2d-744533b0b06b",
+        "timestamp": 1788462914881
+      },
+      {
+        "executionId": "e23c8b2c-1059-4636-ad2a-aabccd67fd63",
+        "chatSessionId": "sess_fe59a3b1-3a1b-4a1f-8d2d-744533b0b06b",
+        "timestamp": 1788463779385
+      },
+      {
+        "executionId": "e23c8b2c-1059-4636-ad2a-aabccd67fd63",
+        "chatSessionId": "sess_fe59a3b1-3a1b-4a1f-8d2d-744533b0b06b",
+        "timestamp": 1788464324599
+      }
     ]
   }
 }

@@ -216,8 +216,35 @@ class EFISDataManagerApp(rumps.App):
         self._usb_monitor = USBMonitor(
             on_efis_mount=self._on_efis_drive_mounted,
             on_efis_unmount=self._on_efis_drive_ejected,
+            on_adoption_candidate=self._on_adoption_candidate,
         )
         self._usb_monitor.start()
+
+    def _on_adoption_candidate(self, mount_point: str):
+        """A non-managed, adoptable drive appeared — hint only (Req 10.5).
+
+        This fires for a volume that looks like a previously-used GRT chart
+        drive (from the Windows tool or an older app version) but carries no
+        identity file. It deliberately does NOT auto-archive or auto-sync — a
+        drive is only acted on once it is managed (identity present, Req 10.4).
+        We just log it and post a non-intrusive notification so the user knows
+        why nothing happened and how to adopt it.
+        """
+        name = os.path.basename(mount_point.rstrip("/")) or mount_point
+        logger.info(
+            f"Unmanaged drive detected at {mount_point} — no automatic action; "
+            f"use Prepare Drive to set it up."
+        )
+        try:
+            rumps.notification(
+                "EFIS Data Manager",
+                "Unmanaged drive detected",
+                f"{name}: use Prepare Drive to set it up.",
+            )
+        except Exception as e:
+            # Notifications are best-effort; never let a failed toast disrupt
+            # monitoring.
+            logger.debug(f"Adoption-candidate notification failed: {e}")
 
     # ------------------------------------------------------------------
     # Sleep / wake handling (task 11)
@@ -297,18 +324,18 @@ class EFISDataManagerApp(rumps.App):
         """
         logger.info("System did wake.")
         self._sleeping = False
-        from efis_data_manager.usb_monitor import is_efis_drive
+        from efis_data_manager.usb_monitor import is_managed_drive
         from efis_data_manager.drive_updater import pending_families, resolve_drive_id
 
         try:
             mount_point = None
             for name in os.listdir("/Volumes"):
                 path = os.path.join("/Volumes", name)
-                if os.path.isdir(path) and is_efis_drive(path):
+                if os.path.isdir(path) and is_managed_drive(path):
                     mount_point = path
                     break
             if mount_point is None:
-                logger.info("Wake: no EFIS drive mounted; nothing to resume.")
+                logger.info("Wake: no managed drive mounted; nothing to resume.")
                 return
             # Sync-state is keyed by the drive's durable id, not the mount path.
             # Resolve it first; on an unresolved id (fail-safe) treat as no
@@ -379,12 +406,12 @@ class EFISDataManagerApp(rumps.App):
             return
 
         import subprocess
-        from efis_data_manager.usb_monitor import is_efis_drive
+        from efis_data_manager.usb_monitor import is_managed_drive
         mount_point = None
-        # Find current EFIS mount (handles EFIS, EFIS_1, EFIS_2, ... via is_efis_drive)
+        # Find the currently connected managed drive (identity-only detection).
         for name in os.listdir("/Volumes"):
             path = os.path.join("/Volumes", name)
-            if os.path.isdir(path) and is_efis_drive(path):
+            if os.path.isdir(path) and is_managed_drive(path):
                 mount_point = path
                 break
 
@@ -432,12 +459,12 @@ class EFISDataManagerApp(rumps.App):
         ``verify_drive`` on a background thread since a full count+size walk can
         be slow, reporting per-family results via notification/status.
         """
-        from efis_data_manager.usb_monitor import is_efis_drive
+        from efis_data_manager.usb_monitor import is_managed_drive
         mount_point = None
-        # Find current EFIS mount (handles EFIS, EFIS_1, EFIS_2, ... via is_efis_drive)
+        # Find the currently connected managed drive (identity-only detection).
         for name in os.listdir("/Volumes"):
             path = os.path.join("/Volumes", name)
-            if os.path.isdir(path) and is_efis_drive(path):
+            if os.path.isdir(path) and is_managed_drive(path):
                 mount_point = path
                 break
 
@@ -751,7 +778,14 @@ class EFISDataManagerApp(rumps.App):
         # Refresh alerts on startup
         self._refresh_alerts()
         if not self._charts_running:
-            threading.Thread(target=self._run_chart_check_auto, daemon=True).start()
+            # Startup is a deliberate "state of everything" moment, so report
+            # charts-current explicitly (matches nav DB / software). The silent
+            # 24h scheduled tick leaves notify_if_current at its False default.
+            threading.Thread(
+                target=self._run_chart_check_auto,
+                kwargs={"notify_if_current": True},
+                daemon=True,
+            ).start()
         if not self._nav_running:
             threading.Thread(target=self._run_nav_db_check, daemon=True).start()
         if not self._software_running:
@@ -885,7 +919,7 @@ class EFISDataManagerApp(rumps.App):
     # Chart check (auto/scheduled — downloads without asking)
     # ------------------------------------------------------------------
 
-    def _run_chart_check_auto(self):
+    def _run_chart_check_auto(self, notify_if_current: bool = False):
         from efis_data_manager.currency import update_charts
 
         self._charts_running = True
@@ -903,6 +937,9 @@ class EFISDataManagerApp(rumps.App):
                 self._set_status("Idle")
             else:
                 logger.info("Charts are current.")
+                if notify_if_current:
+                    rumps.notification("EFIS Data Manager", "Charts Current",
+                                       "All chart data sets are up to date.")
                 self._set_status("Idle")
         except Exception as e:
             logger.error(f"Chart check failed: {e}")
@@ -927,6 +964,10 @@ class EFISDataManagerApp(rumps.App):
                 rumps.notification("EFIS Data Manager", "Nav DB Updated", result["message"])
             elif result["status"] == "current":
                 rumps.notification("EFIS Data Manager", "Nav DB Current", result["message"])
+            elif result["status"] == "blocked":
+                # Transient: page didn't fully load / bot-protection challenge.
+                # Soft-fail quietly (no alarm) — the next check will retry.
+                logger.warning(f"Nav DB check skipped: {result['message']}")
             else:
                 rumps.notification("EFIS Data Manager", "Nav DB Check Failed",
                                    result["message"][:100])
@@ -1103,15 +1144,15 @@ class EFISDataManagerApp(rumps.App):
                         message="No removable USB drives found.")
             return
 
-        # Ask user to confirm which drive to format
+        # Ask user to confirm which drive to prepare.
         vol_list = "\n".join(f"• {v}" for v in volumes)
         window = rumps.Window(
-            message=f"Available volumes:\n{vol_list}\n\n"
-            "Type the EXACT volume name to format as an EFIS drive.\n"
-            "WARNING: ALL DATA WILL BE ERASED.",
-            title="Prepare Drive — Select Volume",
+            message="Select the drive to prepare. Type its EXACT name from the "
+            f"list below (this only chooses which drive — you'll set its EFIS "
+            f"label in the next step):\n\n{vol_list}",
+            title="Prepare Drive — Select Drive to Prepare",
             default_text="",
-            ok="Format", cancel="Cancel", dimensions=(300, 24),
+            ok="Next", cancel="Cancel", dimensions=(300, 24),
         )
         response = window.run()
         if not response.clicked:
@@ -1121,23 +1162,176 @@ class EFISDataManagerApp(rumps.App):
             rumps.alert(title="Prepare Drive", message=f"'{chosen}' not found in available volumes.")
             return
 
-        # Final confirmation
+        volume_path = f"/Volumes/{chosen}"
+
+        # Inspect the drive and branch on its state. Detection is identity-only:
+        #   - already managed (our identity file) -> Update (adopt) vs Start clean
+        #   - adoption candidate (GRTCHARTS/ChartData, no identity) -> Adopt vs
+        #     Start clean (previously-used GRT / Windows-tool drive)
+        #   - blank / no chart data -> Start clean only
+        from efis_data_manager.usb_monitor import (
+            is_adoption_candidate,
+            is_managed_drive,
+        )
+
+        if is_managed_drive(volume_path):
+            # Already ours. "Update" is just the adopt path (write-identity is a
+            # no-op when one exists) which runs an incremental update_drive.
+            choice = rumps.alert(
+                title="Prepare Drive",
+                message=f"'{chosen}' is already an EFIS-managed drive.\n\n"
+                "Update it (non-destructive, brings charts current) or start "
+                "clean (erase and reformat)?",
+                ok="Update", cancel="Cancel", other="Start clean",
+            )
+            # rumps.alert: ok=1, cancel=0, other=-1.
+            if choice == 1:
+                adopt = True
+            elif choice == -1:
+                adopt = False
+            else:
+                return
+        elif is_adoption_candidate(volume_path):
+            # A previously-used GRT chart drive (Windows tool or older app).
+            choice = rumps.alert(
+                title="Prepare Drive",
+                message=f"'{chosen}' already has chart data but isn't yet "
+                "EFIS-managed.\n\nAdopt & update it (non-destructive — keeps "
+                "existing charts, brings them current) or start clean (erase "
+                "and reformat)?",
+                ok="Adopt & update", cancel="Cancel", other="Start clean",
+            )
+            if choice == 1:
+                adopt = True
+            elif choice == -1:
+                adopt = False
+            else:
+                return
+        else:
+            # Blank / no chart data: only Start clean applies.
+            confirm = rumps.alert(
+                title="Prepare Drive",
+                message=f"'{chosen}' has no EFIS chart data.\n\n"
+                "Start clean will ERASE the drive and format it as an EFIS "
+                "drive.",
+                ok="Start clean", cancel="Cancel",
+            )
+            if confirm != 1:
+                return
+            adopt = False
+
+        # Flight-data safety (Req 10.11): applies to BOTH paths. If the drive
+        # holds un-archived flight data / logbooks, offer to import (archive)
+        # it before provisioning; Erase skips archiving; Cancel aborts.
+        from efis_data_manager.drive_updater import has_unarchived_flight_data
+
+        archive_first = False
+        if has_unarchived_flight_data(volume_path):
+            data_choice = rumps.alert(
+                title="Unarchived Flight Data",
+                message=f"'{chosen}' has flight data or logbooks that haven't "
+                "been archived yet.\n\nImport them first (recommended), or "
+                "erase without archiving?",
+                ok="Import first", cancel="Cancel", other="Erase",
+            )
+            if data_choice == 1:
+                archive_first = True
+            elif data_choice == -1:
+                archive_first = False
+            else:
+                return
+
+        if adopt:
+            # Non-destructive adopt/update path: no label prompt, no format.
+            threading.Thread(
+                target=self._do_adopt_drive,
+                args=(volume_path,),
+                kwargs={"archive_first": archive_first},
+                daemon=True,
+            ).start()
+            return
+
+        # Start-clean path: ask for a cosmetic label suffix. The drive is
+        # labeled EFIS_<suffix> purely as a Finder convenience so rotating
+        # drives can be named meaningfully; nothing keys on the label for
+        # detection (that is identity-only). build_efis_label upcases, strips
+        # FAT32-unsafe characters, and truncates to the 11-char FAT32 limit.
+        from efis_data_manager.usb_monitor import build_efis_label
+
+        # Pre-fill with the chosen drive's existing suffix (e.g. "EFIS_1" -> "1")
+        # so re-using the same label is one click. build_efis_label also strips
+        # a redundant EFIS_ prefix if the user leaves the full label in.
+        _default_suffix = chosen[len("EFIS_"):] if chosen.upper().startswith("EFIS_") else ""
+        label_window = rumps.Window(
+            message="Choose a label for this EFIS drive. It will be labeled "
+            "EFIS_<your text>\n(letters/numbers, upper-cased, max 11 chars "
+            "total). Leave blank for just 'EFIS'.\nExamples: SPARE -> "
+            "EFIS_SPARE, 2 -> EFIS_2.",
+            title="Prepare Drive — Choose Label",
+            default_text=_default_suffix,
+            ok="Next", cancel="Cancel", dimensions=(300, 24),
+        )
+        label_response = label_window.run()
+        if not label_response.clicked:
+            return
+        label = build_efis_label(label_response.text.strip())
+
+        # Final confirmation (shows the resulting label).
         confirm = rumps.alert(
             title="CONFIRM FORMAT",
-            message=f"This will ERASE ALL DATA on '{chosen}' and format it as an EFIS drive.\n\n"
-            "Are you sure?",
+            message=f"This will ERASE ALL DATA on '{chosen}' and format it as an "
+            f"EFIS drive labeled '{label}'.\n\nAre you sure?",
             ok="Erase and Format", cancel="Cancel",
         )
         if confirm != 1:
             return
 
-        # Run in background
-        volume_path = f"/Volumes/{chosen}"
-        threading.Thread(target=self._do_prepare_drive, args=(volume_path,), daemon=True).start()
+        # Run in background.
+        threading.Thread(
+            target=self._do_prepare_drive,
+            args=(volume_path, label),
+            kwargs={"archive_first": archive_first},
+            daemon=True,
+        ).start()
 
-    def _do_prepare_drive(self, volume_path: str):
-        """Background thread for Prepare Drive."""
+    def _archive_before_provision(self, volume_path: str) -> bool:
+        """Archive flight data off ``volume_path`` before provisioning.
+
+        Runs the existing ``archive_efis_drive`` so un-archived flight data /
+        logbooks are preserved before a Start-clean or Adopt overwrites them
+        (Req 10.11). Returns True on success (or nothing to do), False if the
+        archive raised — the caller aborts provisioning so data is never lost to
+        a failed archive.
+        """
+        from efis_data_manager.archiver import archive_efis_drive
+
+        self._set_status("Archiving flight data before preparing...")
+
+        def on_progress(msg):
+            self._set_status(msg)
+
+        try:
+            archive_efis_drive(volume_path, progress_callback=on_progress)
+            return True
+        except Exception as e:
+            logger.error(f"Pre-provision archive failed: {e}")
+            rumps.notification(
+                "EFIS Data Manager", "Archive Failed",
+                f"Could not archive flight data; aborting. {str(e)[:80]}",
+            )
+            self._set_status("Prepare aborted (archive failed)")
+            return False
+
+    def _do_prepare_drive(
+        self, volume_path: str, label: str = "EFIS", archive_first: bool = False
+    ):
+        """Background thread for the Start-clean (reformat + populate) path."""
         from efis_data_manager.drive_updater import prepare_drive
+
+        # Preserve flight data first if the user chose Import. Abort on failure
+        # rather than erasing un-archived data.
+        if archive_first and not self._archive_before_provision(volume_path):
+            return
 
         self._set_status("Preparing drive...")
 
@@ -1145,7 +1339,7 @@ class EFISDataManagerApp(rumps.App):
             self._set_status(msg)
 
         try:
-            result = prepare_drive(volume_path, progress_callback=on_progress)
+            result = prepare_drive(volume_path, label=label, progress_callback=on_progress)
             if result["success"]:
                 rumps.notification("EFIS Data Manager", "Drive Prepared", result["message"])
                 self._set_status("Idle")
@@ -1156,6 +1350,38 @@ class EFISDataManagerApp(rumps.App):
             logger.error(f"Prepare drive failed: {e}")
             rumps.notification("EFIS Data Manager", "Prepare Drive Failed", str(e)[:100])
             self._set_status("Prepare failed")
+
+    def _do_adopt_drive(self, volume_path: str, archive_first: bool = False):
+        """Background thread for the Adopt & update (non-destructive) path.
+
+        Writes the identity file and runs an incremental ``update_drive`` without
+        formatting — the migration path for a previously-used GRT / Windows-tool
+        drive (Req 10.10).
+        """
+        from efis_data_manager.drive_updater import adopt_drive
+
+        # Preserve flight data first if the user chose Import. Adopt can
+        # overwrite settings backups, so abort on archive failure.
+        if archive_first and not self._archive_before_provision(volume_path):
+            return
+
+        self._set_status("Adopting drive...")
+
+        def on_progress(msg):
+            self._set_status(msg)
+
+        try:
+            result = adopt_drive(volume_path, progress_callback=on_progress)
+            if result["success"]:
+                rumps.notification("EFIS Data Manager", "Drive Adopted", result["message"])
+                self._set_status("Idle")
+            else:
+                rumps.notification("EFIS Data Manager", "Adopt Drive Failed", result["message"][:100])
+                self._set_status("Adopt failed")
+        except Exception as e:
+            logger.error(f"Adopt drive failed: {e}")
+            rumps.notification("EFIS Data Manager", "Adopt Drive Failed", str(e)[:100])
+            self._set_status("Adopt failed")
 
     @rumps.clicked("Quit")
     def quit_app(self, _):

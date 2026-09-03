@@ -244,50 +244,84 @@ maintainer's own machine: a single drive mounted at both `/Volumes/EFIS` and
 `/Volumes/EFIS_1` across sessions.
 
 #### Acceptance Criteria
-1. WHEN the app manages an EFIS chart drive THEN it SHALL maintain a durable,
-   visible identity file at the volume root (`EFIS_DRIVE_ID.json`) containing at
-   least: an app-generated drive `id` (UUID), a `kind` discriminator
+
+**Identity as the sole authority:**
+1. WHEN the app manages a chart drive THEN it SHALL maintain a durable, visible
+   identity file at the volume root (`EFIS_DRIVE_ID.json`) containing at least:
+   an app-generated drive `id` (UUID), a `kind` discriminator
    (`"efis-chart-drive"`), and a `schema_version`.
-2. WHEN determining a drive's identity THEN the system SHALL key sync-state on
-   the app-generated `id` from the identity file (the "UUID plus something
-   else" = UUID + `kind`), NOT on the mount path or volume label.
-3. WHEN the `Prepare Drive` flow formats/populates a drive THEN it SHALL write a
-   fresh identity file as part of preparation.
-4. WHEN a recognized EFIS drive (by existing detection heuristics) mounts
-   WITHOUT an identity file THEN the system SHALL adopt it by writing an
-   identity file (lazy adoption), so pre-existing drives gain identity without
-   reformatting.
-5. WHEN the durable sync-state records interrupted families THEN it SHALL do so
+2. A drive is "managed / ours" IF AND ONLY IF it carries our identity file with
+   `kind == "efis-chart-drive"`. The system SHALL NOT use the volume label for
+   detection. Volume labels (e.g. `EFIS_SPARE`) are cosmetic; nothing keys
+   on them for identity, detection, or auto-action.
+3. WHEN determining a drive's identity THEN the system SHALL key sync-state on
+   the app-generated `id` from the identity file, NOT on the mount path or
+   volume label.
+
+**Auto-action on mount (identity-gated):**
+4. WHEN a managed drive (identity file present) mounts THEN the system SHALL
+   auto-archive and auto-sync it, including the n-1 emergency drive; no drive
+   is exempted from update.
+5. WHEN a drive WITHOUT our identity file mounts THEN the system SHALL take NO
+   automatic action — no archive, no sync — regardless of what is on the drive.
+   First contact with any unmanaged drive requires an explicit user action via
+   Prepare Drive (see criteria 9-14 below).
+
+**N-drive state tracking:**
+6. WHEN the durable sync-state records interrupted families THEN it SHALL do so
    in a map keyed by drive `id`, supporting an arbitrary number of drives
    (N-drive), so that `begin_family` / `complete_family` / `pending_families`
    for one drive never modify another drive's entry.
-6. WHEN a drive is swapped mid-rotation THEN interrupted-sync state SHALL follow
+7. WHEN a drive is swapped mid-rotation THEN interrupted-sync state SHALL follow
    the physical drive by `id`, regardless of which mount path each drive
    receives.
-7. WHEN the drive identity cannot be resolved (identity file missing/unreadable
-   and adoption fails, or a `diskutil`/read error) THEN the system SHALL fail
-   safe: it SHALL NOT apply any other drive's interrupted-sync state to this
-   drive, SHALL still perform a normal marker-based currency check and update,
-   and SHALL log a WARNING. Currency decisions SHALL never depend on the
-   identity file's contents (the on-drive commit markers + payload remain the
-   sole source of truth for "is this drive current").
-8. WHEN the identity file is written or updated THEN the system SHALL record
-   provenance/telemetry fields: `created`, `prepared_by` (app version + host),
-   `last_sync_started`, `last_sync_completed`, `last_sync_result`
-   (`clean|aborted|failed`) with the families covered, `sync_count`, and
-   `data_cycle` (the chart/nav cycle the drive was last brought to). These
-   fields SHALL be written atomically (temp + rename) and updated around the
-   commit-marker step so a partial sync does not advertise false provenance.
-9. WHEN the identity file also captures the OS `VolumeUUID` and volume `label`
-   at write time THEN a later mismatch (e.g. a cloned drive or a copied identity
-   file) SHALL be logged as a WARNING; the app-generated `id` remains the key.
-10. WHEN any recognized EFIS drive mounts (including the n-1 emergency drive)
-    THEN the system SHALL archive and refresh it to current; there are no
-    per-drive "roles" and no drive is exempted from update.
-11. The requirement to uniquely label drives SHALL be documented as a
-    recommended user practice (defense in depth), but correctness SHALL NOT
-    depend on unique labels once identity files exist.
-12. Having two EFIS drives mounted simultaneously is OUT OF SCOPE and SHALL be
-    documented as a known limitation; the identity keying SHALL avoid
-    cross-drive state corruption but concurrent-drive behavior is neither
-    guaranteed nor tested.
+8. WHEN the drive identity cannot be resolved (identity file missing/unreadable
+   or a read error) THEN the system SHALL fail safe: it SHALL NOT apply any
+   other drive's interrupted-sync state to this drive, and SHALL log a WARNING.
+   Currency decisions SHALL never depend on the identity file's contents (the
+   on-drive commit markers + payload remain the sole source of truth).
+
+**Prepare Drive — adoption, provisioning, and data safety:**
+9. WHEN Prepare Drive runs against a volume THEN it SHALL inspect the drive's
+   contents and offer the appropriate provisioning path:
+   - **Blank / no GRTCHARTS**: only "Start clean" (reformat + full populate).
+   - **Has GRTCHARTS/ (or ChartData) but no identity file**: a previously-used
+     GRT chart drive (e.g. from the Windows tool or an older version of this
+     app). Offer "Start clean" (reformat) OR "Adopt & update" (non-destructive:
+     write identity, incremental sync of only the delta).
+   - **Has our identity file already**: already managed; treat as a normal
+     update (optionally offer re-clean).
+10. WHEN "Adopt & update" is chosen THEN the system SHALL NOT reformat. It SHALL
+    write the identity file onto the existing drive and run `update_drive` to
+    bring it current incrementally, preserving chart data that already matches.
+11. BEFORE either "Start clean" or "Adopt & update", IF the drive contains
+    unarchived flight data or logbooks (FDL logs, DEMO recordings, snapshots,
+    settings backups, logbook) THEN the system SHALL prompt the user:
+    - **Import / Archive**: run the archive process first to preserve the data,
+      then proceed with provisioning.
+    - **Erase**: skip archiving (user acknowledges the data will be lost or is
+      disposable), then proceed.
+    This prompt applies to BOTH paths because "Start clean" is destructive and
+    "Adopt & update" may overwrite settings; unarchived flight data should
+    always be offered for preservation.
+12. WHEN the identity file is written or updated THEN the system SHALL record
+    provenance/telemetry fields: `created`, `prepared_by` (app version + host),
+    `last_sync_started`, `last_sync_completed`, `last_sync_result`
+    (`clean|aborted|failed`) with the families covered, `sync_count`, and
+    `data_cycle` (the chart/nav cycle the drive was last brought to). These
+    fields SHALL be written atomically (temp + rename) and updated around the
+    commit-marker step so a partial sync does not advertise false provenance.
+13. WHEN the identity file also captures the OS `VolumeUUID` and volume `label`
+    at write time THEN a later mismatch (e.g. a cloned drive or copied file)
+    SHALL be logged as a WARNING; the app-generated `id` remains the key.
+14. Prepare Drive SHALL let the user set a cosmetic volume label (defaulting to
+    `EFIS_<suffix>`) for Finder convenience. The label does not affect detection
+    or auto-action.
+
+**Documentation and limitations:**
+15. Having two managed drives mounted simultaneously is OUT OF SCOPE and SHALL be
+    documented as a known limitation.
+16. The README SHALL document: detection is by identity file (not label), first
+    contact requires Prepare Drive, adoption path for pre-existing drives, and
+    the recommended practice of giving each drive a distinct label for Finder
+    clarity.

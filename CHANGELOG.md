@@ -5,6 +5,63 @@ a single release version (git tag + `__version__` + `pyproject.toml`) with
 independent display labels for the menu-bar tool (`MENUBAR_VERSION`) and the
 dashboard (`DASHBOARD_VERSION`).
 
+## v1.2.0
+
+Release version 1.2.0 · menu bar 0.9.0 · dashboard 1.0.0
+
+Hardening release driven by real-world Prepare Drive + full-sync testing on
+hardware. Fixes the root cause of chart-sync stalls, adds automatic recovery
+for a wedged drive, makes Prepare Drive clearer and safer, and stops a
+misleading nav-database "parse error" false alarm. Adds a short Getting Started
+guide.
+
+### Sync reliability (menu-bar tool)
+
+- **Fixed the chart-sync stall (root cause).** rsync's per-file output was
+  written to OS pipes that were only drained after the process exited. On a
+  large chart set that pipe filled and rsync blocked mid-transfer — appearing
+  as a hung sync (drive still mounted, 0 bytes/s, no error). rsync output now
+  streams to temp files, so the transfer runs to completion regardless of how
+  many files it reports. This was misdiagnosed in the field as a failing USB
+  drive, a dock, or a VM USB conflict; it was none of those.
+- **Stall detection for a wedged-but-mounted drive.** A drive that stops
+  accepting writes while staying mounted (flaky USB link, controller hang,
+  hypervisor USB contention) is not caught by the mount-removal watchdog. Each
+  family sync now aborts with a clear "sync stalled" error if it makes no
+  progress for a set window, instead of hanging indefinitely.
+
+### Prepare Drive (menu-bar tool)
+
+- **Correct whole-disk format.** `diskutil eraseDisk` is now always given the
+  whole-disk identifier (resolved via `ParentWholeDisk`), never a partition
+  slice, and format failures are logged instead of failing silently.
+- **Format progress feedback.** The (blocking) format step now shows an
+  elapsed-time heartbeat so a slow format no longer looks like a hang, with a
+  generous safety timeout.
+- **Clearer prompts.** The first prompt is now "Select Drive to Prepare"
+  (choosing which drive), clearly distinct from the later "Choose Label" step,
+  which is pre-filled with the drive's current label suffix.
+- **Label fix.** Entering a value that already starts with `EFIS_` (e.g. the
+  drive's full current label) no longer double-prefixes to `EFIS_EFIS_1`.
+- **Data-cycle provenance.** The drive's data cycle is stamped into the identity
+  file at prepare/adopt time, so provenance is present even if the first
+  populate is interrupted.
+- **Volume-root metadata cleanup.** macOS AppleDouble `._*` / `.DS_Store`
+  sidecars are now swept from the volume root after provisioning (the per-family
+  purge only covered the chart tree).
+
+### Currency checks (menu-bar tool)
+
+- **No more nav-DB "parse error" false alarm.** A transient incomplete page load
+  or bot-protection challenge on the GRT nav-database page is now treated as a
+  soft "couldn't check, will retry" instead of a hard error implying the page
+  layout changed. The page fetch also waits for the data to actually render
+  (network-idle + element wait) rather than a fixed sleep, so the check is far
+  less likely to catch a half-loaded page.
+- **Charts-current notification on startup.** The startup check now reports
+  "Charts Current" alongside the nav DB and software checks; the routine daily
+  chart check stays silent when nothing changed.
+
 ## v1.1.0
 
 Release version 1.1.0 · menu bar 0.8.0 · dashboard 1.0.0

@@ -250,3 +250,57 @@ def test_preflight_failure_when_mount_absent(env, monkeypatch, caplog):
     assert result.errors
     assert not (env["drive"] / "ChartData" / "ScannedCharts.sqlite").exists()
     assert any(rec.levelno >= logging.ERROR for rec in caplog.records)
+
+
+# --- stall detection: wedged-but-mounted drive ------------------------------
+# A drive that stops accepting writes but stays mounted is NOT caught by the
+# mount-removal watchdog. sync_payload must detect the stall (rsync alive, its
+# stdout log not growing) within STALL_TIMEOUT_SECONDS, terminate rsync, and
+# report a clear "stalled" error instead of hanging forever.
+
+
+def test_sync_payload_stall_detected(env, monkeypatch, caplog):
+    import subprocess
+
+    scanned = _job(env, "scanned")
+
+    # A fake rsync that never exits and never writes to its stdout file, so the
+    # stdout log size never grows -> the stall detector must trip.
+    class _FakeProc:
+        def __init__(self):
+            self._terminated = False
+            self.returncode = None
+
+        def poll(self):
+            return self.returncode
+
+        def wait(self, timeout=None):
+            if self._terminated:
+                self.returncode = -15
+                return self.returncode
+            # Simulate a live-but-idle process: honor the poll interval.
+            raise subprocess.TimeoutExpired(cmd="rsync", timeout=timeout)
+
+        def terminate(self):
+            self._terminated = True
+            self.returncode = -15
+
+        def kill(self):
+            self._terminated = True
+            self.returncode = -9
+
+    def fake_popen(cmd, stdout=None, stderr=None, **k):
+        # stdout/stderr are open file handles (temp files); leave them empty so
+        # the byte-size liveness proxy never advances.
+        return _FakeProc()
+
+    monkeypatch.setattr(subprocess, "Popen", fake_popen)
+    # Tiny timeout so the test is fast.
+    monkeypatch.setattr(du, "STALL_TIMEOUT_SECONDS", 1)
+
+    with caplog.at_level(logging.ERROR, logger=du.logger.name):
+        files, errors = du.sync_payload(scanned)
+
+    assert files == 0
+    assert any("stalled" in e for e in errors), errors
+    assert any("stalled" in rec.getMessage() for rec in caplog.records)

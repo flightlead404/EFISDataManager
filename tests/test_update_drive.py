@@ -266,6 +266,25 @@ def _prepare_to_populate(monkeypatch, tmp_path):
         return _FakeProc()
 
     monkeypatch.setattr(subprocess, "run", fake_run)
+
+    # The format step now runs eraseDisk via Popen (with an elapsed-time
+    # heartbeat). Stub Popen with an immediately-finished fake process so the
+    # heartbeat loop exits at once.
+    class _FakePopen:
+        def __init__(self, *a, **k):
+            self.returncode = 0
+        def poll(self):
+            return 0
+        def wait(self, timeout=None):
+            return 0
+        def communicate(self):
+            return ("", "")
+        def terminate(self):
+            pass
+        def kill(self):
+            pass
+
+    monkeypatch.setattr(subprocess, "Popen", _FakePopen)
     # prepare_drive polls for "/Volumes/EFIS"; redirect isdir to our temp mount.
     real_isdir = du.os.path.isdir
 
@@ -338,3 +357,155 @@ def test_prepare_drive_failure_reports_failed_family(monkeypatch, tmp_path):
 
     assert out["success"] is False
     assert "plates" in out["message"]
+
+
+# --- prepare_drive must erase the WHOLE disk, not a partition slice ----------
+# Regression: a mounted volume's DeviceIdentifier is typically a slice
+# (e.g. "disk4s1"), but `diskutil eraseDisk` requires the whole-disk id
+# (e.g. "disk4"). prepare_drive must resolve ParentWholeDisk and pass THAT to
+# eraseDisk, otherwise the format silently no-ops against the slice.
+
+
+def test_prepare_drive_erases_whole_disk_not_slice(monkeypatch, tmp_path):
+    import plistlib
+    import subprocess
+
+    mount = tmp_path / "EFIS"
+    mount.mkdir()
+
+    captured = {"erase_cmd": None}
+
+    def fake_run(cmd, *a, **k):
+        class _P:
+            returncode = 0
+            stderr = ""
+            stdout = b""
+
+        p = _P()
+        if cmd[:2] == ["diskutil", "info"]:
+            # Volume is mounted on a SLICE; parent whole-disk is disk4.
+            p.stdout = plistlib.dumps({
+                "DeviceIdentifier": "disk4s1",
+                "ParentWholeDisk": "disk4",
+            })
+        return p
+
+    monkeypatch.setattr(subprocess, "run", fake_run)
+
+    # eraseDisk now runs via Popen (heartbeat loop); capture its argv here.
+    class _FakePopen:
+        def __init__(self, cmd, *a, **k):
+            if cmd[:2] == ["diskutil", "eraseDisk"]:
+                captured["erase_cmd"] = list(cmd)
+            self.returncode = 0
+        def poll(self):
+            return 0
+        def wait(self, timeout=None):
+            return 0
+        def communicate(self):
+            return ("", "")
+        def terminate(self):
+            pass
+        def kill(self):
+            pass
+
+    monkeypatch.setattr(subprocess, "Popen", _FakePopen)
+
+    real_isdir = du.os.path.isdir
+    monkeypatch.setattr(
+        du.os.path, "isdir",
+        lambda p: True if p == "/Volumes/EFIS" else real_isdir(p),
+    )
+    real_makedirs = du.os.makedirs
+
+    def fake_makedirs(path, *a, **k):
+        if path == du.os.path.join("/Volumes/EFIS", "GRTCHARTS"):
+            return real_makedirs(str(mount / "GRTCHARTS"), *a, **k)
+        return real_makedirs(path, *a, **k)
+
+    monkeypatch.setattr(du.os, "makedirs", fake_makedirs)
+    monkeypatch.setattr(
+        du, "update_drive",
+        lambda *a, **k: {
+            "jobs": {"scanned": JobResult(name="scanned", status="updated", verified=True)},
+            "errors": [],
+            "aborted": False,
+        },
+    )
+
+    # Default label "EFIS" so the remount wait resolves against the stubbed
+    # "/Volumes/EFIS". The whole-disk assertion is independent of the label.
+    out = du.prepare_drive("/Volumes/EFIS_1")
+
+    assert out["success"] is True
+    assert captured["erase_cmd"] is not None, "eraseDisk was never invoked"
+    # The device argument must be the WHOLE disk, never the slice.
+    assert "/dev/disk4" in captured["erase_cmd"]
+    assert "/dev/disk4s1" not in captured["erase_cmd"]
+
+
+def test_prepare_drive_wholedisk_falls_back_to_device_id(monkeypatch, tmp_path):
+    # When ParentWholeDisk is absent (volume already IS a whole disk), fall
+    # back to DeviceIdentifier so eraseDisk still gets a usable target.
+    import plistlib
+    import subprocess
+
+    mount = tmp_path / "EFIS"
+    mount.mkdir()
+    captured = {"erase_cmd": None}
+
+    def fake_run(cmd, *a, **k):
+        class _P:
+            returncode = 0
+            stderr = ""
+            stdout = b""
+
+        p = _P()
+        if cmd[:2] == ["diskutil", "info"]:
+            p.stdout = plistlib.dumps({"DeviceIdentifier": "disk9"})
+        return p
+
+    monkeypatch.setattr(subprocess, "run", fake_run)
+
+    class _FakePopen:
+        def __init__(self, cmd, *a, **k):
+            if cmd[:2] == ["diskutil", "eraseDisk"]:
+                captured["erase_cmd"] = list(cmd)
+            self.returncode = 0
+        def poll(self):
+            return 0
+        def wait(self, timeout=None):
+            return 0
+        def communicate(self):
+            return ("", "")
+        def terminate(self):
+            pass
+        def kill(self):
+            pass
+
+    monkeypatch.setattr(subprocess, "Popen", _FakePopen)
+    real_isdir = du.os.path.isdir
+    monkeypatch.setattr(
+        du.os.path, "isdir",
+        lambda p: True if p == "/Volumes/EFIS" else real_isdir(p),
+    )
+    real_makedirs = du.os.makedirs
+
+    def fake_makedirs(path, *a, **k):
+        if path == du.os.path.join("/Volumes/EFIS", "GRTCHARTS"):
+            return real_makedirs(str(mount / "GRTCHARTS"), *a, **k)
+        return real_makedirs(path, *a, **k)
+
+    monkeypatch.setattr(du.os, "makedirs", fake_makedirs)
+    monkeypatch.setattr(
+        du, "update_drive",
+        lambda *a, **k: {
+            "jobs": {"scanned": JobResult(name="scanned", status="updated", verified=True)},
+            "errors": [],
+            "aborted": False,
+        },
+    )
+
+    out = du.prepare_drive("/Volumes/UNTITLED")
+    assert out["success"] is True
+    assert "/dev/disk9" in captured["erase_cmd"]

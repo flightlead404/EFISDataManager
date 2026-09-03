@@ -942,16 +942,40 @@ def _browser_missing_message() -> str:
     )
 
 
-def _playwright_fetch_grt_page(url: str, timeout: int = 60000) -> str:
+def _playwright_fetch_grt_page(
+    url: str, timeout: int = 60000, wait_selector: str = None
+) -> str:
     """Fetch a GRT page using Playwright to bypass Sucuri JS challenge.
 
     Runs in a subprocess to avoid event loop conflicts.
+
+    Instead of a fixed sleep (which raced the Sucuri JS challenge and sometimes
+    captured a truncated/interstitial page — the "could not parse" false
+    alarm), this waits for the network to settle and, when ``wait_selector`` is
+    given, for that element to actually appear. Both waits are best-effort: if
+    they time out we still return whatever content loaded, so the caller's own
+    validation decides success vs. a transient block.
+
+    Args:
+        url: Page URL to fetch.
+        timeout: Navigation timeout (ms).
+        wait_selector: Optional CSS selector to wait for (e.g. "table") so the
+            data has rendered before we snapshot ``page.content()``.
 
     Returns:
         Page HTML content.
     """
     import subprocess as _sp
     import sys
+
+    sel_block = ""
+    if wait_selector:
+        sel_block = (
+            f'    try:\n'
+            f'        page.wait_for_selector("{wait_selector}", timeout=20000)\n'
+            f'    except Exception:\n'
+            f'        pass\n'
+        )
 
     script = f'''
 import time
@@ -961,7 +985,13 @@ with sync_playwright() as p:
     browser = p.chromium.launch(headless=True)
     page = browser.new_page()
     page.goto("{url}", timeout={timeout})
-    time.sleep(5)
+    # Let the Sucuri JS challenge run and the DOM settle.
+    try:
+        page.wait_for_load_state("networkidle", timeout=30000)
+    except Exception:
+        pass
+{sel_block}    # Small settle margin after network idle for late DOM writes.
+    time.sleep(2)
     print(page.content())
     browser.close()
 '''
@@ -1068,7 +1098,7 @@ def check_and_download_nav_db() -> dict:
         return {"status": "error", "message": browser_error}
 
     try:
-        html = _playwright_fetch_grt_page(GRT_NAV_PROC_URL)
+        html = _playwright_fetch_grt_page(GRT_NAV_PROC_URL, wait_selector="table")
     except Exception as e:
         logger.error(f"Failed to fetch GRT nav DB page: {e}")
         return {"status": "error", "message": str(e)}
@@ -1093,8 +1123,32 @@ def check_and_download_nav_db() -> dict:
                         posted_date = cell
 
     if not valid_date:
-        logger.warning("Could not parse valid date from GRT nav DB page.")
-        return {"status": "error", "message": "Could not parse valid date from nav DB page."}
+        # No data table / no date rendered. The most common cause is a transient
+        # incomplete load or the Sucuri JS challenge not resolving in time (the
+        # page fetches fine on a later attempt). Treat as a soft "blocked /
+        # retry later" — like the software check — rather than a hard error that
+        # implies a permanent layout change. Only if the page clearly rendered
+        # (a table exists) but still has no date do we flag a possible layout
+        # change for investigation.
+        if not tables:
+            logger.warning(
+                "GRT nav DB page returned no data table (likely a transient "
+                "incomplete load or bot-protection challenge); will retry."
+            )
+            return {
+                "status": "blocked",
+                "message": "Could not check nav DB right now (page did not fully "
+                           "load). Will retry on the next scheduled check.",
+            }
+        logger.warning(
+            "GRT nav DB page rendered a table but no valid date was found "
+            "(possible page layout change)."
+        )
+        return {
+            "status": "error",
+            "message": "Could not read the nav DB valid date (page layout may "
+                       "have changed).",
+        }
 
     # Compare against local metadata
     metadata = _load_grt_metadata()

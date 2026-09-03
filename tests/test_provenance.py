@@ -119,14 +119,13 @@ def _job(env, name):
 def _adopt(env, monkeypatch):
     """Write an identity file to the drive so provenance has something to update.
 
-    Returns the drive id. Uses resolve_drive_id's adoption path with
-    is_efis_drive forced True so an EFIS_DRIVE_ID.json is created at the root.
+    Returns the drive id. Detection is identity-only (no lazy adoption on
+    mount), so the identity file is written explicitly — the way the Prepare
+    Drive flow does — then resolve_drive_id reads it back.
     """
-    monkeypatch.setattr(
-        "efis_data_manager.usb_monitor.is_efis_drive", lambda mp: True
-    )
     monkeypatch.setattr(du, "_volume_uuid", lambda mp: None)
     monkeypatch.setattr(du, "_volume_name", lambda mp: None)
+    du.write_identity(env["mount"], du._new_identity(env["mount"]))
     drive_id = du.resolve_drive_id(env["mount"])
     assert drive_id is not None
     assert du.read_identity(env["mount"]) is not None
@@ -226,11 +225,8 @@ def test_abort_records_aborted_no_count_no_completed(env, monkeypatch):
 
 
 def test_no_identity_file_provenance_noops_job_still_syncs(env, monkeypatch):
-    # Plain temp dir: not a recognized EFIS drive, so resolve_drive_id returns
-    # None and run_sync_job keys sync-state by the mount path fallback.
-    monkeypatch.setattr(
-        "efis_data_manager.usb_monitor.is_efis_drive", lambda mp: False
-    )
+    # Plain temp dir with no identity file, so resolve_drive_id returns None and
+    # run_sync_job keys sync-state by the mount path fallback.
     monkeypatch.setattr(du, "_volume_uuid", lambda mp: None)
     monkeypatch.setattr(du, "_volume_name", lambda mp: None)
 

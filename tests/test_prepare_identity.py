@@ -83,16 +83,11 @@ def test_ensure_identity_failure_does_not_raise(mount, monkeypatch, caplog):
 def test_prepared_drive_resolves_to_written_id(mount, monkeypatch):
     """Smoke: after _ensure_identity, resolve_drive_id returns the same id.
 
-    resolve_drive_id waits for mount readiness and consults is_efis_drive for
-    adoption; here the identity file already exists so neither adoption nor a
-    real mount is needed. wait_for_mount_ready is short-circuited because
+    Detection is identity-only: the identity file _ensure_identity wrote is what
+    resolve_drive_id reads back. wait_for_mount_ready is short-circuited because
     tmp_path is not an OS mount point.
     """
     monkeypatch.setattr(du, "wait_for_mount_ready", lambda *a, **k: True)
-    monkeypatch.setattr(
-        "efis_data_manager.usb_monitor.is_efis_drive",
-        lambda mp: (_ for _ in ()).throw(AssertionError("should not adopt")),
-    )
 
     written_id = du._ensure_identity(mount)
     assert du.resolve_drive_id(mount) == written_id

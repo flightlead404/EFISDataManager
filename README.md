@@ -17,11 +17,15 @@ analyzing what your engine and airframe are doing.
 > Seattle Avionics. Use at your own risk; always verify chart currency before
 > flight.
 
+**New here?** See [GETTING-STARTED.md](GETTING-STARTED.md) for a five-minute
+quick start. This README is the full user guide.
+
 ## Functionality
 
 **Menu-bar tool (automatic, runs in the background):**
-- Detects when a GRT EFIS USB drive is inserted (`EFIS`, `EFIS_1`, ... or any
-  drive containing a `GRTCHARTS/` folder).
+- Detects when an EFIS-managed USB drive is inserted (recognized by a durable
+  identity file the app writes, not by its volume name). A never-before-seen
+  drive is adopted once via **Prepare Drive**.
 - Downloads and stages current chart data and **GRT navigation databases** to a
   local USB image. You choose which chart products to pull based on your
   subscription — **VFR sectionals, IFR low, IFR high, approach plates** — so a
@@ -137,35 +141,61 @@ recordings, snapshots, settings, logbook), imports it for analysis, and brings
 the drive's charts and nav data current. Chart/nav update checks also run on a
 background schedule, so the local copy stays fresh between insertions.
 
-**USB drive naming — how a drive is recognized.** The tool treats a mounted
-volume as an EFIS drive if **either** of these is true:
+**How a drive is recognized — by identity, not by name.** The tool treats a
+mounted volume as EFIS-managed **if and only if** it carries the app's identity
+file (`EFIS_DRIVE_ID.json`) at its root. The **volume label plays no role** in
+detection — the old `EFIS`/`EFIS_1`/`EFIS_SPARE` name matching is gone. Labels
+are now purely cosmetic (a Finder convenience).
 
-- The volume is named **`EFIS`** (case-insensitive). A trailing number with an
-  optional space, underscore, or hyphen is also accepted, so macOS's automatic
-  suffixes and rotating drives work too: `EFIS`, `EFIS1`, `EFIS 2`, `EFIS_3`,
-  `EFIS-4`. Names with extra words (like `EFIS_BACKUP`) are **not** matched.
-- **or** the volume contains a **`GRTCHARTS/`** folder at its root — so an
-  already-provisioned GRT drive is detected regardless of its name.
+First contact with any drive is always an explicit user action: a
+never-before-seen drive — even one that already holds a `GRTCHARTS/` folder or a
+full chart payload — triggers **no automatic archive or sync**. The app just
+notes it found an unmanaged drive and points you at **Prepare Drive** to adopt
+it. Nothing happens to a drive until you've prepared or adopted it once.
 
-**Preparing a fresh USB stick (Prepare Drive…).** To turn a blank or repurposed
-USB stick into an EFIS drive, use the menu bar's **Prepare Drive…** item. It:
+**Preparing or adopting a drive (Prepare Drive…).** Use the menu bar's
+**Prepare Drive…** item. The first step, **Select Drive to Prepare**, lists your
+removable volumes (internal and Time Machine drives are excluded) and asks you to
+type the exact name of the one to use — this only chooses the drive; you set its
+label in a later step. The app then inspects the drive and offers the right path:
 
-1. Lists your removable volumes and asks you to type the exact name of the one
-   to use (internal and Time Machine drives are excluded).
-2. Asks for a second explicit confirmation — **this erases everything on the
-   drive.**
-3. Reformats the entire drive as **FAT32** with an **MBR** partition map (the
-   layout GRT EFIS expects) and **names the volume `EFIS` for you**.
-4. Creates the `GRTCHARTS/` folder and populates the drive with your current
-   chart and nav data.
+- **Blank / no chart data** → **Start clean**: reformat as **FAT32** with an
+  **MBR** partition map (the layout GRT EFIS expects), write a fresh identity,
+  and populate it with your current chart and nav data. You're asked for a
+  cosmetic `EFIS_<name>` label and a final confirmation before anything is
+  erased.
+- **Previously-used GRT drive** (has chart data from the Windows Chart Data
+  Manager or an older version of this app, but no identity yet) → choose
+  **Adopt & update** or **Start clean**. **Adopt & update is non-destructive**:
+  it keeps your existing charts, writes the identity file so the drive becomes
+  managed, and runs an incremental sync that brings only the delta current — no
+  ~9 GB re-copy, no reformat.
+- **Already managed** (has our identity) → **Update** (non-destructive
+  incremental sync) or **Start clean** (reformat).
 
-You don't name the drive yourself when using Prepare Drive — it's labeled `EFIS`
-automatically. Manual naming only matters if you format a stick yourself instead
-of using Prepare Drive; in that case, format it FAT32 and name it `EFIS`.
+**Flight-data safety.** Before either Start clean or Adopt, if the drive holds
+un-archived flight data or logbooks (FDL logs, DEMO recordings, snapshots,
+settings backups, or a logbook export), you're prompted to **Import first**
+(archive it, preserving the data) or **Erase** (skip archiving). This applies to
+both paths — Start clean erases everything, and Adopt can overwrite settings
+backups — so flight data is never silently lost.
 
-> **Prepare Drive is destructive.** It erases the whole target disk. Double-check
+**Cosmetic labels.** During Start clean the **Choose Label** step lets you name
+the drive `EFIS_<your text>` (letters/numbers, upper-cased, 11-character FAT32
+limit; blank → `EFIS`). It is pre-filled with the drive's current label suffix,
+so re-using the same name is one click, and if you type a value that already
+starts with `EFIS_` it is not doubled. The label is only for telling rotating
+drives apart in Finder; the app keys on the identity file, never the label. A
+distinct label per drive is still recommended for clarity.
+
+> **Start clean is destructive.** It erases the whole target disk. Double-check
 > the volume name before confirming, and never point it at a drive holding data
-> you want to keep.
+> you want to keep. Adopt & update is non-destructive.
+
+> **Migration note.** Because detection is now identity-only, any drive that was
+> previously auto-detected by its `EFIS…` label must be **adopted once** via
+> Prepare Drive → **Adopt & update** (non-destructive) before automatic
+> archive/sync resumes for it.
 
 **Using multiple EFIS drives.** If you rotate more than one drive — say the one
 in the airplane, an n-1 spare, and one at the Mac — the tool tracks each drive
@@ -174,10 +204,11 @@ drive's root). This means an in-progress or interrupted sync on one drive is
 never confused with another, even when macOS reassigns mount paths (the same
 stick can come up as `/Volumes/EFIS` one time and `/Volumes/EFIS_1` the next).
 
-- **Recommended:** give each drive a unique volume label (`EFIS-1`, `EFIS-2`,
-  and so on) as defense in depth. It's no longer required for correctness once
-  the identity file exists, but it keeps things clear in Finder.
-- **Every recognized EFIS drive you plug in is archived and refreshed to
+- **Recommended:** give each drive a unique, meaningful cosmetic label via
+  Prepare Drive (`EFIS_SPARE`, `EFIS_N1`, `EFIS_2`, ...). It plays no role in
+  detection — that's the identity file — but it keeps the drives clear in Finder
+  and in the app.
+- **Every managed EFIS drive you plug in is archived and refreshed to
   current** — including the n-1 emergency drive when you bring it back. There
   are no per-drive roles; no drive is skipped.
 - **Known limitation:** connecting two EFIS drives at the same time is not

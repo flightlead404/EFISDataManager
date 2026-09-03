@@ -5,18 +5,18 @@
 
 """Unit tests for the drive-identity primitives in drive_updater.
 
-Covers Task 14 of the drive-sync-integrity spec:
+Covers the drive-identity primitives in drive_updater:
   - read_identity / write_identity (atomic round-trip, no partial file)
   - update_identity_provenance (merge without clobbering id/kind)
-  - resolve_drive_id: read existing id; lazy adoption when file missing but the
-    volume is a recognized EFIS drive; None when kind wrong / file corrupt /
-    not an EFIS drive; VolumeUUID-mismatch WARNING.
+  - resolve_drive_id: read existing id; None when kind wrong / file corrupt /
+    identity absent (identity-only detection, NO lazy adoption on mount — a
+    drive with no identity file resolves to None and no file is written);
+    VolumeUUID-mismatch WARNING.
 
 No physical USB is required: the mount root is ``tmp_path`` and diskutil is
-mocked via monkeypatching ``_volume_uuid`` / ``_volume_name`` and
-``is_efis_drive``.
+mocked via monkeypatching ``_volume_uuid`` / ``_volume_name``.
 
-Requirements: 10.1, 10.2, 10.3, 10.4, 10.7, 10.9
+Requirements: 10.1, 10.2, 10.3, 10.7, 10.9
 """
 
 import json
@@ -151,75 +151,44 @@ def test_update_provenance_noop_without_identity(mount):
 # --- resolve_drive_id: existing identity ------------------------------------
 
 
-def test_resolve_returns_existing_id(mount, monkeypatch):
+def test_resolve_returns_existing_id(mount):
     data = du._new_identity(mount)
     du.write_identity(mount, data)
-    # is_efis_drive must NOT be needed when a valid identity already exists.
-    monkeypatch.setattr(
-        "efis_data_manager.usb_monitor.is_efis_drive",
-        lambda mp: (_ for _ in ()).throw(AssertionError("should not adopt")),
-    )
     assert du.resolve_drive_id(mount) == data["id"]
 
 
-def test_resolve_wrong_kind_and_not_efis_returns_none(mount, monkeypatch):
+def test_resolve_wrong_kind_returns_none(mount):
     _write_identity_file(
         mount, {"schema_version": 1, "id": "abc", "kind": "something-else"}
     )
-    monkeypatch.setattr(
-        "efis_data_manager.usb_monitor.is_efis_drive", lambda mp: False
-    )
     assert du.resolve_drive_id(mount) is None
 
 
-def test_resolve_corrupt_identity_not_efis_returns_none(mount, monkeypatch):
+def test_resolve_corrupt_identity_returns_none(mount):
     with open(os.path.join(mount, du.IDENTITY_FILENAME), "w") as f:
         f.write("garbage{")
-    monkeypatch.setattr(
-        "efis_data_manager.usb_monitor.is_efis_drive", lambda mp: False
-    )
     assert du.resolve_drive_id(mount) is None
 
 
-def test_resolve_not_efis_drive_returns_none(mount, monkeypatch):
-    # No identity file, not a recognized EFIS drive -> fail safe.
-    monkeypatch.setattr(
-        "efis_data_manager.usb_monitor.is_efis_drive", lambda mp: False
-    )
+def test_resolve_no_identity_returns_none(mount):
+    # No identity file -> fail safe.
     assert du.resolve_drive_id(mount) is None
 
 
-# --- resolve_drive_id: lazy adoption ----------------------------------------
+# --- resolve_drive_id: identity-only, no lazy adoption ----------------------
 
 
-def test_resolve_adopts_recognized_unmarked_drive(mount, monkeypatch):
-    monkeypatch.setattr(
-        "efis_data_manager.usb_monitor.is_efis_drive", lambda mp: True
-    )
-    assert du.read_identity(mount) is None  # unmarked to start
+def test_resolve_does_not_adopt_grtcharts_drive(mount):
+    # A previously-used GRT chart drive (GRTCHARTS/ present) but no identity is
+    # NOT adopted on mount: resolve returns None and writes no identity file.
+    os.makedirs(os.path.join(mount, "GRTCHARTS"))
+    assert du.read_identity(mount) is None
 
-    drive_id = du.resolve_drive_id(mount)
+    assert du.resolve_drive_id(mount) is None
 
-    assert drive_id is not None
-    written = du.read_identity(mount)
-    assert written is not None
-    assert written["id"] == drive_id
-    assert written["kind"] == du.IDENTITY_KIND
-    assert written["schema_version"] == 1
-    # Provenance fields initialised.
-    assert written["sync_count"] == 0
-    assert written["last_sync_result"] is None
-    assert written["last_sync_families"] == []
-    assert written["data_cycle"] is None
-
-
-def test_resolve_adopt_is_stable_across_calls(mount, monkeypatch):
-    monkeypatch.setattr(
-        "efis_data_manager.usb_monitor.is_efis_drive", lambda mp: True
-    )
-    first = du.resolve_drive_id(mount)
-    second = du.resolve_drive_id(mount)
-    assert first == second
+    # No EFIS_DRIVE_ID.json was created.
+    assert du.read_identity(mount) is None
+    assert not os.path.exists(os.path.join(mount, du.IDENTITY_FILENAME))
 
 
 # --- resolve_drive_id: VolumeUUID mismatch WARNING --------------------------

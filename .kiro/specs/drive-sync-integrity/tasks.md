@@ -150,6 +150,48 @@ data/state primitives first, then the job engine, then app-level orchestration.
     resolves to a stable id.
   - _Requirements: 10.3, 10.11, 10.12_
 
+- [x] 18. Identity-only detection (drop label matching)
+  - Rename `is_efis_drive` -> `is_managed_drive` and make it check ONLY for a
+    valid identity file (`EFIS_DRIVE_ID.json`, `kind == "efis-chart-drive"`).
+    Remove the `EFIS`/`EFIS_N` volume-label regex entirely. Update all callers
+    (usb_monitor, app.py mount/eject/verify handlers, resolve_drive_id) so the
+    volume label is used nowhere for detection.
+  - Remove lazy adoption from `resolve_drive_id`: it returns the id if the
+    identity file is present, else None (no writing on mount).
+  - Keep a helper to detect an *adoption candidate* (has `GRTCHARTS/` or
+    `ChartData/` but no identity) for Prepare Drive's use only.
+  - Unit tests: managed only when identity present; label never matches;
+    GRTCHARTS-without-identity is NOT auto-detected but IS an adoption candidate.
+  - _Requirements: 10.1, 10.2, 10.3_
+
+- [x] 19. Identity-gated mount auto-action
+  - Update the USB monitor / app mount handler so archive + sync run ONLY for
+    managed drives (identity present). An unmanaged drive mount triggers no
+    automatic action (log an informational note; optionally surface a
+    "found an unmanaged drive — use Prepare Drive to adopt" hint).
+  - Ensure eject/verify handlers no longer rely on label detection.
+  - Requirements: 10.4, 10.5, 10.8
+  - _Requirements: 10.4, 10.5, 10.8_
+
+- [x] 20. Prepare Drive: adopt-vs-clean + flight-data safety
+  - Rework the Prepare Drive flow: inspect the selected volume; branch on
+    (blank | GRTCHARTS-without-identity | already-identified).
+  - Add "Adopt & update" (non-destructive: write identity + incremental
+    `update_drive`) alongside "Start clean" (reformat + populate).
+  - Before either path, if the drive holds unarchived flight data/logbooks,
+    prompt Import/Archive vs Erase and act accordingly (archive uses the
+    existing `archive_efis_drive`).
+  - Add an `adopt_drive(mount_point, progress_callback=None)` helper in
+    drive_updater (write identity + update_drive, no format) for the adopt path.
+  - Unit tests (headless): adopt_drive writes identity + runs update without
+    formatting; adoption-candidate detection; flight-data presence check. The
+    interactive prompts live in app.py (not unit-tested); extract any pure
+    branch/decision helper and test that.
+  - Update README: detection by identity (not label), first-contact requires
+    Prepare Drive, adoption path for pre-existing/Windows-tool drives, labels
+    are cosmetic, migration note.
+  - _Requirements: 10.9, 10.10, 10.11, 10.14, 10.16_
+
 ## Task Dependency Graph
 
 ```json
@@ -167,7 +209,10 @@ data/state primitives first, then the job engine, then app-level orchestration.
     { "wave": 10, "tasks": ["14"] },
     { "wave": 11, "tasks": ["15"] },
     { "wave": 12, "tasks": ["16"] },
-    { "wave": 13, "tasks": ["17"] }
+    { "wave": 13, "tasks": ["17"] },
+    { "wave": 14, "tasks": ["18"] },
+    { "wave": 15, "tasks": ["19"] },
+    { "wave": 16, "tasks": ["20"] }
   ],
   "dependencies": {
     "1": [],
@@ -186,7 +231,10 @@ data/state primitives first, then the job engine, then app-level orchestration.
     "14": ["1"],
     "15": ["1", "14"],
     "16": ["3", "9", "10", "15"],
-    "17": ["9", "16"]
+    "17": ["9", "16"],
+    "18": ["14", "15", "16"],
+    "19": ["18"],
+    "20": ["18", "19"]
   }
 }
 ```
