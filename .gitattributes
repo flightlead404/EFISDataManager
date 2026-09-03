@@ -1,0 +1,8 @@
+# Keep development-only paths out of release archives produced by `git archive`.
+# These entries are stripped from the tarball/zip so shipped releases do not
+# carry tests, scratch files, or spec/steering material.
+tests/ export-ignore
+temp/ export-ignore
+.kiro/ export-ignore
+.gitattributes export-ignore
+.gitignore export-ignore

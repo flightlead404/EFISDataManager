@@ -120,11 +120,18 @@ class EFISDataManagerApp(rumps.App):
         self._pending_chart_downloads = None
         self._usb_monitor = None
         self._dashboard_process = None
+        # Sleep/wake handling (task 11). The active MountWatchdog for an
+        # in-progress drive update is held here so a will-sleep notification
+        # can mark it at-risk and stop the running rsync safely (Req 7.4).
+        self._active_watchdog = None
+        self._sleeping = False
+        self._sleep_observer = None
 
         self.menu = [
             "Status: Idle",
             "Drive: Not connected",
             "Eject Drive",
+            "Verify Drive",
             None,
             "Alerts (0)",
             None,
@@ -159,9 +166,13 @@ class EFISDataManagerApp(rumps.App):
         # Start USB monitoring
         self._start_usb_monitor()
 
-        # Initial state: disable eject if no drive
+        # Register system sleep/wake observers (task 11)
+        self._register_sleep_wake_observers()
+
+        # Initial state: disable eject + verify if no drive
         if not getattr(self, '_drive_connected', False):
             self.menu["Eject Drive"].set_callback(None)
+            self.menu["Verify Drive"].set_callback(None)
 
     def _check_paths(self):
         """Validate configured paths at startup, logging any concerns.
@@ -208,6 +219,119 @@ class EFISDataManagerApp(rumps.App):
         )
         self._usb_monitor.start()
 
+    # ------------------------------------------------------------------
+    # Sleep / wake handling (task 11)
+    # ------------------------------------------------------------------
+
+    def _register_sleep_wake_observers(self):
+        """Observe system sleep/wake on the shared NSWorkspace (Req 7.4-7.6).
+
+        Sleep/wake notifications are delivered on ``NSWorkspace``'s own
+        notification center, NOT the default one. The observer must be an
+        Objective-C object, so we register a small :class:`SleepWakeObserver`
+        (an ``NSObject`` subclass) whose selectors delegate back to this app.
+
+        On will-sleep we stop any in-progress sync safely (leaving the
+        interrupted marker); on wake we resume via verify+repair. See
+        design.md "Sleep / wake": sleep is a "stop then resume" special case of
+        the interruption path, relying on the idempotent job rather than trying
+        to keep USB I/O alive across sleep.
+        """
+        try:
+            from AppKit import (
+                NSWorkspace,
+                NSWorkspaceWillSleepNotification,
+                NSWorkspaceDidWakeNotification,
+            )
+
+            self._sleep_observer = SleepWakeObserver.alloc().initWithApp_(self)
+            center = NSWorkspace.sharedWorkspace().notificationCenter()
+            center.addObserver_selector_name_object_(
+                self._sleep_observer,
+                "receiveSleepNotification:",
+                NSWorkspaceWillSleepNotification,
+                None,
+            )
+            center.addObserver_selector_name_object_(
+                self._sleep_observer,
+                "receiveWakeNotification:",
+                NSWorkspaceDidWakeNotification,
+                None,
+            )
+            logger.info("Registered NSWorkspace sleep/wake observers.")
+        except Exception as e:
+            # Sleep/wake handling is a resilience feature; if the observers
+            # cannot be registered the core sync still works (mount-presence
+            # watchdog and next-mount verify+repair still cover interruptions).
+            logger.warning(f"Could not register sleep/wake observers: {e}")
+
+    def _on_will_sleep(self):
+        """System is about to sleep — stop the current sync safely (Req 7.4).
+
+        Set the sleeping flag and, if a drive update is in progress, mark its
+        MountWatchdog at-risk. The running rsync then aborts on its next
+        predicate poll, the commit marker is NOT written, and the durable
+        interrupted-sync marker is left in place so the family is retried on
+        wake or next mount. We do NOT try to keep rsync alive across sleep.
+        """
+        logger.info("System will sleep.")
+        self._sleeping = True
+        watchdog = self._active_watchdog
+        if watchdog is not None:
+            logger.warning(
+                "System sleeping during a drive sync — stopping the current "
+                "job safely; interrupted marker left for verify+repair on wake."
+            )
+            try:
+                watchdog.mark_at_risk("system sleeping")
+            except Exception as e:
+                logger.warning(f"Failed to mark active sync at-risk on sleep: {e}")
+
+    def _on_did_wake(self):
+        """System woke — resume any interrupted sync (Req 7.5, 7.6).
+
+        If a drive is still mounted and has pending families (an interrupted
+        marker from the sleep-aborted sync, or any prior interruption), trigger
+        verify+repair on a background thread. The job is idempotent/resumable,
+        so re-running converges the drive to the correct final state.
+        """
+        logger.info("System did wake.")
+        self._sleeping = False
+        from efis_data_manager.usb_monitor import is_efis_drive
+        from efis_data_manager.drive_updater import pending_families, resolve_drive_id
+
+        try:
+            mount_point = None
+            for name in os.listdir("/Volumes"):
+                path = os.path.join("/Volumes", name)
+                if os.path.isdir(path) and is_efis_drive(path):
+                    mount_point = path
+                    break
+            if mount_point is None:
+                logger.info("Wake: no EFIS drive mounted; nothing to resume.")
+                return
+            # Sync-state is keyed by the drive's durable id, not the mount path.
+            # Resolve it first; on an unresolved id (fail-safe) treat as no
+            # pending families (Req 10.7) — the real gating is in
+            # _run_drive_update, which repeats this resolution.
+            drive_id = resolve_drive_id(mount_point)
+            pending = pending_families(drive_id) if drive_id is not None else []
+            if not pending:
+                logger.info(
+                    f"Wake: {mount_point} has no pending families; nothing to "
+                    "resume."
+                )
+                return
+            logger.info(
+                f"Wake: resuming interrupted sync on {mount_point} "
+                "(verify+repair)."
+            )
+            threading.Thread(
+                target=self._run_drive_update, args=(mount_point,), daemon=True
+            ).start()
+        except Exception as e:
+            logger.warning(f"Wake resume check failed: {e}")
+
     def _on_efis_drive_mounted(self, mount_point: str):
         """Called when an EFIS drive is detected."""
         logger.info(f"EFIS drive mounted: {mount_point}")
@@ -216,16 +340,26 @@ class EFISDataManagerApp(rumps.App):
         rumps.notification("EFIS Data Manager", "EFIS Drive Detected",
                            f"Drive mounted at {mount_point}. Starting archive...")
 
-        # Check if a previous sync was interrupted for this mount point
-        sync_state_file = os.path.expanduser("~/EFIS/DataManagerLogs/.sync_in_progress")
-        if os.path.exists(sync_state_file):
-            try:
-                with open(sync_state_file) as f:
-                    prev_mount = f.read().strip()
-                if prev_mount == mount_point:
-                    logger.info("Previous sync was interrupted — re-triggering update after archive.")
-            except OSError:
-                pass
+        # An interrupted prior sync is detected durably by drive_updater's
+        # sync-state (pending_families) and handled inside _run_drive_update:
+        # if this drive has pending families, that method runs verify+repair
+        # before declaring the drive current (Req 6.3, 3.5). No local
+        # .sync_in_progress file is managed here anymore.
+        # sync-state is keyed by the drive's durable id (not the mount path),
+        # so resolve the id before consulting pending_families. This is purely
+        # informational logging; on an unresolved id (fail-safe) treat as no
+        # pending families (Req 10.7). The real gating happens in
+        # _run_drive_update.
+        from efis_data_manager.drive_updater import (
+            pending_families,
+            resolve_drive_id,
+        )
+        drive_id = resolve_drive_id(mount_point)
+        if drive_id is not None and pending_families(drive_id):
+            logger.info(
+                "Previous sync was interrupted for this drive — verify+repair "
+                "will run after archive."
+            )
 
         # Start archive in background thread
         threading.Thread(target=self._run_archive, args=(mount_point,), daemon=True).start()
@@ -288,6 +422,73 @@ class EFISDataManagerApp(rumps.App):
         else:
             rumps.notification("EFIS Data Manager", "Eject Failed",
                                result.stderr.strip()[:100] or "Unknown error")
+
+    def verify_drive_menu(self, _):
+        """User clicked "Verify Drive": run an on-demand exhaustive verify.
+
+        Verify-only (``deep=False``, no repair) per Req 6.4 — repair happens via
+        the interrupted-sync path in ``_run_drive_update``. Finds the connected
+        EFIS mount (same discovery as ``eject_drive``), then runs
+        ``verify_drive`` on a background thread since a full count+size walk can
+        be slow, reporting per-family results via notification/status.
+        """
+        from efis_data_manager.usb_monitor import is_efis_drive
+        mount_point = None
+        # Find current EFIS mount (handles EFIS, EFIS_1, EFIS_2, ... via is_efis_drive)
+        for name in os.listdir("/Volumes"):
+            path = os.path.join("/Volumes", name)
+            if os.path.isdir(path) and is_efis_drive(path):
+                mount_point = path
+                break
+
+        if not mount_point:
+            rumps.notification("EFIS Data Manager", "No Drive",
+                               "No EFIS drive is connected.")
+            return
+
+        threading.Thread(
+            target=self._run_verify_drive, args=(mount_point,), daemon=True
+        ).start()
+
+    def _run_verify_drive(self, mount_point: str):
+        """Run an exhaustive (count+size) verify of the drive and report results.
+
+        Verify-only: no auto-repair here (Req 6.4). On a clean result the status
+        returns to "Drive current"; if any family shows discrepancies they are
+        reported per-family (via ``_format_verify_summary``) and the status
+        names that the drive needs an update.
+        """
+        from efis_data_manager.drive_updater import (
+            verify_drive,
+            _format_verify_summary,
+        )
+
+        def on_progress(msg):
+            self._set_status(msg)
+
+        try:
+            self._set_status("Verifying drive...")
+            result = verify_drive(
+                mount_point, deep=False, progress_callback=on_progress
+            )
+            summary = _format_verify_summary(result["families"])
+
+            if result["clean"]:
+                logger.info(f"Verify Drive: clean ({summary}).")
+                rumps.notification("EFIS Data Manager", "Drive Verified",
+                                   f"Drive is complete: {summary}")
+                self._set_status("Drive current")
+            else:
+                # Discrepancies found — report them; repair happens via the
+                # interrupted-sync path, not this verify-only action (Req 6.4).
+                logger.warning(f"Verify Drive found discrepancies: {summary}")
+                rumps.notification("EFIS Data Manager", "Drive Verify: Discrepancies",
+                                   f"{summary}\nRe-connect or re-run update to repair.")
+                self._set_status("Drive needs update")
+        except Exception as e:
+            logger.error(f"Verify Drive failed: {e}")
+            rumps.notification("EFIS Data Manager", "Verify Drive Failed", str(e)[:100])
+            self._set_status("Verify failed")
 
     def _run_archive(self, mount_point: str):
         """Run the archive process on a mounted EFIS drive, then update."""
@@ -354,59 +555,169 @@ class EFISDataManagerApp(rumps.App):
             self._set_status("Archive failed")
 
     def _run_drive_update(self, mount_point: str):
-        """Check drive currency and sync updates if needed."""
-        from efis_data_manager.drive_updater import check_drive_currency, update_drive
+        """Check drive currency and sync updates if needed.
 
-        self._set_status("Checking drive currency...")
-        sync_state_file = os.path.expanduser("~/EFIS/DataManagerLogs/.sync_in_progress")
+        Runs after the archive step on the update thread. Sequence:
+
+          1. If a prior sync was interrupted for this drive (``pending_families``
+             names it), run an exhaustive verify+repair on those families FIRST,
+             so we never declare the drive current on a partial state
+             (Req 6.3, 3.5). The durable sync-state is owned by drive_updater's
+             sync-state helpers — no local ``.sync_in_progress`` file here.
+          2. Quick currency check. If current AND nothing pending -> idle.
+          3. Sync only the stale families, then derive a single terminal status
+             from the per-family jobs via ``_terminal_status_from_jobs`` — no
+             sticky error strings on success (Req 8.4). Every error surfaced in
+             status is logged >= WARNING (the job driver already logs job errors;
+             any status string we build here is logged too — Req 8.1/8.3).
+
+        Watchdog ownership (tasks 7 & 11, hardened): each drive operation
+        (verify+repair, then the update) runs under its OWN fresh
+        :class:`MountWatchdog`, registered on ``self._active_watchdog`` for its
+        duration via :meth:`_with_active_watchdog`. This is deliberate: a
+        watchdog latch is permanent, so reusing ONE watchdog across the whole
+        method meant a transient mount blip during the first operation poisoned
+        every later operation (observed as an instant false-abort on re-mount).
+        A fresh watchdog per operation reflects CURRENT mount state; the
+        debounced removal detection (WATCHDOG_SETTLE_POLLS) tolerates a settling
+        volume. Sleep still works: ``_on_will_sleep`` marks whichever watchdog
+        is active at-risk, stopping the running rsync safely and leaving the
+        interrupted marker (Req 7.2-7.6).
+        """
+        from efis_data_manager.drive_updater import (
+            check_drive_currency,
+            pending_families,
+            resolve_drive_id,
+            update_drive,
+            verify_drive,
+            _terminal_status_from_jobs,
+        )
+
+        def on_progress(msg):
+            self._set_status(msg)
 
         try:
+            # --- 1. Honor an interrupted sync: verify+repair before trusting. --
+            # sync-state is keyed by the drive's durable id, not the mount path.
+            # Resolve the id once; on an unresolved id (fail-safe None — e.g. a
+            # diskutil hiccup or a non-EFIS/unreadable volume) apply NO
+            # interrupted-sync state (never another drive's) and fall straight
+            # through to the normal quick-check/update below (Req 10.7). The
+            # on-drive markers/payload remain the sole source of truth for
+            # currency.
+            drive_id = resolve_drive_id(mount_point)
+            pending = pending_families(drive_id) if drive_id is not None else []
+            if pending:
+                logger.warning(
+                    f"Previous sync was interrupted for {mount_point} "
+                    f"({', '.join(pending)}); running verify+repair before "
+                    "declaring current."
+                )
+                self._set_status("Verifying drive after interrupted sync...")
+                rumps.notification("EFIS Data Manager", "Verifying Drive",
+                                   f"Resuming interrupted sync: {', '.join(pending)}.")
+                repair = self._with_active_watchdog(
+                    mount_point,
+                    lambda is_aborted: verify_drive(
+                        mount_point, families=pending, repair=True,
+                        progress_callback=on_progress, is_aborted=is_aborted,
+                    ),
+                )
+                # verify_drive already logs its repair errors at >= WARNING.
+                if not repair["clean"]:
+                    status = "Drive verify incomplete"
+                    logger.warning(
+                        f"Verify+repair left discrepancies on {mount_point}: "
+                        f"{repair['families']}"
+                    )
+                    rumps.notification("EFIS Data Manager", "Verify Incomplete",
+                                       "Some families still differ; will retry "
+                                       "on next mount.")
+                    self._set_status(status)
+                    return
+
+            # --- 2. Quick currency check. -------------------------------------
+            self._set_status("Checking drive currency...")
             currency = check_drive_currency(mount_point)
 
             if currency["is_current"]:
                 logger.info("Drive is up to date, no sync needed.")
-                self._set_status("Idle")
+                self._set_status("Drive current")
                 rumps.notification("EFIS Data Manager", "Drive Current",
                                    "EFIS drive is up to date.")
                 return
 
-            # Drive needs updating
+            # --- 3. Sync only the stale families. -----------------------------
+            stale = [
+                name
+                for name, detail in currency["families"].items()
+                if not detail["current"]
+            ]
             stale_summary = ", ".join(currency["stale_items"][:3])
             if len(currency["stale_items"]) > 3:
                 stale_summary += f" +{len(currency['stale_items']) - 3} more"
             self._set_status("Updating drive...")
             rumps.notification("EFIS Data Manager", "Updating Drive",
-                               f"{len(currency['stale_items'])} item(s) to update: {stale_summary}")
+                               f"{len(stale)} family(ies) to update: {stale_summary}")
 
-            # Write sync-in-progress state file
-            os.makedirs(os.path.dirname(sync_state_file), exist_ok=True)
-            with open(sync_state_file, "w") as f:
-                f.write(mount_point)
+            results = self._with_active_watchdog(
+                mount_point,
+                lambda is_aborted: update_drive(
+                    mount_point, families=stale, progress_callback=on_progress,
+                    is_aborted=is_aborted,
+                ),
+            )
 
-            def on_progress(msg):
-                self._set_status(msg)
+            jobs = results["jobs"]
+            updated = sum(r.files_updated for r in jobs.values())
+            status = _terminal_status_from_jobs(jobs, results["aborted"])
 
-            results = update_drive(mount_point, progress_callback=on_progress)
-
-            # Sync complete — remove state file
-            if os.path.exists(sync_state_file):
-                os.remove(sync_state_file)
-
-            if results["errors"]:
+            if results["errors"] or results["aborted"]:
+                # The job driver already logged each job error at >= WARNING;
+                # log the terminal status too so it always has a matching record
+                # in Recent Errors (Req 8.1/8.3).
+                logger.warning(f"Drive update finished with issues: {status}")
                 rumps.notification("EFIS Data Manager", "Drive Update Complete (errors)",
-                                   f"Updated {results['files_updated']} item(s), "
+                                   f"Updated {updated} item(s), "
                                    f"{len(results['errors'])} error(s).")
-                self._set_status("Update errors")
+                self._set_status(status)
             else:
+                # Clean terminal state -> current, never a sticky error (Req 8.4).
                 rumps.notification("EFIS Data Manager", "Drive Update Complete",
-                                   f"Updated {results['files_updated']} item(s). Drive is current.")
-                self._set_status("Idle")
+                                   f"Updated {updated} item(s). Drive is current.")
+                self._set_status(status)
 
         except Exception as e:
             logger.error(f"Drive update failed: {e}")
-            # Don't remove sync state file on failure — will retry on next mount
+            # The durable sync-state is left intact by the job driver on failure,
+            # so an interrupted family is retried on the next mount.
             rumps.notification("EFIS Data Manager", "Drive Update Failed", str(e)[:100])
             self._set_status("Update failed")
+
+    def _with_active_watchdog(self, mount_point: str, run):
+        """Run ``run(is_aborted)`` under a fresh, registered MountWatchdog.
+
+        A new :class:`MountWatchdog` is started for this single operation and
+        published on ``self._active_watchdog`` so ``_on_will_sleep`` can mark
+        exactly the running operation at-risk. The watchdog is always stopped
+        and de-registered when the operation returns, so a latch never leaks
+        into the next operation (the bug that made a transient mount blip during
+        verify poison the subsequent update). ``run`` receives the watchdog's
+        ``is_aborted`` predicate.
+        """
+        from efis_data_manager.drive_updater import MountWatchdog
+
+        watchdog = MountWatchdog(mount_point).start()
+        self._active_watchdog = watchdog
+        try:
+            return run(watchdog.is_aborted)
+        finally:
+            try:
+                watchdog.stop()
+            except Exception:
+                pass
+            if self._active_watchdog is watchdog:
+                self._active_watchdog = None
 
     # ------------------------------------------------------------------
     # Timers (skip first tick, dispatch to background threads)
@@ -994,11 +1305,13 @@ class EFISDataManagerApp(rumps.App):
 
         def _do_update():
             self.menu["Drive: Not connected"].title = f"Drive: {drive_text}"
-            # Enable/disable eject button
+            # Enable/disable eject + verify buttons (both need a drive)
             if self._drive_connected:
                 self.menu["Eject Drive"].set_callback(self.eject_drive)
+                self.menu["Verify Drive"].set_callback(self.verify_drive_menu)
             else:
                 self.menu["Eject Drive"].set_callback(None)
+                self.menu["Verify Drive"].set_callback(None)
             # Update title to reflect drive state
             current_status = self.menu["Status: Idle"].title.replace("Status: ", "")
             self._update_title(current_status)
@@ -1050,6 +1363,44 @@ class EFISDataManagerApp(rumps.App):
         else:
             # No drive, idle — icon only
             self.title = ""
+
+
+try:
+    import objc
+    from Foundation import NSObject
+
+    class SleepWakeObserver(NSObject):
+        """ObjC observer for NSWorkspace sleep/wake notifications (task 11).
+
+        Sleep/wake notifications are delivered on ``NSWorkspace``'s own
+        notification center and the observer must be an Objective-C object, so
+        this thin ``NSObject`` subclass holds a weak-ish reference to the app
+        and forwards each notification to a plain Python handler. PyObjC maps
+        ``receiveSleepNotification:`` to ``receiveSleepNotification_`` (the
+        selector takes the notification argument).
+        """
+
+        def initWithApp_(self, app):
+            self = objc.super(SleepWakeObserver, self).init()
+            if self is None:
+                return None
+            self._app = app
+            return self
+
+        def receiveSleepNotification_(self, _notification):
+            try:
+                self._app._on_will_sleep()
+            except Exception as e:
+                logger.warning(f"Sleep notification handler failed: {e}")
+
+        def receiveWakeNotification_(self, _notification):
+            try:
+                self._app._on_did_wake()
+            except Exception as e:
+                logger.warning(f"Wake notification handler failed: {e}")
+
+except Exception:  # pragma: no cover - PyObjC unavailable (e.g. headless CI)
+    SleepWakeObserver = None
 
 
 def _menubar_icon_path() -> str:

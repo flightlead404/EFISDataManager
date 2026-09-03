@@ -1,0 +1,294 @@
+{
+  "pbtResults": {},
+  "executionHistory": {
+    "1. Add sync-state helper and data models": [
+      {
+        "executionId": "bdf4a8b3-9aa8-4d50-b719-576252aaec8b",
+        "chatSessionId": "sess_fe59a3b1-3a1b-4a1f-8d2d-744533b0b06b",
+        "timestamp": 1788369853880
+      },
+      {
+        "executionId": "bdf4a8b3-9aa8-4d50-b719-576252aaec8b",
+        "chatSessionId": "sess_fe59a3b1-3a1b-4a1f-8d2d-744533b0b06b",
+        "timestamp": 1788369943090
+      },
+      {
+        "executionId": "bdf4a8b3-9aa8-4d50-b719-576252aaec8b",
+        "chatSessionId": "sess_fe59a3b1-3a1b-4a1f-8d2d-744533b0b06b",
+        "timestamp": 1788370070241
+      }
+    ],
+    "2. Build per-family job definitions": [
+      {
+        "executionId": "bdf4a8b3-9aa8-4d50-b719-576252aaec8b",
+        "chatSessionId": "sess_fe59a3b1-3a1b-4a1f-8d2d-744533b0b06b",
+        "timestamp": 1788369854009
+      },
+      {
+        "executionId": "bdf4a8b3-9aa8-4d50-b719-576252aaec8b",
+        "chatSessionId": "sess_fe59a3b1-3a1b-4a1f-8d2d-744533b0b06b",
+        "timestamp": 1788370073457
+      },
+      {
+        "executionId": "bdf4a8b3-9aa8-4d50-b719-576252aaec8b",
+        "chatSessionId": "sess_fe59a3b1-3a1b-4a1f-8d2d-744533b0b06b",
+        "timestamp": 1788370178090
+      }
+    ],
+    "3. Implement quick currency check (per-family, marker-based)": [
+      {
+        "executionId": "bdf4a8b3-9aa8-4d50-b719-576252aaec8b",
+        "chatSessionId": "sess_fe59a3b1-3a1b-4a1f-8d2d-744533b0b06b",
+        "timestamp": 1788369854066
+      },
+      {
+        "executionId": "bdf4a8b3-9aa8-4d50-b719-576252aaec8b",
+        "chatSessionId": "sess_fe59a3b1-3a1b-4a1f-8d2d-744533b0b06b",
+        "timestamp": 1788370185416
+      },
+      {
+        "executionId": "bdf4a8b3-9aa8-4d50-b719-576252aaec8b",
+        "chatSessionId": "sess_fe59a3b1-3a1b-4a1f-8d2d-744533b0b06b",
+        "timestamp": 1788370385294
+      }
+    ],
+    "4. Implement efficient payload sync (tree job)": [
+      {
+        "executionId": "bdf4a8b3-9aa8-4d50-b719-576252aaec8b",
+        "chatSessionId": "sess_fe59a3b1-3a1b-4a1f-8d2d-744533b0b06b",
+        "timestamp": 1788369854102
+      },
+      {
+        "executionId": "bdf4a8b3-9aa8-4d50-b719-576252aaec8b",
+        "chatSessionId": "sess_fe59a3b1-3a1b-4a1f-8d2d-744533b0b06b",
+        "timestamp": 1788370191998
+      },
+      {
+        "executionId": "bdf4a8b3-9aa8-4d50-b719-576252aaec8b",
+        "chatSessionId": "sess_fe59a3b1-3a1b-4a1f-8d2d-744533b0b06b",
+        "timestamp": 1788370386143
+      }
+    ],
+    "5. Implement payload verification (count + size)": [
+      {
+        "executionId": "bdf4a8b3-9aa8-4d50-b719-576252aaec8b",
+        "chatSessionId": "sess_fe59a3b1-3a1b-4a1f-8d2d-744533b0b06b",
+        "timestamp": 1788369854132
+      },
+      {
+        "executionId": "bdf4a8b3-9aa8-4d50-b719-576252aaec8b",
+        "chatSessionId": "sess_fe59a3b1-3a1b-4a1f-8d2d-744533b0b06b",
+        "timestamp": 1788370198312
+      },
+      {
+        "executionId": "bdf4a8b3-9aa8-4d50-b719-576252aaec8b",
+        "chatSessionId": "sess_fe59a3b1-3a1b-4a1f-8d2d-744533b0b06b",
+        "timestamp": 1788370387064
+      }
+    ],
+    "6. Implement commit-marker write + job driver": [
+      {
+        "executionId": "bdf4a8b3-9aa8-4d50-b719-576252aaec8b",
+        "chatSessionId": "sess_fe59a3b1-3a1b-4a1f-8d2d-744533b0b06b",
+        "timestamp": 1788369854223
+      },
+      {
+        "executionId": "bdf4a8b3-9aa8-4d50-b719-576252aaec8b",
+        "chatSessionId": "sess_fe59a3b1-3a1b-4a1f-8d2d-744533b0b06b",
+        "timestamp": 1788370390946
+      },
+      {
+        "executionId": "bdf4a8b3-9aa8-4d50-b719-576252aaec8b",
+        "chatSessionId": "sess_fe59a3b1-3a1b-4a1f-8d2d-744533b0b06b",
+        "timestamp": 1788370565587
+      }
+    ],
+    "7. Implement mount-presence watchdog and abort path": [
+      {
+        "executionId": "bdf4a8b3-9aa8-4d50-b719-576252aaec8b",
+        "chatSessionId": "sess_fe59a3b1-3a1b-4a1f-8d2d-744533b0b06b",
+        "timestamp": 1788369854246
+      },
+      {
+        "executionId": "bdf4a8b3-9aa8-4d50-b719-576252aaec8b",
+        "chatSessionId": "sess_fe59a3b1-3a1b-4a1f-8d2d-744533b0b06b",
+        "timestamp": 1788370568640
+      },
+      {
+        "executionId": "bdf4a8b3-9aa8-4d50-b719-576252aaec8b",
+        "chatSessionId": "sess_fe59a3b1-3a1b-4a1f-8d2d-744533b0b06b",
+        "timestamp": 1788370761982
+      }
+    ],
+    "8. Implement exhaustive verify + repair": [
+      {
+        "executionId": "bdf4a8b3-9aa8-4d50-b719-576252aaec8b",
+        "chatSessionId": "sess_fe59a3b1-3a1b-4a1f-8d2d-744533b0b06b",
+        "timestamp": 1788369854269
+      },
+      {
+        "executionId": "bdf4a8b3-9aa8-4d50-b719-576252aaec8b",
+        "chatSessionId": "sess_fe59a3b1-3a1b-4a1f-8d2d-744533b0b06b",
+        "timestamp": 1788370575132
+      },
+      {
+        "executionId": "bdf4a8b3-9aa8-4d50-b719-576252aaec8b",
+        "chatSessionId": "sess_fe59a3b1-3a1b-4a1f-8d2d-744533b0b06b",
+        "timestamp": 1788370762803
+      }
+    ],
+    "9. Rework update_drive aggregation": [
+      {
+        "executionId": "bdf4a8b3-9aa8-4d50-b719-576252aaec8b",
+        "chatSessionId": "sess_fe59a3b1-3a1b-4a1f-8d2d-744533b0b06b",
+        "timestamp": 1788369854292
+      },
+      {
+        "executionId": "bdf4a8b3-9aa8-4d50-b719-576252aaec8b",
+        "chatSessionId": "sess_fe59a3b1-3a1b-4a1f-8d2d-744533b0b06b",
+        "timestamp": 1788370766387
+      },
+      {
+        "executionId": "bdf4a8b3-9aa8-4d50-b719-576252aaec8b",
+        "chatSessionId": "sess_fe59a3b1-3a1b-4a1f-8d2d-744533b0b06b",
+        "timestamp": 1788370961490
+      }
+    ],
+    "10. Wire app orchestration and status/error consistency": [
+      {
+        "executionId": "bdf4a8b3-9aa8-4d50-b719-576252aaec8b",
+        "chatSessionId": "sess_fe59a3b1-3a1b-4a1f-8d2d-744533b0b06b",
+        "timestamp": 1788369854325
+      },
+      {
+        "executionId": "bdf4a8b3-9aa8-4d50-b719-576252aaec8b",
+        "chatSessionId": "sess_fe59a3b1-3a1b-4a1f-8d2d-744533b0b06b",
+        "timestamp": 1788370966006
+      },
+      {
+        "executionId": "bdf4a8b3-9aa8-4d50-b719-576252aaec8b",
+        "chatSessionId": "sess_fe59a3b1-3a1b-4a1f-8d2d-744533b0b06b",
+        "timestamp": 1788371153810
+      }
+    ],
+    "11. Add sleep/wake handling": [
+      {
+        "executionId": "bdf4a8b3-9aa8-4d50-b719-576252aaec8b",
+        "chatSessionId": "sess_fe59a3b1-3a1b-4a1f-8d2d-744533b0b06b",
+        "timestamp": 1788369854350
+      },
+      {
+        "executionId": "bdf4a8b3-9aa8-4d50-b719-576252aaec8b",
+        "chatSessionId": "sess_fe59a3b1-3a1b-4a1f-8d2d-744533b0b06b",
+        "timestamp": 1788371158143
+      },
+      {
+        "executionId": "bdf4a8b3-9aa8-4d50-b719-576252aaec8b",
+        "chatSessionId": "sess_fe59a3b1-3a1b-4a1f-8d2d-744533b0b06b",
+        "timestamp": 1788375075659
+      }
+    ],
+    "12. Add \"Verify Drive\" menu action": [
+      {
+        "executionId": "bdf4a8b3-9aa8-4d50-b719-576252aaec8b",
+        "chatSessionId": "sess_fe59a3b1-3a1b-4a1f-8d2d-744533b0b06b",
+        "timestamp": 1788369854377
+      },
+      {
+        "executionId": "bdf4a8b3-9aa8-4d50-b719-576252aaec8b",
+        "chatSessionId": "sess_fe59a3b1-3a1b-4a1f-8d2d-744533b0b06b",
+        "timestamp": 1788371166614
+      },
+      {
+        "executionId": "bdf4a8b3-9aa8-4d50-b719-576252aaec8b",
+        "chatSessionId": "sess_fe59a3b1-3a1b-4a1f-8d2d-744533b0b06b",
+        "timestamp": 1788375076236
+      }
+    ],
+    "13. Test scaffolding and regression pass": [
+      {
+        "executionId": "bdf4a8b3-9aa8-4d50-b719-576252aaec8b",
+        "chatSessionId": "sess_fe59a3b1-3a1b-4a1f-8d2d-744533b0b06b",
+        "timestamp": 1788369854404
+      },
+      {
+        "executionId": "bdf4a8b3-9aa8-4d50-b719-576252aaec8b",
+        "chatSessionId": "sess_fe59a3b1-3a1b-4a1f-8d2d-744533b0b06b",
+        "timestamp": 1788375079715
+      },
+      {
+        "executionId": "bdf4a8b3-9aa8-4d50-b719-576252aaec8b",
+        "chatSessionId": "sess_fe59a3b1-3a1b-4a1f-8d2d-744533b0b06b",
+        "timestamp": 1788375261567
+      }
+    ],
+    "14. Add drive-identity file + resolver (multi-drive)": [
+      {
+        "executionId": "964fb510-20f8-49a1-9ad8-62d4765fd2aa",
+        "chatSessionId": "sess_fe59a3b1-3a1b-4a1f-8d2d-744533b0b06b",
+        "timestamp": 1788453149269
+      },
+      {
+        "executionId": "964fb510-20f8-49a1-9ad8-62d4765fd2aa",
+        "chatSessionId": "sess_fe59a3b1-3a1b-4a1f-8d2d-744533b0b06b",
+        "timestamp": 1788453152724
+      },
+      {
+        "executionId": "964fb510-20f8-49a1-9ad8-62d4765fd2aa",
+        "chatSessionId": "sess_fe59a3b1-3a1b-4a1f-8d2d-744533b0b06b",
+        "timestamp": 1788453373626
+      }
+    ],
+    "15. Re-key sync-state by drive id (N-drive)": [
+      {
+        "executionId": "964fb510-20f8-49a1-9ad8-62d4765fd2aa",
+        "chatSessionId": "sess_fe59a3b1-3a1b-4a1f-8d2d-744533b0b06b",
+        "timestamp": 1788453149332
+      },
+      {
+        "executionId": "964fb510-20f8-49a1-9ad8-62d4765fd2aa",
+        "chatSessionId": "sess_fe59a3b1-3a1b-4a1f-8d2d-744533b0b06b",
+        "timestamp": 1788453379540
+      },
+      {
+        "executionId": "964fb510-20f8-49a1-9ad8-62d4765fd2aa",
+        "chatSessionId": "sess_fe59a3b1-3a1b-4a1f-8d2d-744533b0b06b",
+        "timestamp": 1788453868623
+      }
+    ],
+    "16. Wire identity into currency/update/app + provenance": [
+      {
+        "executionId": "964fb510-20f8-49a1-9ad8-62d4765fd2aa",
+        "chatSessionId": "sess_fe59a3b1-3a1b-4a1f-8d2d-744533b0b06b",
+        "timestamp": 1788453149379
+      },
+      {
+        "executionId": "964fb510-20f8-49a1-9ad8-62d4765fd2aa",
+        "chatSessionId": "sess_fe59a3b1-3a1b-4a1f-8d2d-744533b0b06b",
+        "timestamp": 1788453873475
+      },
+      {
+        "executionId": "964fb510-20f8-49a1-9ad8-62d4765fd2aa",
+        "chatSessionId": "sess_fe59a3b1-3a1b-4a1f-8d2d-744533b0b06b",
+        "timestamp": 1788454403583
+      }
+    ],
+    "17. Prepare-drive writes identity + docs": [
+      {
+        "executionId": "964fb510-20f8-49a1-9ad8-62d4765fd2aa",
+        "chatSessionId": "sess_fe59a3b1-3a1b-4a1f-8d2d-744533b0b06b",
+        "timestamp": 1788453149417
+      },
+      {
+        "executionId": "964fb510-20f8-49a1-9ad8-62d4765fd2aa",
+        "chatSessionId": "sess_fe59a3b1-3a1b-4a1f-8d2d-744533b0b06b",
+        "timestamp": 1788454407577
+      },
+      {
+        "executionId": "964fb510-20f8-49a1-9ad8-62d4765fd2aa",
+        "chatSessionId": "sess_fe59a3b1-3a1b-4a1f-8d2d-744533b0b06b",
+        "timestamp": 1788454645473
+      }
+    ]
+  }
+}

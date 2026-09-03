@@ -167,6 +167,26 @@ of using Prepare Drive; in that case, format it FAT32 and name it `EFIS`.
 > the volume name before confirming, and never point it at a drive holding data
 > you want to keep.
 
+**Using multiple EFIS drives.** If you rotate more than one drive — say the one
+in the airplane, an n-1 spare, and one at the Mac — the tool tracks each drive
+independently by a durable identity file (`EFIS_DRIVE_ID.json`, written at the
+drive's root). This means an in-progress or interrupted sync on one drive is
+never confused with another, even when macOS reassigns mount paths (the same
+stick can come up as `/Volumes/EFIS` one time and `/Volumes/EFIS_1` the next).
+
+- **Recommended:** give each drive a unique volume label (`EFIS-1`, `EFIS-2`,
+  and so on) as defense in depth. It's no longer required for correctness once
+  the identity file exists, but it keeps things clear in Finder.
+- **Every recognized EFIS drive you plug in is archived and refreshed to
+  current** — including the n-1 emergency drive when you bring it back. There
+  are no per-drive roles; no drive is skipped.
+- **Known limitation:** connecting two EFIS drives at the same time is not
+  supported. Connect them one at a time. The identity keying prevents state
+  from being mixed up, but concurrent drives are neither guaranteed nor tested.
+- The identity file is small, visible, and safe to leave on the drive — the HXr
+  ignores it. If you ever wipe a drive's contents, it's re-created on the next
+  sync.
+
 **Other menu items:** Settings…, Seattle Avionics Login…, Analysis Dashboard…,
 Diagnostics… (versions, paths, and a self-check), plus a Recent Errors view.
 Quitting from the menu is logged.
