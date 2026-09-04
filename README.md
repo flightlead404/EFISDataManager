@@ -231,7 +231,16 @@ Quitting from the menu is logged.
 - The chart data files, credentials, and analysis database stay **local to your
   Mac**. Nothing is uploaded anywhere.
 - First chart sync to a slow USB stick can take a while (many thousands of small
-  files). Subsequent syncs are incremental.
+  files). Subsequent syncs are incremental and much faster, since only changed
+  files are rewritten.
+- **Hidden `._*` companion files on the drive.** When macOS writes a file to a
+  FAT32/exFAT drive it also creates a small hidden AppleDouble companion
+  (`._<name>`) to hold metadata the drive can't store natively. On a full
+  first-time populate this roughly doubles the number of files written, which is
+  the main reason the initial sync is slow; it is unavoidable on macOS (the
+  underlying `com.apple.provenance` attribute cannot be removed) and harmless to
+  the EFIS, which ignores these files. Routine incremental updates only rewrite
+  changed files, so they create very few.
 
 ## Security & privacy
 

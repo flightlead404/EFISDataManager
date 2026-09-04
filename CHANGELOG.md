@@ -5,6 +5,27 @@ a single release version (git tag + `__version__` + `pyproject.toml`) with
 independent display labels for the menu-bar tool (`MENUBAR_VERSION`) and the
 dashboard (`DASHBOARD_VERSION`).
 
+## v1.2.1
+
+Release version 1.2.1 · menu bar 0.9.0 · dashboard 1.0.0
+
+Follow-up to 1.2.0 after a full end-to-end drive populate validated against the
+official Seattle Avionics Windows tool (which reported the synced drive fully
+current).
+
+- **Removed the volume-root metadata sweep.** macOS writes a hidden AppleDouble
+  companion file (`._<name>`) next to each file on FAT32/exFAT drives, because
+  those filesystems can't store the `com.apple.provenance` attribute macOS
+  stamps on every file. This can't be prevented on the copy or the source (the
+  attribute is not removable on current macOS), and sweeping the files after a
+  sync only adds time — they reappear the moment a file is rewritten. The sweep
+  is gone; the sidecars are left in place (harmless to the EFIS, which ignores
+  them).
+- **Docs:** README and Getting Started now explain the `._*` companion files and
+  why a full first-time populate is slow (roughly one extra file written per
+  chart). Routine incremental updates only rewrite changed files, so they stay
+  fast.
+
 ## v1.2.0
 
 Release version 1.2.0 · menu bar 0.9.0 · dashboard 1.0.0

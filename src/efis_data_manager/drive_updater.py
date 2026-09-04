@@ -84,31 +84,6 @@ def _silent_unlink(path):
         pass
 
 
-def _purge_volume_root_metadata(mount_point: str) -> None:
-    """Remove macOS AppleDouble/.DS_Store cruft from the VOLUME ROOT.
-
-    The per-family rsync purges "._*"/".DS_Store" WITHIN the ChartData payload
-    (via --delete-excluded), but macOS also drops sidecars at the volume root
-    (e.g. "._ChartData", "._EFIS_DRIVE_ID.json", "._GRTCHARTS") when Finder or
-    Spotlight touches the root entries. Those live outside any rsync payload, so
-    nothing else cleans them. Best-effort: prefer the system "dot_clean" tool
-    (merges/removes AppleDouble files), then sweep any residual root-level
-    "._*"/".DS_Store". Never raises — cosmetic cleanup must not fail a prepare.
-    """
-    try:
-        subprocess.run(["dot_clean", "-m", mount_point],
-                       capture_output=True, timeout=60)
-    except (OSError, subprocess.SubprocessError):
-        pass
-    try:
-        import fnmatch
-        for name in os.listdir(mount_point):
-            if name == ".DS_Store" or fnmatch.fnmatch(name, "._*"):
-                _silent_unlink(os.path.join(mount_point, name))
-    except OSError:
-        pass
-
-
 # Current durable sync-state schema version (v2, id-keyed map — Req 10.5).
 SYNC_STATE_SCHEMA_VERSION = 2
 
@@ -2409,9 +2384,6 @@ def adopt_drive(
     _status("Updating drive to current data...")
     update_results = update_drive(mount_point, progress_callback=progress_callback)
 
-    # Sweep macOS sidecars from the volume root (see helper docstring).
-    _purge_volume_root_metadata(mount_point)
-
     success, summary = _summarize_update(update_results)
     if success:
         return {
@@ -2638,9 +2610,6 @@ def prepare_drive(
     # formatted drive has no markers, so every family is stale and copied.
     _status("Populating drive with current data...")
     update_results = update_drive(mount_point, progress_callback=progress_callback)
-
-    # Sweep macOS sidecars from the volume root (see helper docstring).
-    _purge_volume_root_metadata(mount_point)
 
     success, summary = _summarize_update(update_results)
     if success:

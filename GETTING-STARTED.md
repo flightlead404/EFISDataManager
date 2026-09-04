@@ -73,8 +73,11 @@ only one EFIS drive at a time (two at once is unsupported — see the README).
 
 ## If something looks stuck
 
-- A large first-time sync is slow by nature (many small files). The menu bar
-  shows it's working.
+- A large first-time sync is slow by nature. macOS writes a small hidden
+  companion file next to each chart on FAT32/exFAT drives, which roughly doubles
+  the file count on the initial populate (unavoidable, and harmless to the
+  EFIS). The menu bar shows it's working, and routine updates afterward are much
+  faster.
 - If a drive genuinely stops responding mid-sync, the app now detects the stall
   and reports it rather than hanging — re-insert the drive, or try a different
   USB port, cable, or drive.
