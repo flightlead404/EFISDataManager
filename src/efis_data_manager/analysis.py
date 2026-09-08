@@ -61,10 +61,23 @@ DEFAULT_THRESHOLDS = {
     "episode_deadband_temp": 10,      # deg F (CHT/EGT/oil temp)
     "episode_deadband_oil_press": 5,  # psi
     "episode_deadband_fuel_press": 3, # psi
+    "episode_deadband_tas": 5,        # kt (airspeed / Vne)
+    "episode_deadband_g": 0.2,        # g
 
-    # Performance
-    "g_load_caution": 3.0,
-    "g_load_limit": 3.8,       # Utility category
+    # G-load limits. Positive and negative each have a caution and a limit
+    # (exceeding the limit is a warning). Set to your aircraft/category values
+    # (RV-8: +6/-3 g at aerobatic gross; +4.4 g at higher weight).
+    "g_pos_caution": 3.0,       # positive-G caution
+    "g_pos_limit": 3.8,         # positive-G limit (warning at/above)
+    "g_neg_caution": -1.5,      # negative-G caution
+    "g_neg_limit": -3.0,        # negative-G limit (warning at/below)
+
+    # Vne (never-exceed), checked against TRUE airspeed because Vne is a
+    # flutter/TAS limit on many aircraft (incl. the RV-8). Value in KNOTS TAS.
+    # The EFIS handles the descending indicated-Vne in the cockpit; here we
+    # simply flag any logged TAS at/above this limit as a warning.
+    # Default 200 KTAS = RV-8 Vne of 230 mph TAS. Set to your aircraft's value.
+    "vne_tas_redline": 200,     # KTAS (RV-8: 230 mph TAS = ~200 KTAS)
 
     # Trend detection
     "trend_cht_rise_rate": 5.0,   # degrees F per flight hour (rolling avg)
@@ -115,6 +128,7 @@ class FlightStats:
     # Performance
     max_ground_speed: Optional[float] = None
     max_indicated_airspeed: Optional[float] = None
+    max_true_airspeed: Optional[float] = None
     avg_ias_cruise: Optional[float] = None
     max_altitude: Optional[float] = None
     max_g_load: Optional[float] = None
@@ -208,6 +222,7 @@ def get_flight_stats(operation_id: int) -> Optional[FlightStats]:
         # Performance
         stats.max_ground_speed = _max_col(rows, "ground_speed")
         stats.max_indicated_airspeed = _max_col(rows, "indicated_airspeed")
+        stats.max_true_airspeed = _max_col(rows, "true_airspeed")
         stats.avg_ias_cruise = _avg_col(cruise, "indicated_airspeed")
         stats.max_altitude = _max_col(rows, "pressure_altitude")
         stats.max_g_load = _max_col(rows, "g_load")
@@ -614,8 +629,22 @@ def _check_alerts(stats: FlightStats, thresholds: dict):
     if stats.min_voltage and stats.min_voltage < thresholds["voltage_low"]:
         stats.alerts.append(f"CAUTION: Voltage dropped to {stats.min_voltage:.1f}V")
 
-    if stats.max_g_load and stats.max_g_load >= thresholds["g_load_caution"]:
-        stats.alerts.append(f"WARNING: G-load {stats.max_g_load:.2f}g")
+    # Positive G: caution + limit (warning).
+    if stats.max_g_load and stats.max_g_load >= thresholds["g_pos_caution"]:
+        sev = "WARNING" if stats.max_g_load >= thresholds["g_pos_limit"] else "CAUTION"
+        stats.alerts.append(f"{sev}: Max +G {stats.max_g_load:.2f}g")
+
+    # Negative G: caution + limit (warning). More-negative is worse.
+    gnc = thresholds.get("g_neg_caution")
+    gnl = thresholds.get("g_neg_limit")
+    if gnc is not None and stats.min_g_load is not None and stats.min_g_load <= gnc:
+        sev = "WARNING" if (gnl is not None and stats.min_g_load <= gnl) else "CAUTION"
+        stats.alerts.append(f"{sev}: Max -G {stats.min_g_load:.2f}g")
+
+    # Vne (warning only) against TRUE airspeed; disabled at 9999 placeholder.
+    vne = thresholds.get("vne_tas_redline", 9999)
+    if stats.max_true_airspeed and vne < 9999 and stats.max_true_airspeed >= vne:
+        stats.alerts.append(f"WARNING: Max TAS {stats.max_true_airspeed:.0f} kt (Vne {vne:.0f} TAS)")
 
 
 # ---------------------------------------------------------------------------
@@ -1019,6 +1048,8 @@ def detect_episodes(operation_id: int) -> list[Episode]:
     db_temp = t.get("episode_deadband_temp", 10)
     db_oilp = t.get("episode_deadband_oil_press", 5)
     db_fp = t.get("episode_deadband_fuel_press", 3)
+    db_tas = t.get("episode_deadband_tas", 5)
+    db_g = t.get("episode_deadband_g", 0.2)
 
     # Resolve the aux mapping through the single resolver. Fuel-pressure
     # episodes run only when fuel_pressure is mapped, and read the resolved
@@ -1043,6 +1074,7 @@ def detect_episodes(operation_id: int) -> list[Episode]:
         )
         rows = conn.execute(
             f"""SELECT timestamp, oil_temp, oil_pressure, {fp_select},
+                      indicated_airspeed, true_airspeed, g_load,
                       cht1, cht2, cht3, cht4, cht5, cht6,
                       egt1, egt2, egt3, egt4, egt5, egt6
                FROM fdl_data WHERE operation_id = ? ORDER BY timestamp""",
@@ -1126,6 +1158,36 @@ def detect_episodes(operation_id: int) -> list[Episode]:
         add("Fuel Pressure", "low", eps, t["fuel_pressure_low"], "psi", "fuel_press")
         eps = _detect_episodes_series(s, "high", t["fuel_pressure_high"], db_fp, min_gap)
         add("Fuel Pressure", "high", eps, t["fuel_pressure_high"], "psi", "fuel_press")
+
+    # Vne (high, warning only) checked against TRUE airspeed. On many aircraft
+    # (incl. the RV-8) Vne is a flutter/TAS limit, so IAS would be non-
+    # conservative at altitude. 9999 placeholder disables until configured.
+    # No caution tier for airspeed (Vne is a hard limit) — the episode is
+    # marked warning by passing redline == threshold.
+    vne = t.get("vne_tas_redline", 9999)
+    if vne < 9999:
+        s = col_series("true_airspeed", min_valid=0)
+        eps = _detect_episodes_series(s, "high", vne, db_tas, min_gap, redline=vne)
+        add("Vne (TAS)", "high", eps, vne, " kt", "tas")
+
+    # Positive G (high): caution + limit (warning at/above limit).
+    s = col_series("g_load")
+    eps = _detect_episodes_series(s, "high", t["g_pos_caution"], db_g, min_gap,
+                                  redline=t["g_pos_limit"])
+    add("G-load (+)", "high", eps, t["g_pos_caution"], "g", "g")
+
+    # Negative G (low): caution + limit. _detect_episodes_series has no low-
+    # direction redline, so open episodes at the caution and mark warning when
+    # the episode's minimum reaches the (more negative) limit.
+    gcaut = t.get("g_neg_caution")
+    glim = t.get("g_neg_limit")
+    if gcaut is not None:
+        eps = _detect_episodes_series(s, "low", gcaut, db_g, min_gap)
+        if glim is not None:
+            for e in eps:
+                if e["peak"] <= glim:   # peak is the min value for a low episode
+                    e["reached_redline"] = True
+        add("G-load (-)", "low", eps, gcaut, "g", "g")
 
     # Sort by start time
     results.sort(key=lambda e: e.start_timestamp)

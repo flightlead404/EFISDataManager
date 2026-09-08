@@ -32,13 +32,67 @@ const layout = (title) => ({
     },
     yaxis: {
         gridcolor: '#0f3460', title: 'EGT (°F)',
+        // Lock Y from direct zoom/pan so scroll-zoom and drag only affect X;
+        // the Y range is set solely by fitYToWindow, which refits EGT to the
+        // visible fuel-flow window. This guarantees data never zooms off the
+        // top of the plot (the reported problem) — X zooms, Y always fits.
+        fixedrange: true,
         showspikes: true, spikemode: 'across', spikesnap: 'cursor',
         spikecolor: '#4fc3f7', spikethickness: 1, spikedash: 'dot',
     },
 });
-const config = {responsive: true, displaylogo: false, scrollZoom: true};
+const config = {responsive: true, scrollZoom: true, displaylogo: false};
 
 function timeShort(iso) { return iso ? (iso.split('T')[1] || iso) : ''; }
+
+// Refit the Y axis to the data currently visible in the x-window, matching the
+// flight plots' behavior. X here is numeric fuel flow (not time), so compare as
+// plain numbers. If the x-axis is on autorange (full view), fits to all data.
+function fitYToWindow(gd) {
+    if (!gd || !gd.data || gd.data.length === 0) return;
+    const xr = gd.layout && gd.layout.xaxis ? gd.layout.xaxis.range : null;
+    const windowed = xr && !(gd.layout.xaxis.autorange);
+    // x-axis is reversed, so range may be [hi, lo]; normalize to [lo, hi].
+    let lo = -Infinity, hi = Infinity;
+    if (windowed) {
+        lo = Math.min(xr[0], xr[1]);
+        hi = Math.max(xr[0], xr[1]);
+    }
+    let ymin = Infinity, ymax = -Infinity;
+    gd.data.forEach(tr => {
+        const xs = tr.x, ys = tr.y;
+        if (!xs || !ys) return;
+        for (let i = 0; i < xs.length; i++) {
+            const vx = xs[i];
+            if (vx == null || !isFinite(vx) || vx < lo || vx > hi) continue;
+            const v = ys[i];
+            if (v == null || !isFinite(v)) continue;
+            if (v < ymin) ymin = v;
+            if (v > ymax) ymax = v;
+        }
+    });
+    if (ymin < ymax) {
+        const pad = (ymax - ymin) * 0.05;
+        Plotly.relayout(gd, {'yaxis.range': [ymin - pad, ymax + pad]});
+    } else {
+        Plotly.relayout(gd, {'yaxis.autorange': true});
+    }
+}
+
+// Auto-rescale Y to the data visible in the current x-window on any x zoom/pan
+// (matches the flight plots). Guarded against the relayout we ourselves trigger.
+function wireAutoY(div) {
+    let adjusting = false;
+    div.on('plotly_relayout', (ed) => {
+        if (adjusting) return;
+        const start = ed['xaxis.range[0]'], end = ed['xaxis.range[1]'];
+        const auto = ed['xaxis.autorange'];
+        if (start === undefined && end === undefined && !auto) return;
+        adjusting = true;
+        try { fitYToWindow(div); }
+        finally { setTimeout(() => { adjusting = false; }, 0); }
+    });
+}
 
 fetch(`/api/flight/${flightId}/gami`).then(r => r.json()).then(strokes => {
     if (!strokes || strokes.length === 0) {
@@ -113,7 +167,8 @@ fetch(`/api/flight/${flightId}/gami`).then(r => r.json()).then(strokes => {
             });
         });
 
-        Plotly.newPlot(chartId, traces, layout(`EGT vs Fuel Flow`), config);
+        Plotly.newPlot(chartId, traces, layout(`EGT vs Fuel Flow`), config)
+            .then(() => wireAutoY(document.getElementById(chartId)));
     });
 });
 </script>

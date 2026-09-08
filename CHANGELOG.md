@@ -5,6 +5,36 @@ a single release version (git tag + `__version__` + `pyproject.toml`) with
 independent display labels for the menu-bar tool (`MENUBAR_VERSION`) and the
 dashboard (`DASHBOARD_VERSION`).
 
+## v1.3.0
+
+Release version 1.3.0 · menu bar 0.9.0 · dashboard 1.1.0
+
+Analysis dashboard: airspeed and G-load limit alerting, plus a GAMI plot zoom
+fix.
+
+### Alerts (analysis dashboard)
+
+- **Vne (never-exceed) alerting.** Flags any recorded exceedance of the
+  never-exceed speed. Checked against TRUE airspeed, because Vne is a
+  flutter/TAS limit on many aircraft (incl. the RV-8) — an indicated-airspeed
+  check would be non-conservative at altitude. Warning-only (no caution band).
+  Default 200 KTAS (RV-8 230 mph TAS); configurable in Settings, or set to 9999
+  to disable. The EFIS handles the in-cockpit indicated-Vne display; this is a
+  post-flight exceedance check on the recorded data.
+- **G-load alerting, positive and negative.** Each direction has a caution and
+  a limit (a caution flags an early excursion; reaching the limit is a warning).
+  Defaults +3.0/+3.8 g and -1.5/-3.0 g; set to your aircraft's weight/category
+  in Settings (e.g. RV-8 +6/-3 g at aerobatic gross).
+- Airspeed and G exceedances appear both as timestamped per-flight episodes
+  (with jump-to markers) and in the cross-flight Alerts summary.
+
+### GAMI lean test plot
+
+- **X-only zoom.** Zooming/panning the EGT-vs-fuel-flow plot now affects only
+  the fuel-flow axis; EGT auto-fits to the visible window, matching the flight
+  plots. Zooming in on closely-grouped peak EGTs spreads them out instead of
+  running the data off the top of the chart.
+
 ## v1.2.1
 
 Release version 1.2.1 · menu bar 0.9.0 · dashboard 1.0.0
