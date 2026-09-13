@@ -742,3 +742,23 @@ def get_oil_events(cutoff_date: str = "") -> list[dict]:
         return [dict(r) for r in rows]
     finally:
         conn.close()
+
+
+def get_max_operation_hourmeter() -> Optional[float]:
+    """Return the maximum non-null ``hourmeter_end`` across all operations.
+
+    This is Current_Engine_Hours (Req 2.1): the most recent known engine time.
+    ``MAX(...)`` in SQLite ignores NULLs and yields NULL (-> Python ``None``)
+    when no operation has a non-null ``hourmeter_end`` (Req 2.6), which is the
+    "not computable" input.
+
+        SELECT MAX(hourmeter_end) FROM operations
+    """
+    conn = get_db_connection()
+    try:
+        row = conn.execute(
+            "SELECT MAX(hourmeter_end) FROM operations"
+        ).fetchone()
+        return row[0] if row is not None else None
+    finally:
+        conn.close()

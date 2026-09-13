@@ -79,6 +79,18 @@ DEFAULT_THRESHOLDS = {
     # Default 200 KTAS = RV-8 Vne of 230 mph TAS. Set to your aircraft's value.
     "vne_tas_redline": 200,     # KTAS (RV-8: 230 mph TAS = ~200 KTAS)
 
+    # IAS-based Vne companion to vne_tas_redline. Exactly one Vne key is active
+    # at a time (the other holds the 9999 disabled sentinel). Ships disabled so
+    # today's TAS-based Vne behavior is preserved until an import flips it.
+    "vne_ias_redline": 9999,    # KIAS; 9999 = disabled
+
+    # RPM redline (engine over-speed). Set from the EFIS Max RPM on import.
+    "rpm_redline": 2700,        # RPM (typical Lycoming redline)
+
+    # CHT shock-cooling rate limit, degrees F per minute (SID 150). GRT EIS4000
+    # expresses this in °/min. Any faster cooling flags a shock-cooling event.
+    "cht_cooling_rate_max": 60, # °F/min
+
     # Trend detection
     "trend_cht_rise_rate": 5.0,   # degrees F per flight hour (rolling avg)
     "trend_oil_consumption_high": 0.15,  # quarts per hour
@@ -141,6 +153,9 @@ class FlightStats:
     max_egt: Optional[float] = None
     cht_spread_max: Optional[float] = None  # Max spread between cylinders
     egt_spread_max: Optional[float] = None
+    # Max windowed CHT cooling rate over the flight, °/min (positive = cooling).
+    # Computed on the hottest-cylinder CHT series over a W-second window.
+    max_cht_cooling_rate: Optional[float] = None
 
     # Oil
     max_oil_temp: Optional[float] = None
@@ -152,6 +167,9 @@ class FlightStats:
     fuel_used: Optional[float] = None
     avg_fuel_flow_cruise: Optional[float] = None
     max_fuel_flow: Optional[float] = None
+
+    # Percent power (computed from the EFIS Power_Map; None when unavailable)
+    avg_percent_power_cruise: Optional[float] = None
 
     # Electrical
     min_voltage: Optional[float] = None
@@ -234,6 +252,12 @@ def get_flight_stats(operation_id: int) -> Optional[FlightStats]:
         stats.max_fuel_flow = _max_col(rows, "fuel_flow")
         stats.avg_fuel_flow_cruise = _avg_col(cruise, "fuel_flow")
 
+        # Percent power (cruise average). Computed from the EFIS Power_Map via
+        # the exact 8-step algorithm; None for the whole flight when the map is
+        # unavailable, and per-sample None values are excluded from the average
+        # (Req 6.2, 5.1, 5.2). Imported lazily to avoid an import cycle.
+        stats.avg_percent_power_cruise = _avg_percent_power_cruise(cruise)
+
         # Oil
         stats.max_oil_temp = _max_col(rows, "oil_temp", min_valid=50)
         stats.min_oil_pressure_cruise = _min_col(cruise, "oil_pressure", min_valid=1)
@@ -270,6 +294,20 @@ def get_flight_stats(operation_id: int) -> Optional[FlightStats]:
         stats.max_egt = max((c.max_egt for c in stats.cylinders if c.max_egt), default=None)
         stats.cht_spread_max = _max_spread(cruise, cht_fields[:num_cyl], min_valid=200)
         stats.egt_spread_max = _max_spread(cruise, egt_fields[:num_cyl], min_valid=500)
+
+        # Max windowed CHT cooling rate (°/min) over the flight. Built from the
+        # same hottest-cylinder CHT series used by detect_episodes so the
+        # flight-summary line and the episode agree (Req 12.3).
+        cht_cols_present = [c for c in cht_fields[:num_cyl] if c in rows[0].keys()]
+        if cht_cols_present:
+            hottest = []
+            for r in rows:
+                vals = [r[c] for c in cht_cols_present
+                        if r[c] is not None and r[c] >= 100]
+                hottest.append((r["timestamp"], max(vals) if vals else None))
+            rate_s = _cht_cooling_rate_series(hottest)
+            rates = [rt for _, rt in rate_s]
+            stats.max_cht_cooling_rate = max(rates) if rates else None
 
         # Generate alerts
         _check_alerts(stats, get_thresholds())
@@ -646,6 +684,27 @@ def _check_alerts(stats: FlightStats, thresholds: dict):
     if stats.max_true_airspeed and vne < 9999 and stats.max_true_airspeed >= vne:
         stats.alerts.append(f"WARNING: Max TAS {stats.max_true_airspeed:.0f} kt (Vne {vne:.0f} TAS)")
 
+    # Vne (warning only) against INDICATED airspeed; mirror of the TAS line.
+    # The mapper keeps the two Vne keys mutually exclusive (Req 5.6).
+    vne_ias = thresholds.get("vne_ias_redline", 9999)
+    if stats.max_indicated_airspeed and vne_ias < 9999 and stats.max_indicated_airspeed >= vne_ias:
+        stats.alerts.append(f"WARNING: Max IAS {stats.max_indicated_airspeed:.0f} kt (Vne {vne_ias:.0f} IAS)")
+
+    # RPM redline (warning only). Gated on rpm_redline being set (Req 11.2, 11.3).
+    rpm_redline = thresholds.get("rpm_redline")
+    if rpm_redline is not None and stats.max_rpm and stats.max_rpm >= rpm_redline:
+        stats.alerts.append(f"WARNING: Max RPM {stats.max_rpm:.0f} (redline {rpm_redline:.0f})")
+
+    # CHT shock-cooling rate (caution). Gated on cht_cooling_rate_max being set
+    # (Req 12.3, 12.4). max_cht_cooling_rate is the max windowed °/min cooling
+    # observed over the flight (positive = cooling).
+    cool_max = thresholds.get("cht_cooling_rate_max")
+    if (cool_max is not None and stats.max_cht_cooling_rate is not None
+            and stats.max_cht_cooling_rate > cool_max):
+        stats.alerts.append(
+            f"CAUTION: CHT cooling {stats.max_cht_cooling_rate:.0f}°/min "
+            f"(max {cool_max:.0f}°/min)")
+
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -682,6 +741,49 @@ def _avg_col(rows: list, col: str, min_valid: float = None) -> Optional[float]:
             if min_valid is None or v >= min_valid:
                 vals.append(v)
     return sum(vals) / len(vals) if vals else None
+
+
+def _avg_percent_power_cruise(cruise: list) -> Optional[float]:
+    """Cruise-average Percent_Power over the given cruise rows (Req 6.2).
+
+    Obtains the EFIS Power_Map once; when unavailable returns None (the whole
+    flight shows no Percent_Power, Req 5.2). Otherwise computes percent_power
+    per cruise row from rpm1, the resolved MAP column, pressure_altitude, and
+    OAT (converted to Fahrenheit via the settings Temp_Units flag), averages the
+    defined (non-None) values, and returns None when no cruise sample yields a
+    defined value (Req 5.1).
+
+    Imports are lazy to keep analysis.py free of an import cycle with power.py.
+    """
+    from efis_data_manager import power
+    from efis_data_manager.aux_map import resolve_aux
+
+    settings = power._read_settings()
+    if settings is None:
+        return None
+    sids, temp_units_celsius = settings
+    power_map = power.build_power_map(sids)
+    if power_map is None:
+        return None
+
+    map_col = power.map_column_for(resolve_aux())
+
+    keys = cruise[0].keys() if cruise else []
+    values = []
+    for r in cruise:
+        rpm = r["rpm1"]
+        map_inhg = r[map_col] if map_col in keys else None
+        palt = r["pressure_altitude"]
+        oat_raw = r["oat"]
+        if oat_raw is None:
+            oat_f = None
+        else:
+            oat_f = power.oat_to_fahrenheit(oat_raw, temp_units_celsius)
+        pp = power.percent_power(rpm, map_inhg, palt, oat_f, power_map)
+        if pp is not None:
+            values.append(pp)
+
+    return sum(values) / len(values) if values else None
 
 
 def _max_spread(rows: list, fields: list[str], min_valid: float = 0) -> Optional[float]:
@@ -940,6 +1042,128 @@ def get_oil_changes() -> list[dict]:
 
 
 # ---------------------------------------------------------------------------
+# Oil-age warning (dashboard-computed oil hours since the last oil change)
+# ---------------------------------------------------------------------------
+
+def compute_oil_age(
+    operations_max_hourmeter: Optional[float],
+    oil_change_events: list[dict],
+    threshold_hours: float,
+) -> dict:
+    """Classify oil age from dashboard data. PURE — no DB, no config, no I/O.
+
+    Args:
+        operations_max_hourmeter: Current_Engine_Hours (max hourmeter_end), or
+            None when no operation has a non-null hourmeter_end (Req 2.1, 2.6).
+        oil_change_events: oil events already filtered by cutoff date. Only
+            events with event_type == "change" are considered; any others are
+            ignored (Req 3.1, 3.2). Each considered event must carry a numeric
+            "hourmeter". The list need not be sorted.
+        threshold_hours: oil_age_warning_hours, already sanitized to >= 0.
+            <= 0 means the warning is disabled (Req 1.3, 1.4, 4.5).
+
+    Returns a status dict:
+        {
+          "status": "ok" | "exceeded" | "no_change_on_record" | "not_computable",
+          "oil_hours_since_change": float | None,
+          "threshold": float,
+          "limit_exceeded": bool,
+        }
+
+    Classification (in order):
+      1. threshold_hours <= 0 -> "ok", hours None, limit_exceeded False
+         (disabled; Req 1.3, 4.5).
+      2. no "change" event among oil_change_events -> "no_change_on_record",
+         hours None (Req 2.5).
+      3. operations_max_hourmeter is None -> "not_computable", hours None
+         (Req 2.6).
+      4. otherwise H = max hourmeter among "change" events (Req 2.2, 5.2);
+         hours = operations_max_hourmeter - H (Req 2.3):
+           - hours <= 0 (rolled-back/out-of-order): "ok", hours reported,
+             limit_exceeded False (Req 5.1);
+           - 0 < hours <= threshold: "ok", limit_exceeded False (Req 4.3);
+           - hours > threshold: "exceeded", limit_exceeded True (Req 4.1).
+
+    "threshold" in the returned dict is always the sanitized threshold_hours.
+    """
+    # Step 1: disabled threshold — do no work, never render a banner.
+    if threshold_hours <= 0:
+        return {
+            "status": "ok",
+            "oil_hours_since_change": None,
+            "threshold": threshold_hours,
+            "limit_exceeded": False,
+        }
+
+    # Consider only oil-change events; additions/top-offs are ignored (Req 3).
+    change_hours = [
+        e["hourmeter"] for e in oil_change_events
+        if e.get("event_type") == "change" and e.get("hourmeter") is not None
+    ]
+
+    # Step 2: no oil change on record.
+    if not change_hours:
+        return {
+            "status": "no_change_on_record",
+            "oil_hours_since_change": None,
+            "threshold": threshold_hours,
+            "limit_exceeded": False,
+        }
+
+    # Step 3: no current engine hours -> not computable.
+    if operations_max_hourmeter is None:
+        return {
+            "status": "not_computable",
+            "oil_hours_since_change": None,
+            "threshold": threshold_hours,
+            "limit_exceeded": False,
+        }
+
+    # Step 4: compute age against the highest-hourmeter change (Req 2.2, 5.2).
+    recent = max(change_hours)
+    hours = operations_max_hourmeter - recent
+    exceeded = hours > threshold_hours  # strictly greater (Req 4.1, 4.3)
+    return {
+        "status": "exceeded" if exceeded else "ok",
+        "oil_hours_since_change": hours,
+        "threshold": threshold_hours,
+        "limit_exceeded": exceeded,
+    }
+
+
+def get_oil_age_status() -> dict:
+    """Compute the oil-age status from live dashboard data (Req 2, 3, 5).
+
+    Reads oil_age_warning_hours and oil_cutoff_date from config, loads
+    cutoff-filtered oil events via database.get_oil_events(cutoff_date=...),
+    reads Current_Engine_Hours via database.get_max_operation_hourmeter(), then
+    delegates to compute_oil_age(). Sanitizes a negative / non-numeric /
+    absent oil_age_warning_hours to 0 (Req 1.2, 1.4) before passing it in.
+
+    Returns the same status dict shape as compute_oil_age().
+    """
+    from efis_data_manager.config import load_config
+    from efis_data_manager.database import (
+        get_oil_events,
+        get_max_operation_hourmeter,
+    )
+
+    config = load_config()
+    # Sanitize threshold: coerce to float, clamp negative/non-numeric to 0.
+    try:
+        threshold = float(config.get("oil_age_warning_hours", 0))
+    except (TypeError, ValueError):
+        threshold = 0.0
+    if threshold < 0:
+        threshold = 0.0
+
+    cutoff = config.get("oil_cutoff_date", "")
+    events = get_oil_events(cutoff_date=cutoff)
+    max_hm = get_max_operation_hourmeter()
+    return compute_oil_age(max_hm, events, threshold)
+
+
+# ---------------------------------------------------------------------------
 # Per-episode exceedance detection (hysteresis)
 # ---------------------------------------------------------------------------
 
@@ -960,6 +1184,79 @@ class Episode:
 def _elapsed_s(t_from: str, t_to: str) -> float:
     """Seconds between two naive ISO timestamps."""
     return (datetime.fromisoformat(t_to) - datetime.fromisoformat(t_from)).total_seconds()
+
+
+# Shock-cooling window. GRT EIS4000 expresses SID 150 (Max CHT Cooling Rate) in
+# degrees-per-minute (design Req 12.1). The FDL is ~1 Hz, so raw per-sample
+# first differences are dominated by sensor noise. We instead measure the rate
+# over a W-second window: rate(t) = (cht[t-W] - cht[t]) / (W/60), in °/min,
+# positive = cooling. A multi-second window suppresses single-sample noise while
+# still catching a genuine shock-cooling ramp.
+_CHT_COOLING_WINDOW_S = 10          # W: window length in seconds
+_CHT_COOLING_WINDOW_TOL_S = 2.0     # how close a sample must be to t-W to pair
+
+
+_CHT_COOLING_SMOOTH_S = 5           # trailing smoothing window (seconds)
+
+
+def _cht_cooling_rate_series(cht_series):
+    """Derive a (timestamp, cooling_rate_deg_per_min) series from a CHT series.
+
+    `cht_series` is a list of (iso_timestamp, cht_value-or-None). To reject 1 Hz
+    sensor noise the raw CHT is first smoothed with a short trailing average
+    (_CHT_COOLING_SMOOTH_S seconds), then a cooling rate is measured over a
+    W-second window against the nearest earlier smoothed sample:
+
+        rate(t) = (cht_smooth[t-W] - cht_smooth[t]) / (dt/60)   [°/min, + = cool]
+
+    where dt is the ACTUAL elapsed time between the paired samples. The paired
+    sample must lie within _CHT_COOLING_WINDOW_TOL_S of t - W AND cover at least
+    (W - tol) seconds, so the very start of the series (where a full window does
+    not yet exist) produces no rate sample rather than an amplified noisy one.
+    Gaps / missing values simply produce no rate sample rather than raising.
+    """
+    pts = [(ts, v) for ts, v in cht_series if v is not None]
+    if not pts:
+        return []
+    base = pts[0][0]
+    elapsed = [_elapsed_s(base, ts) for ts, _ in pts]
+
+    # Trailing moving average to suppress single-sample jitter (design: "smooth
+    # with a short trailing window").
+    smooth = []
+    for j in range(len(pts)):
+        lo = elapsed[j] - _CHT_COOLING_SMOOTH_S
+        win = [pts[k][1] for k in range(j, -1, -1) if elapsed[k] >= lo]
+        smooth.append(sum(win) / len(win))
+
+    out = []
+    W = _CHT_COOLING_WINDOW_S
+    tol = _CHT_COOLING_WINDOW_TOL_S
+    for j in range(len(pts)):
+        target = elapsed[j] - W  # elapsed seconds at t - W
+        # Walk back to the sample nearest `target` elapsed seconds.
+        best_k = None
+        best_err = None
+        for k in range(j - 1, -1, -1):
+            err = abs(elapsed[k] - target)
+            if best_err is None or err < best_err:
+                best_err = err
+                best_k = k
+            if elapsed[k] < target - tol:
+                break
+        if best_k is None or best_err is None or best_err > tol:
+            continue
+        dt = elapsed[j] - elapsed[best_k]
+        if dt < W - tol:      # window not yet fully spanned (series start / gap)
+            continue
+        if elapsed[best_k] < _CHT_COOLING_SMOOTH_S:
+            # The earlier endpoint lacks a full trailing smoothing window, so its
+            # smoothed value is biased by series-start truncation — skip it to
+            # avoid a spurious rate from that transient.
+            continue
+        rate = (smooth[best_k] - smooth[j]) / (dt / 60.0)
+        out.append((pts[j][0], rate))
+    return out
 
 
 def _detect_episodes_series(samples, direction, threshold, deadband,
@@ -1050,6 +1347,8 @@ def detect_episodes(operation_id: int) -> list[Episode]:
     db_fp = t.get("episode_deadband_fuel_press", 3)
     db_tas = t.get("episode_deadband_tas", 5)
     db_g = t.get("episode_deadband_g", 0.2)
+    db_rpm = t.get("episode_deadband_rpm", 50)          # RPM
+    db_cool = t.get("episode_deadband_cht_cooling", 5)  # °/min (rate deadband)
 
     # Resolve the aux mapping through the single resolver. Fuel-pressure
     # episodes run only when fuel_pressure is mapped, and read the resolved
@@ -1074,7 +1373,7 @@ def detect_episodes(operation_id: int) -> list[Episode]:
         )
         rows = conn.execute(
             f"""SELECT timestamp, oil_temp, oil_pressure, {fp_select},
-                      indicated_airspeed, true_airspeed, g_load,
+                      indicated_airspeed, true_airspeed, g_load, rpm1,
                       cht1, cht2, cht3, cht4, cht5, cht6,
                       egt1, egt2, egt3, egt4, egt5, egt6
                FROM fdl_data WHERE operation_id = ? ORDER BY timestamp""",
@@ -1130,6 +1429,16 @@ def detect_episodes(operation_id: int) -> list[Episode]:
                                       min_gap, redline=t["cht_redline"])
         add("CHT", "high", eps, t["cht_caution"], "°F", "temp")
 
+        # CHT shock-cooling rate (caution). Build a windowed cooling-rate series
+        # (°/min) from the hottest-cylinder CHT and open a high-direction episode
+        # whenever the cooling rate exceeds cht_cooling_rate_max. Gated on the
+        # threshold being set — missing/None means the feature is off (Req 12.4).
+        cool_max = t.get("cht_cooling_rate_max")
+        if cool_max is not None:
+            rate_s = _cht_cooling_rate_series(s)
+            eps = _detect_episodes_series(rate_s, "high", cool_max, db_cool, min_gap)
+            add("CHT cooling", "high", eps, cool_max, "°/min", "cht_cooling")
+
     # EGT (high, caution + redline)
     if egt_cols:
         s = cyl_series(egt_cols, 100)
@@ -1169,6 +1478,26 @@ def detect_episodes(operation_id: int) -> list[Episode]:
         s = col_series("true_airspeed", min_valid=0)
         eps = _detect_episodes_series(s, "high", vne, db_tas, min_gap, redline=vne)
         add("Vne (TAS)", "high", eps, vne, " kt", "tas")
+
+    # Vne (IAS) — mirror of the TAS path against INDICATED airspeed. The mapper
+    # makes the two Vne keys mutually exclusive (the inactive one holds the 9999
+    # sentinel), so at most one of the TAS/IAS blocks fires (Req 5.5, 5.6).
+    vne_ias = t.get("vne_ias_redline", 9999)
+    if vne_ias < 9999:
+        s = col_series("indicated_airspeed", min_valid=0)
+        eps = _detect_episodes_series(s, "high", vne_ias, db_tas, min_gap, redline=vne_ias)
+        add("Vne (IAS)", "high", eps, vne_ias, " kt", "tas")
+
+    # RPM redline (engine over-speed), warning-only like Vne (redline == the
+    # threshold). Gated on rpm_redline being SET — a missing/None value means the
+    # feature is off (Req 11.1, 11.3). SID 123's Disabled_Value is mapped by
+    # omitting the key from config, which surfaces here as None.
+    rpm_redline = t.get("rpm_redline")
+    if rpm_redline is not None:
+        s = col_series("rpm1", min_valid=0)
+        eps = _detect_episodes_series(s, "high", rpm_redline, db_rpm, min_gap,
+                                      redline=rpm_redline)
+        add("RPM", "high", eps, rpm_redline, " RPM", "rpm")
 
     # Positive G (high): caution + limit (warning at/above limit).
     s = col_series("g_load")

@@ -1,6 +1,7 @@
 {% extends "base.html" %}
 {% block title %}Oil Consumption — EFIS Data Manager{% endblock %}
 {% block content %}
+<div id="oil-age-banner" style="display:none;"></div>
 <h1>Oil Consumption</h1>
 
 <div class="note">
@@ -160,6 +161,23 @@ const oilChartConfig = {responsive: true, scrollZoom: true};
 
 function loadOil() {
     fetch('/api/oil').then(r => r.json()).then(data => {
+        // Oil-age warning banner: shown ONLY when the threshold is exceeded.
+        const age = data.oil_age;
+        const banner = document.getElementById('oil-age-banner');
+        if (age && age.status === 'exceeded') {
+            banner.className = 'note';           // reuse the .note block style …
+            banner.style.display = '';
+            banner.style.color = '#ef5350';      // … recolored to a warning red
+            banner.style.borderColor = '#ef5350';
+            banner.style.borderLeftColor = '#ef5350';
+            banner.textContent =
+                `Oil age threshold exceeded: ${age.oil_hours_since_change.toFixed(1)}` +
+                ` oil hours since last change (limit ${age.threshold})`;
+        } else {
+            banner.style.display = 'none';
+            banner.textContent = '';
+        }
+
         // Chart: consumption rate + rolling avg + oil-change vertical markers
         const cons = data.consumption;
         const traces = [];

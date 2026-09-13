@@ -241,6 +241,13 @@ Quitting from the menu is logged.
   underlying `com.apple.provenance` attribute cannot be removed) and harmless to
   the EFIS, which ignores these files. Routine incremental updates only rewrite
   changed files, so they create very few.
+- **Running a Windows VM at the same time (Parallels, VMware, UTM).** If you use
+  a Windows VM — e.g. for the Seattle Avionics Chart Data Manager — it can grab
+  the USB drive and contend with macOS for it, which may interrupt a sync or
+  make an eject hang. Let one side own the drive at a time: eject or quit this
+  app before handing the drive to the VM, or set the drive to auto-connect to
+  the VM and do all its work there. Don't have both fighting over the same
+  device.
 
 ## Security & privacy
 

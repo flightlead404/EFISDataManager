@@ -14,6 +14,7 @@ Uses rumps to create a persistent macOS menu bar item with status display,
 settings access, and background currency checking.
 """
 
+import json
 import logging
 import os
 import subprocess
@@ -22,7 +23,12 @@ import threading
 
 import rumps
 
+from efis_data_manager import config
 from efis_data_manager.config import load_config, save_config
+from efis_data_manager.notification_history import (
+    NotificationHistory,
+    format_entry_line,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -112,6 +118,9 @@ class EFISDataManagerApp(rumps.App):
             quit_button=None,
         )
         self.config = load_config()
+        # Notification history (persistence enabled by default). Load prior
+        # entries from disk so recent notices survive a restart (Req 6).
+        self._history = self._load_history()
         self._charts_running = False
         self._nav_running = False
         self._software_running = False
@@ -149,6 +158,7 @@ class EFISDataManagerApp(rumps.App):
             "Prepare Drive...",
             None,
             "Diagnostics...",
+            "Recent Notifications...",
             "Recent Errors...",
             "About",
             "Quit",
@@ -207,6 +217,56 @@ class EFISDataManagerApp(rumps.App):
         return path_str
 
     # ------------------------------------------------------------------
+    # Notifications + history (notifications-history feature)
+    # ------------------------------------------------------------------
+
+    def _notify(self, title, message):
+        """Single path for all notifications.
+
+        Posts the OS notification exactly as before, then records it in the
+        history and persists (best-effort). Recording/persisting MUST NOT
+        prevent the notification from posting, so the rumps.notification call
+        happens first and the record/save is wrapped so any failure there is
+        logged but never propagates (Req 1.1, 1.2).
+        """
+        rumps.notification("EFIS Data Manager", title, message)
+        try:
+            self._history.add(title, message)
+            self._save_history()
+        except Exception as e:  # best-effort; never break posting
+            logger.warning(f"Failed to record notification history: {e}")
+
+    def _history_path(self):
+        return config.APP_SUPPORT_DIR / "notification_history.json"
+
+    def _load_history(self) -> NotificationHistory:
+        """Load persisted notification history from disk (Req 6.2, 6.3).
+
+        A missing file or invalid JSON yields an empty history without error.
+        """
+        config.ensure_dirs()
+        path = self._history_path()
+        try:
+            with open(path, "r") as f:
+                loaded = json.load(f)
+            return NotificationHistory.from_serializable(loaded)
+        except (json.JSONDecodeError, OSError):
+            return NotificationHistory.from_serializable([])
+
+    def _save_history(self):
+        """Persist the history (<= 50 items) to disk (Req 6.1, 6.4).
+
+        Wrapped in try/except; a failed persist logs a warning and never
+        raises so the notification path is never interrupted.
+        """
+        try:
+            config.ensure_dirs()
+            with open(self._history_path(), "w") as f:
+                json.dump(self._history.to_serializable(), f, indent=2)
+        except OSError as e:
+            logger.warning(f"Failed to save notification history: {e}")
+
+    # ------------------------------------------------------------------
     # USB Monitor
     # ------------------------------------------------------------------
 
@@ -236,11 +296,7 @@ class EFISDataManagerApp(rumps.App):
             f"use Prepare Drive to set it up."
         )
         try:
-            rumps.notification(
-                "EFIS Data Manager",
-                "Unmanaged drive detected",
-                f"{name}: use Prepare Drive to set it up.",
-            )
+            self._notify("Unmanaged drive detected", f"{name}: use Prepare Drive to set it up.")
         except Exception as e:
             # Notifications are best-effort; never let a failed toast disrupt
             # monitoring.
@@ -364,8 +420,7 @@ class EFISDataManagerApp(rumps.App):
         logger.info(f"EFIS drive mounted: {mount_point}")
         self._set_drive_status(f"Connected: {mount_point}")
         self._set_status("EFIS drive detected")
-        rumps.notification("EFIS Data Manager", "EFIS Drive Detected",
-                           f"Drive mounted at {mount_point}. Starting archive...")
+        self._notify("EFIS Drive Detected", f"Drive mounted at {mount_point}. Starting archive...")
 
         # An interrupted prior sync is detected durably by drive_updater's
         # sync-state (pending_families) and handled inside _run_drive_update:
@@ -396,16 +451,20 @@ class EFISDataManagerApp(rumps.App):
         logger.info(f"EFIS drive ejected: {mount_point}")
         self._set_drive_status("Not connected")
         self._set_status("Idle")
-        rumps.notification("EFIS Data Manager", "EFIS Drive Ejected",
-                           "Drive removed safely.")
+        self._notify("EFIS Drive Ejected", "Drive removed safely.")
 
     def eject_drive(self, _):
-        """Eject the currently mounted EFIS drive."""
+        """Eject the currently mounted EFIS drive.
+
+        Discovery + guards run here (fast); the actual ``diskutil eject`` runs
+        on a background thread (``_run_eject``) because macOS can take a minute+
+        to flush buffered writes after a large sync, and a synchronous eject on
+        the main thread freezes the whole menu bar until it returns.
+        """
         if not getattr(self, '_drive_connected', False):
-            rumps.notification("EFIS Data Manager", "No Drive", "No EFIS drive is connected.")
+            self._notify("No Drive", "No EFIS drive is connected.")
             return
 
-        import subprocess
         from efis_data_manager.usb_monitor import is_managed_drive
         mount_point = None
         # Find the currently connected managed drive (identity-only detection).
@@ -416,39 +475,62 @@ class EFISDataManagerApp(rumps.App):
                 break
 
         if not mount_point:
-            rumps.notification("EFIS Data Manager", "No Drive", "No EFIS drive found to eject.")
+            self._notify("No Drive", "No EFIS drive found to eject.")
             return
 
-        # Get the disk identifier first, then eject the whole physical device
-        info_result = subprocess.run(
-            ["diskutil", "info", "-plist", mount_point],
-            capture_output=True, timeout=10
-        )
-        if info_result.returncode == 0:
-            import plistlib
-            info = plistlib.loads(info_result.stdout)
-            # Get parent whole disk (e.g. disk4 from disk4s1)
-            parent_disk = info.get("ParentWholeDisk", "")
-            if parent_disk:
-                result = subprocess.run(
-                    ["diskutil", "eject", f"/dev/{parent_disk}"],
-                    capture_output=True, text=True
-                )
-            else:
-                result = subprocess.run(
-                    ["diskutil", "eject", mount_point],
-                    capture_output=True, text=True
-                )
-        else:
+        # Guard against double-clicks kicking off two ejects.
+        if getattr(self, "_ejecting", False):
+            return
+        self._ejecting = True
+        self._set_status("Ejecting...")
+        threading.Thread(
+            target=self._run_eject, args=(mount_point,), daemon=True
+        ).start()
+
+    def _run_eject(self, mount_point: str):
+        """Eject ``mount_point`` on a background thread (slow flush + eject).
+
+        Ejects the whole physical device (parent of the mounted partition) when
+        it can be resolved. The USB monitor's unmount callback normally clears
+        the drive status once macOS reports the volume gone; we set a
+        "Safe to remove" status on success as immediate feedback.
+        """
+        import subprocess
+        try:
+            # Get the disk identifier first, then eject the whole physical device
+            info_result = subprocess.run(
+                ["diskutil", "info", "-plist", mount_point],
+                capture_output=True, timeout=10
+            )
+            parent_disk = ""
+            if info_result.returncode == 0:
+                import plistlib
+                try:
+                    info = plistlib.loads(info_result.stdout)
+                    # Get parent whole disk (e.g. disk4 from disk4s1)
+                    parent_disk = info.get("ParentWholeDisk", "")
+                except Exception:
+                    parent_disk = ""
+
+            target = f"/dev/{parent_disk}" if parent_disk else mount_point
             result = subprocess.run(
-                ["diskutil", "eject", mount_point],
+                ["diskutil", "eject", target],
                 capture_output=True, text=True
             )
-        if result.returncode == 0:
-            logger.info(f"Ejected {mount_point}")
-        else:
-            rumps.notification("EFIS Data Manager", "Eject Failed",
-                               result.stderr.strip()[:100] or "Unknown error")
+
+            if result.returncode == 0:
+                logger.info(f"Ejected {mount_point}")
+                self._set_status("Safe to remove")
+                self._notify("EFIS Drive Ejected", "Safe to remove the drive.")
+            else:
+                self._set_status("Idle")
+                self._notify("Eject Failed", result.stderr.strip()[:100] or "Unknown error")
+        except Exception as e:
+            logger.error(f"Eject failed for {mount_point}: {e}")
+            self._set_status("Idle")
+            self._notify("Eject Failed", str(e)[:100])
+        finally:
+            self._ejecting = False
 
     def verify_drive_menu(self, _):
         """User clicked "Verify Drive": run an on-demand exhaustive verify.
@@ -469,8 +551,7 @@ class EFISDataManagerApp(rumps.App):
                 break
 
         if not mount_point:
-            rumps.notification("EFIS Data Manager", "No Drive",
-                               "No EFIS drive is connected.")
+            self._notify("No Drive", "No EFIS drive is connected.")
             return
 
         threading.Thread(
@@ -502,19 +583,17 @@ class EFISDataManagerApp(rumps.App):
 
             if result["clean"]:
                 logger.info(f"Verify Drive: clean ({summary}).")
-                rumps.notification("EFIS Data Manager", "Drive Verified",
-                                   f"Drive is complete: {summary}")
+                self._notify("Drive Verified", f"Drive is complete: {summary}")
                 self._set_status("Drive current")
             else:
                 # Discrepancies found — report them; repair happens via the
                 # interrupted-sync path, not this verify-only action (Req 6.4).
                 logger.warning(f"Verify Drive found discrepancies: {summary}")
-                rumps.notification("EFIS Data Manager", "Drive Verify: Discrepancies",
-                                   f"{summary}\nRe-connect or re-run update to repair.")
+                self._notify("Drive Verify: Discrepancies", f"{summary}\nRe-connect or re-run update to repair.")
                 self._set_status("Drive needs update")
         except Exception as e:
             logger.error(f"Verify Drive failed: {e}")
-            rumps.notification("EFIS Data Manager", "Verify Drive Failed", str(e)[:100])
+            self._notify("Verify Drive Failed", str(e)[:100])
             self._set_status("Verify failed")
 
     def _run_archive(self, mount_point: str):
@@ -554,21 +633,17 @@ class EFISDataManagerApp(rumps.App):
                     msg += f" Cleaned: {', '.join(results['cleaned'])}."
 
             if results["errors"]:
-                rumps.notification("EFIS Data Manager", "Archive Complete (with errors)",
-                                   f"{msg}\n{len(results['errors'])} error(s).")
+                self._notify("Archive Complete (with errors)", f"{msg}\n{len(results['errors'])} error(s).")
                 self._set_status("Archive errors")
             else:
-                rumps.notification("EFIS Data Manager", "Archive Complete", msg)
+                self._notify("Archive Complete", msg)
 
             # Data is now imported into the analysis DB. Signal that flight
             # data is ready to analyze — independent of the (slow) chart sync.
             self._refresh_alerts()
             if results.get("fdl_imported"):
-                rumps.notification(
-                    "EFIS Data Manager", "Flight Data Ready",
-                    f"Imported {results['fdl_imported']} operation(s). "
-                    "Open the dashboard to analyze — chart sync continues in background."
-                )
+                self._notify("Flight Data Ready", f"Imported {results['fdl_imported']} operation(s). "
+                    "Open the dashboard to analyze — chart sync continues in background.")
 
             # Kick off the drive update (long chart sync) on its OWN thread so
             # the archive thread finishes cleanly and analysis isn't blocked.
@@ -578,7 +653,7 @@ class EFISDataManagerApp(rumps.App):
 
         except Exception as e:
             logger.error(f"Archive failed: {e}")
-            rumps.notification("EFIS Data Manager", "Archive Failed", str(e)[:100])
+            self._notify("Archive Failed", str(e)[:100])
             self._set_status("Archive failed")
 
     def _run_drive_update(self, mount_point: str):
@@ -641,8 +716,7 @@ class EFISDataManagerApp(rumps.App):
                     "declaring current."
                 )
                 self._set_status("Verifying drive after interrupted sync...")
-                rumps.notification("EFIS Data Manager", "Verifying Drive",
-                                   f"Resuming interrupted sync: {', '.join(pending)}.")
+                self._notify("Verifying Drive", f"Resuming interrupted sync: {', '.join(pending)}.")
                 repair = self._with_active_watchdog(
                     mount_point,
                     lambda is_aborted: verify_drive(
@@ -657,8 +731,7 @@ class EFISDataManagerApp(rumps.App):
                         f"Verify+repair left discrepancies on {mount_point}: "
                         f"{repair['families']}"
                     )
-                    rumps.notification("EFIS Data Manager", "Verify Incomplete",
-                                       "Some families still differ; will retry "
+                    self._notify("Verify Incomplete", "Some families still differ; will retry "
                                        "on next mount.")
                     self._set_status(status)
                     return
@@ -670,8 +743,7 @@ class EFISDataManagerApp(rumps.App):
             if currency["is_current"]:
                 logger.info("Drive is up to date, no sync needed.")
                 self._set_status("Drive current")
-                rumps.notification("EFIS Data Manager", "Drive Current",
-                                   "EFIS drive is up to date.")
+                self._notify("Drive Current", "EFIS drive is up to date.")
                 return
 
             # --- 3. Sync only the stale families. -----------------------------
@@ -684,8 +756,7 @@ class EFISDataManagerApp(rumps.App):
             if len(currency["stale_items"]) > 3:
                 stale_summary += f" +{len(currency['stale_items']) - 3} more"
             self._set_status("Updating drive...")
-            rumps.notification("EFIS Data Manager", "Updating Drive",
-                               f"{len(stale)} family(ies) to update: {stale_summary}")
+            self._notify("Updating Drive", f"{len(stale)} family(ies) to update: {stale_summary}")
 
             results = self._with_active_watchdog(
                 mount_point,
@@ -704,21 +775,19 @@ class EFISDataManagerApp(rumps.App):
                 # log the terminal status too so it always has a matching record
                 # in Recent Errors (Req 8.1/8.3).
                 logger.warning(f"Drive update finished with issues: {status}")
-                rumps.notification("EFIS Data Manager", "Drive Update Complete (errors)",
-                                   f"Updated {updated} item(s), "
+                self._notify("Drive Update Complete (errors)", f"Updated {updated} item(s), "
                                    f"{len(results['errors'])} error(s).")
                 self._set_status(status)
             else:
                 # Clean terminal state -> current, never a sticky error (Req 8.4).
-                rumps.notification("EFIS Data Manager", "Drive Update Complete",
-                                   f"Updated {updated} item(s). Drive is current.")
+                self._notify("Drive Update Complete", f"Updated {updated} item(s). Drive is current.")
                 self._set_status(status)
 
         except Exception as e:
             logger.error(f"Drive update failed: {e}")
             # The durable sync-state is left intact by the job driver on failure,
             # so an interrupted family is retried on the next mount.
-            rumps.notification("EFIS Data Manager", "Drive Update Failed", str(e)[:100])
+            self._notify("Drive Update Failed", str(e)[:100])
             self._set_status("Update failed")
 
     def _with_active_watchdog(self, mount_point: str, run):
@@ -799,7 +868,7 @@ class EFISDataManagerApp(rumps.App):
     def check_charts_now(self, _):
         if self._charts_running:
             logger.info("Chart check requested but already running.")
-            rumps.notification("EFIS Data Manager", "Busy", "Chart check is already running.")
+            self._notify("Busy", "Chart check is already running.")
             return
         logger.info("Manual chart check triggered.")
         threading.Thread(target=self._run_chart_check_manual, daemon=True).start()
@@ -808,7 +877,7 @@ class EFISDataManagerApp(rumps.App):
     def check_nav_db_now(self, _):
         if self._nav_running:
             logger.info("Nav DB check requested but already running.")
-            rumps.notification("EFIS Data Manager", "Busy", "Nav DB check is already running.")
+            self._notify("Busy", "Nav DB check is already running.")
             return
         logger.info("Manual nav DB check triggered.")
         threading.Thread(target=self._run_nav_db_check, daemon=True).start()
@@ -817,7 +886,7 @@ class EFISDataManagerApp(rumps.App):
     def check_efis_software(self, _):
         if self._software_running:
             logger.info("Software check requested but already running.")
-            rumps.notification("EFIS Data Manager", "Busy", "Software check is already running.")
+            self._notify("Busy", "Software check is already running.")
             return
         logger.info("Manual software check triggered.")
         threading.Thread(target=self._run_software_check, daemon=True).start()
@@ -836,17 +905,14 @@ class EFISDataManagerApp(rumps.App):
             all_entries, new_entries = check_chart_currency()
 
             if not new_entries:
-                rumps.notification("EFIS Data Manager", "Charts Current",
-                                   f"All {len(all_entries)} chart data sets are up to date.")
+                self._notify("Charts Current", f"All {len(all_entries)} chart data sets are up to date.")
                 self._set_status("Idle")
                 return
 
             # Notify user, add "Download Charts" menu item
             names = ", ".join(e["description"] for e in new_entries)
             self._pending_chart_downloads = new_entries
-            rumps.notification("EFIS Data Manager",
-                               f"{len(new_entries)} Chart Update(s) Available",
-                               f"{names}\n\nClick 'Download Charts' in the EFIS menu to start.")
+            self._notify(f"{len(new_entries)} Chart Update(s) Available", f"{names}\n\nClick 'Download Charts' in the EFIS menu to start.")
             self._set_status(f"{len(new_entries)} chart update(s) available")
 
             # Add download menu item on main thread
@@ -859,12 +925,11 @@ class EFISDataManagerApp(rumps.App):
             NSOperationQueue.mainQueue().addOperationWithBlock_(_add_menu_item)
 
         except PageLayoutChangedError:
-            rumps.notification("EFIS Data Manager", "Chart Check Failed - Page Changed",
-                               "Seattle Avionics page layout may have changed.")
+            self._notify("Chart Check Failed - Page Changed", "Seattle Avionics page layout may have changed.")
             self._set_status("Alert: Chart page changed")
         except Exception as e:
             logger.error(f"Chart check failed: {e}")
-            rumps.notification("EFIS Data Manager", "Chart Check Failed", str(e)[:100])
+            self._notify("Chart Check Failed", str(e)[:100])
             self._set_status("Chart check failed")
         finally:
             self._charts_running = False
@@ -874,7 +939,7 @@ class EFISDataManagerApp(rumps.App):
         if not self._pending_chart_downloads:
             return
         if self._charts_running:
-            rumps.notification("EFIS Data Manager", "Busy", "A check is already running.")
+            self._notify("Busy", "A check is already running.")
             return
         entries = self._pending_chart_downloads
         self._pending_chart_downloads = None
@@ -891,8 +956,7 @@ class EFISDataManagerApp(rumps.App):
 
         self._charts_running = True
         self._set_status("Downloading charts...")
-        rumps.notification("EFIS Data Manager", "Chart Download Started",
-                           f"Downloading {len(entries)} chart update(s)...")
+        self._notify("Chart Download Started", f"Downloading {len(entries)} chart update(s)...")
 
         def on_progress(filename, pct):
             short_name = filename.split(".")[0] if "." in filename else filename
@@ -901,16 +965,14 @@ class EFISDataManagerApp(rumps.App):
         try:
             results = download_charts(entries, progress_callback=on_progress)
             if results["errors"]:
-                rumps.notification("EFIS Data Manager", "Chart Download Complete (errors)",
-                                   f"Downloaded {results['downloaded']}, {len(results['errors'])} error(s).")
+                self._notify("Chart Download Complete (errors)", f"Downloaded {results['downloaded']}, {len(results['errors'])} error(s).")
                 self._set_status("Chart errors")
             else:
-                rumps.notification("EFIS Data Manager", "Chart Download Complete",
-                                   f"Downloaded and extracted {results['downloaded']} update(s).")
+                self._notify("Chart Download Complete", f"Downloaded and extracted {results['downloaded']} update(s).")
                 self._set_status("Idle")
         except Exception as e:
             logger.error(f"Chart download failed: {e}")
-            rumps.notification("EFIS Data Manager", "Chart Download Failed", str(e)[:100])
+            self._notify("Chart Download Failed", str(e)[:100])
             self._set_status("Chart download failed")
         finally:
             self._charts_running = False
@@ -928,22 +990,19 @@ class EFISDataManagerApp(rumps.App):
         try:
             results = update_charts()
             if results["errors"]:
-                rumps.notification("EFIS Data Manager", "Chart Check - Errors",
-                                   f"Downloaded {results['downloaded']}, {len(results['errors'])} error(s).")
+                self._notify("Chart Check - Errors", f"Downloaded {results['downloaded']}, {len(results['errors'])} error(s).")
                 self._set_status("Chart errors")
             elif results["downloaded"] > 0:
-                rumps.notification("EFIS Data Manager", "Charts Updated",
-                                   f"Downloaded {results['downloaded']} chart update(s).")
+                self._notify("Charts Updated", f"Downloaded {results['downloaded']} chart update(s).")
                 self._set_status("Idle")
             else:
                 logger.info("Charts are current.")
                 if notify_if_current:
-                    rumps.notification("EFIS Data Manager", "Charts Current",
-                                       "All chart data sets are up to date.")
+                    self._notify("Charts Current", "All chart data sets are up to date.")
                 self._set_status("Idle")
         except Exception as e:
             logger.error(f"Chart check failed: {e}")
-            rumps.notification("EFIS Data Manager", "Chart Check Failed", str(e)[:100])
+            self._notify("Chart Check Failed", str(e)[:100])
             self._set_status("Chart check failed")
         finally:
             self._charts_running = False
@@ -961,20 +1020,19 @@ class EFISDataManagerApp(rumps.App):
         try:
             result = check_and_download_nav_db()
             if result["status"] == "updated":
-                rumps.notification("EFIS Data Manager", "Nav DB Updated", result["message"])
+                self._notify("Nav DB Updated", result["message"])
             elif result["status"] == "current":
-                rumps.notification("EFIS Data Manager", "Nav DB Current", result["message"])
+                self._notify("Nav DB Current", result["message"])
             elif result["status"] == "blocked":
                 # Transient: page didn't fully load / bot-protection challenge.
                 # Soft-fail quietly (no alarm) — the next check will retry.
                 logger.warning(f"Nav DB check skipped: {result['message']}")
             else:
-                rumps.notification("EFIS Data Manager", "Nav DB Check Failed",
-                                   result["message"][:100])
+                self._notify("Nav DB Check Failed", result["message"][:100])
             self._set_status("Idle" if result["status"] != "error" else "Nav DB check failed")
         except Exception as e:
             logger.error(f"Nav DB check failed: {e}")
-            rumps.notification("EFIS Data Manager", "Nav DB Check Failed", str(e)[:100])
+            self._notify("Nav DB Check Failed", str(e)[:100])
             self._set_status("Nav DB check failed")
         finally:
             self._nav_running = False
@@ -994,25 +1052,22 @@ class EFISDataManagerApp(rumps.App):
             if result["status"] == "available":
                 # New version(s) detected — user downloads manually (Sucuri blocks auto)
                 names = ", ".join(result["updated_items"])
-                rumps.notification("EFIS Data Manager", "New EFIS Software Available",
-                                   f"{names}. See grtavionics.com to download.")
+                self._notify("New EFIS Software Available", f"{names}. See grtavionics.com to download.")
                 logger.info(f"Software available for manual download: {result['message']}")
                 self._set_status(f"Software update available: {names}")
             elif result["status"] == "current":
-                rumps.notification("EFIS Data Manager", "Software Current",
-                                   result["message"])
+                self._notify("Software Current", result["message"])
                 self._set_status("Idle")
             elif result["status"] == "blocked":
                 # Bot protection — soft failure, don't alarm the user
                 logger.warning(f"Software check blocked: {result['message']}")
                 self._set_status("Idle")
             else:
-                rumps.notification("EFIS Data Manager", "Software Check Failed",
-                                   result["message"][:100])
+                self._notify("Software Check Failed", result["message"][:100])
                 self._set_status("Software check failed")
         except Exception as e:
             logger.error(f"EFIS software check failed: {e}")
-            rumps.notification("EFIS Data Manager", "Software Check Failed", str(e)[:100])
+            self._notify("Software Check Failed", str(e)[:100])
             self._set_status("Software check failed")
         finally:
             self._software_running = False
@@ -1044,8 +1099,7 @@ class EFISDataManagerApp(rumps.App):
                 threading.Timer(1.5, lambda: webbrowser.open(url)).start()
             except Exception as e:
                 logger.error(f"Failed to start dashboard: {e}")
-                rumps.notification("EFIS Data Manager", "Dashboard Failed",
-                                   f"Could not start dashboard: {e}")
+                self._notify("Dashboard Failed", f"Could not start dashboard: {e}")
                 return
         else:
             # Already running — just open the browser
@@ -1067,8 +1121,7 @@ class EFISDataManagerApp(rumps.App):
         def on_save(new_config):
             self.config = new_config
             save_config(self.config)
-            rumps.notification("EFIS Data Manager", "Settings Saved",
-                               "Configuration updated successfully.")
+            self._notify("Settings Saved", "Configuration updated successfully.")
 
         self._settings_delegate = show_settings(self.config, on_save)
 
@@ -1122,8 +1175,7 @@ class EFISDataManagerApp(rumps.App):
                             "-s", "EFISDataManager-SeattleAvionics",
                             "-a", email, "-w", password],
                            capture_output=True, check=True)
-            rumps.notification("EFIS Data Manager", "Credentials Saved",
-                               "Seattle Avionics login stored in macOS Keychain.")
+            self._notify("Credentials Saved", "Seattle Avionics login stored in macOS Keychain.")
         except subprocess.CalledProcessError:
             rumps.alert(title="Error", message="Failed to save credentials to Keychain.")
 
@@ -1315,10 +1367,7 @@ class EFISDataManagerApp(rumps.App):
             return True
         except Exception as e:
             logger.error(f"Pre-provision archive failed: {e}")
-            rumps.notification(
-                "EFIS Data Manager", "Archive Failed",
-                f"Could not archive flight data; aborting. {str(e)[:80]}",
-            )
+            self._notify("Archive Failed", f"Could not archive flight data; aborting. {str(e)[:80]}")
             self._set_status("Prepare aborted (archive failed)")
             return False
 
@@ -1341,14 +1390,14 @@ class EFISDataManagerApp(rumps.App):
         try:
             result = prepare_drive(volume_path, label=label, progress_callback=on_progress)
             if result["success"]:
-                rumps.notification("EFIS Data Manager", "Drive Prepared", result["message"])
+                self._notify("Drive Prepared", result["message"])
                 self._set_status("Idle")
             else:
-                rumps.notification("EFIS Data Manager", "Prepare Drive Failed", result["message"][:100])
+                self._notify("Prepare Drive Failed", result["message"][:100])
                 self._set_status("Prepare failed")
         except Exception as e:
             logger.error(f"Prepare drive failed: {e}")
-            rumps.notification("EFIS Data Manager", "Prepare Drive Failed", str(e)[:100])
+            self._notify("Prepare Drive Failed", str(e)[:100])
             self._set_status("Prepare failed")
 
     def _do_adopt_drive(self, volume_path: str, archive_first: bool = False):
@@ -1373,14 +1422,14 @@ class EFISDataManagerApp(rumps.App):
         try:
             result = adopt_drive(volume_path, progress_callback=on_progress)
             if result["success"]:
-                rumps.notification("EFIS Data Manager", "Drive Adopted", result["message"])
+                self._notify("Drive Adopted", result["message"])
                 self._set_status("Idle")
             else:
-                rumps.notification("EFIS Data Manager", "Adopt Drive Failed", result["message"][:100])
+                self._notify("Adopt Drive Failed", result["message"][:100])
                 self._set_status("Adopt failed")
         except Exception as e:
             logger.error(f"Adopt drive failed: {e}")
-            rumps.notification("EFIS Data Manager", "Adopt Drive Failed", str(e)[:100])
+            self._notify("Adopt Drive Failed", str(e)[:100])
             self._set_status("Adopt failed")
 
     @rumps.clicked("Quit")
@@ -1476,6 +1525,24 @@ class EFISDataManagerApp(rumps.App):
 
         rumps.alert(title="EFIS Data Manager — Diagnostics",
                     message="\n".join(lines), ok="OK")
+
+    @rumps.clicked("Recent Notifications...")
+    def show_recent_notifications(self, _):
+        entries = self._history.get_recent()
+        if not entries:
+            rumps.alert(
+                title="Recent Notifications",
+                message="No notifications have been recorded this session.",
+                ok="OK",
+            )
+            return
+        # Already newest-first.
+        body = "\n\n".join(format_entry_line(e) for e in entries)
+        rumps.alert(
+            title=f"Recent Notifications ({len(entries)})",
+            message=body,
+            ok="OK",
+        )
 
     @rumps.clicked("Recent Errors...")
     def show_recent_errors(self, _):

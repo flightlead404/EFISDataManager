@@ -119,6 +119,12 @@ fetch(`/api/flight/${flightId}`).then(r => r.json()).then(stats => {
         ['Fuel Used', `${stats.fuel_used ? stats.fuel_used.toFixed(1) : '-'} gal`],
         ['Avg FF', `${stats.avg_fuel_flow_cruise ? stats.avg_fuel_flow_cruise.toFixed(1) : '-'} GPH`],
     ];
+    // % Power is shown only when computable (a valid Power_Map produced a
+    // cruise average); when unavailable the row is omitted entirely rather
+    // than showing a zero/placeholder (Req 6.2, 6.3).
+    if (stats.avg_percent_power_cruise != null) {
+        items.push(['Avg % Power', `${stats.avg_percent_power_cruise.toFixed(0)}%`]);
+    }
     items.forEach(([label, value]) => {
         grid.innerHTML += `<div class="stat-box"><div class="value">${value}</div><div class="label">${label}</div></div>`;
     });

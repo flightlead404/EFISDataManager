@@ -77,11 +77,78 @@
     <div id="thresholds-form"></div>
 </div>
 
+<div class="card" id="settings-import-section">
+    <h2>Import limits from EFIS backup
+        <span class="help" tabindex="-1">?<span class="tip">Read the alert limits (CHT/EGT/oil, RPM redline, Vne, G-limits, cylinder count) out of the most recent archived GRT Settings backup and preview them before overwriting your dashboard thresholds. Import is offered only from your primary display and is never applied without an explicit double-confirmation.</span></span>
+    </h2>
+
+    <div id="import-status" class="note" role="status" aria-live="polite">
+        Checking for a settings backup…
+    </div>
+
+    <div style="margin-top: 0.75rem;">
+        <button class="btn" id="import-review-btn" type="button"
+                onclick="openImportReview()" style="display: none;">Review import…</button>
+    </div>
+
+    <div id="import-preview" style="display: none; margin-top: 1rem;">
+        <div id="import-source-note" class="note" style="display: none;"></div>
+
+        <fieldset style="margin: 0.75rem 0; border: 1px solid #333; padding: 0.5rem 0.75rem;">
+            <legend>Tier for single-limit values</legend>
+            <div class="note" style="margin-top: 0;">
+                Your EFIS stores one max value for CHT, EGT, and Oil Temp. Choose
+                whether each should import as a <em>Caution</em> or a
+                <em>Redline</em>. Changing a choice re-checks that caution stays
+                below redline.
+            </div>
+            <div id="import-tier-selectors"></div>
+        </fieldset>
+
+        <table id="import-diff-table"
+               style="width: 100%; border-collapse: collapse; margin-top: 0.5rem;">
+            <thead>
+                <tr>
+                    <th style="text-align: center; border-bottom: 1px solid #444; padding: 0.25rem 0.5rem; width: 2.5rem;">
+                        <input type="checkbox" id="import-select-all" checked
+                               title="Select / deselect all rows"
+                               aria-label="Select or deselect all rows"
+                               onchange="toggleSelectAllImport(this.checked)">
+                    </th>
+                    <th style="text-align: left; border-bottom: 1px solid #444; padding: 0.25rem 0.5rem;">Threshold</th>
+                    <th style="text-align: right; border-bottom: 1px solid #444; padding: 0.25rem 0.5rem;">Current</th>
+                    <th style="text-align: right; border-bottom: 1px solid #444; padding: 0.25rem 0.5rem;">Imported</th>
+                </tr>
+            </thead>
+            <tbody id="import-diff-body"></tbody>
+        </table>
+
+        <div id="import-warnings" class="note"
+             role="alert" aria-live="assertive"
+             style="display: none; color: #ef5350; border-color: #ef5350;"></div>
+
+        <div class="note" style="color: #ffb74d; border-color: #ffb74d; margin-top: 0.75rem;">
+            ⚠ Applying will overwrite your current alert thresholds with the
+            imported values.
+        </div>
+
+        <div style="margin-top: 0.75rem;">
+            <button class="btn" id="import-apply-btn" type="button"
+                    onclick="applyImport()">Apply import</button>
+            <span id="import-apply-status" style="margin-left: 1rem; color: #66bb6a;"></span>
+        </div>
+    </div>
+</div>
+
 <div class="card">
     <h2>Dashboard</h2>
     <div class="form-row">
         <label>Trend Window (hours)<span class="help" tabindex="-1">?<span class="tip">Engine-hours window for the rolling averages on the Trends and Oil screens (e.g. 25 = average over the last 25 hours of operation). Smaller reacts faster to recent changes; larger smooths more.</span></span></label>
         <input type="number" id="trend_window_hours" step="5">
+    </div>
+    <div class="form-row">
+        <label>Oil Age Warning (hours)<span class="help" tabindex="-1">?<span class="tip">Show a banner on the Oil page when engine hours since your most recent oil change exceed this. Computed from your oil-change events and operation hourmeters. 0 disables the warning. Many operators use ~40–50 hours; the default is 0 so nothing changes until you set it.</span></span></label>
+        <input type="number" id="oil_age_warning_hours" min="0" step="1">
     </div>
     <div class="form-row">
         <label>Dashboard Port<span class="help" tabindex="-1">?<span class="tip">The local network port this dashboard runs on (default 5050); the address is http://localhost:&lt;port&gt;. Only change it if another program already uses 5050. After changing, restart the dashboard from the Data Manager menu.</span></span></label>
@@ -112,6 +179,10 @@ const thresholdLabels = {
     g_neg_caution: 'G-Load -Caution (g)',
     g_neg_limit: 'G-Load -Limit (g)',
     vne_tas_redline: 'Vne - Never Exceed (KTAS)',
+    vne_ias_redline: 'Vne - Never Exceed (KIAS)',
+    rpm_redline: 'RPM Redline',
+    cht_cooling_rate_max: 'CHT Cooling Rate Max (°F/min)',
+    num_cylinders: 'Number of Cylinders',
     voltage_low: 'Voltage Low (V)',
     voltage_high: 'Voltage High (V)',
     fuel_flow_lean_threshold: 'Fuel Flow Lean Threshold (gph)',
@@ -142,6 +213,10 @@ const thresholdTips = {
     g_neg_caution: 'Negative-G caution (a negative number, e.g. -1.5). Excursions at/below raise a caution.',
     g_neg_limit: 'Negative-G limit (a negative number, e.g. -3.0). At/below this is flagged as a warning.',
     vne_tas_redline: 'Never-exceed speed (Vne) as TRUE airspeed, in knots. On many aircraft (incl. RV-8) Vne is a flutter/TAS limit, so this is checked against TAS, not IAS. Enter your POH Vne (confirm mph vs kt). Leave high to disable.',
+    vne_ias_redline: 'Never-exceed speed (Vne) as INDICATED airspeed, in knots. Used when your Vne is an IAS limit rather than a TAS/flutter limit. Exactly one of the TAS/IAS Vne limits is active at a time (the other holds a disabled sentinel).',
+    rpm_redline: 'Engine RPM hard limit. Samples at or above this open a warning episode and a flight-summary alert. Set from your engine\u2019s published max RPM.',
+    cht_cooling_rate_max: 'Maximum acceptable CHT cooling rate in degrees F per minute (shock-cooling guard). Flags rapid descents/power reductions that cool cylinders too fast. Measured on the hottest cylinder over a short window to reject sensor noise.',
+    num_cylinders: 'How many cylinders your engine has (4 or 6). Set from the EFIS backup on import; also editable in Engine Configuration above.',
     voltage_low: 'Bus voltage below this is flagged (possible charging/alternator issue).',
     voltage_high: 'Bus voltage above this is flagged (possible overvoltage/regulator issue).',
     fuel_flow_lean_threshold: 'Fuel flow (gallons per hour) below which cruise is treated as likely lean-of-peak. Used to classify LOP operation in the analysis.',
@@ -179,6 +254,7 @@ fetch('/api/config')
         document.getElementById('cruise_vs_threshold').value = config.cruise_vs_threshold || 300;
         document.getElementById('cruise_rpm_min').value = config.cruise_rpm_min || 1800;
         document.getElementById('trend_window_hours').value = config.trend_window_hours || 25;
+        document.getElementById('oil_age_warning_hours').value = config.oil_age_warning_hours ?? 0;
         document.getElementById('dashboard_port').value = config.dashboard_port || 5050;
 
         // Build threshold form
@@ -303,6 +379,7 @@ function saveSettings() {
         cruise_vs_threshold: parseInt(document.getElementById('cruise_vs_threshold').value),
         cruise_rpm_min: parseInt(document.getElementById('cruise_rpm_min').value),
         trend_window_hours: parseInt(document.getElementById('trend_window_hours').value),
+        oil_age_warning_hours: Math.max(0, parseFloat(document.getElementById('oil_age_warning_hours').value) || 0),
         dashboard_port: parseInt(document.getElementById('dashboard_port').value),
         aux_mapping: collectAuxMapping(),
     };
@@ -327,5 +404,389 @@ function saveSettings() {
         setTimeout(() => document.getElementById('save-status').textContent = '', 3000);
     });
 }
+
+// ---------------------------------------------------------------------------
+// EFIS settings-import card: status badge, preview table, tier selectors, and
+// the double-confirm apply flow.
+// ---------------------------------------------------------------------------
+
+// Concepts whose EFIS value is a single limit the user assigns to a tier.
+const importTierConcepts = [
+    { concept: 'cht', param: 'tier_cht', label: 'CHT' },
+    { concept: 'egt', param: 'tier_egt', label: 'EGT' },
+    { concept: 'oil_temp', param: 'tier_oil', label: 'Oil Temp' },
+];
+
+// Which tier concepts the current preview actually prompts for.
+let importActivePrompts = [];
+
+// Per-threshold selection (Req 16). `null` => fresh, all-rows-selected (the
+// server treats an absent selected_keys as all-selected). Once the user toggles
+// a checkbox it becomes an explicit array of selection keys. It is one-time /
+// in-session only: reset to null every time the import card is (re)opened.
+let importSelectedKeys = null;
+
+// The distinct selection keys present in the most recent preview (used so
+// "select all" can rebuild the full set and so we can detect deselect-all).
+let importAllSelectionKeys = [];
+
+function fmtImportValue(v) {
+    if (v === null || v === undefined) return '—';
+    return v;
+}
+
+// Read the current selection from the row checkboxes as an array of keys.
+function importSelectedKeysFromDom() {
+    const boxes = document.querySelectorAll('input.import-row-check');
+    const keys = [];
+    boxes.forEach(b => { if (b.checked) keys.push(b.value); });
+    return keys;
+}
+
+// Load import availability on page load.
+function loadImportStatus() {
+    fetch('/api/settings-import/status')
+        .then(r => r.json())
+        .then(status => {
+            const box = document.getElementById('import-status');
+            const btn = document.getElementById('import-review-btn');
+            if (status.available) {
+                let msg = '<strong style="color:#66bb6a;">New settings backup available</strong>';
+                if (status.source_key) msg += ` from source <code>${status.source_key}</code>`;
+                if (status.candidate_update_value !== null && status.candidate_update_value !== undefined) {
+                    msg += ` (UPDATE ${status.candidate_update_value}`;
+                    if (status.source_last_imported_update !== null && status.source_last_imported_update !== undefined) {
+                        msg += ` &gt; last imported ${status.source_last_imported_update}`;
+                    }
+                    msg += ')';
+                }
+                if (status.is_different_source) {
+                    msg += '<br><span style="color:#ffb74d;">This backup is from a different display or aircraft than your last import.</span>';
+                }
+                box.innerHTML = msg;
+                btn.style.display = '';
+            } else {
+                // Suppressed / unavailable: show the reason, muted.
+                let reason = status.reason || 'No newer backup available.';
+                box.innerHTML = `<span style="color:#888;">${reason}</span>`;
+                if (status.is_bound_source_mismatch) {
+                    box.innerHTML += '<br><span style="color:#ffb74d;">A primary backup from a different source was found. Applying it would rebind your import source; an explicit rebind is required.</span>';
+                }
+                btn.style.display = 'none';
+                document.getElementById('import-preview').style.display = 'none';
+            }
+        })
+        .catch(() => {
+            document.getElementById('import-status').innerHTML =
+                '<span style="color:#888;">Could not check for a settings backup.</span>';
+        });
+}
+
+// Build the caution/redline tier selectors for the concepts the preview prompts.
+function buildImportTierSelectors(prompts) {
+    importActivePrompts = prompts || [];
+    const container = document.getElementById('import-tier-selectors');
+    container.innerHTML = '';
+    if (importActivePrompts.length === 0) {
+        container.innerHTML = '<div class="note" style="margin:0;">No single-limit tier choices for this backup.</div>';
+        return;
+    }
+    importTierConcepts.forEach(tc => {
+        if (!importActivePrompts.includes(tc.concept)) return;
+        const current = importTierChoice(tc.concept);
+        const row = document.createElement('div');
+        row.className = 'form-row';
+        row.innerHTML = `
+            <label>${tc.label}</label>
+            <label style="margin-right:1rem;"><input type="radio" name="tier_${tc.concept}" value="caution" ${current === 'caution' ? 'checked' : ''} onchange="reviewImport()"> Caution</label>
+            <label><input type="radio" name="tier_${tc.concept}" value="redline" ${current === 'redline' ? 'checked' : ''} onchange="reviewImport()"> Redline</label>
+        `;
+        container.appendChild(row);
+    });
+}
+
+// Read the currently selected tier for a concept (defaults to redline).
+function importTierChoice(concept) {
+    const checked = document.querySelector(`input[name="tier_${concept}"]:checked`);
+    return checked ? checked.value : 'redline';
+}
+
+// Collect the tier query string from the current radio selections.
+function importTierQuery() {
+    const params = [];
+    importTierConcepts.forEach(tc => {
+        const checked = document.querySelector(`input[name="tier_${tc.concept}"]:checked`);
+        if (checked) params.push(`${tc.param}=${encodeURIComponent(checked.value)}`);
+    });
+    return params.join('&');
+}
+
+// Open the import review card fresh: reset the per-threshold selection to
+// all-checked (Req 16.1/16.8 — selection is never persisted) then fetch.
+function openImportReview() {
+    importSelectedKeys = null;
+    const selectAll = document.getElementById('import-select-all');
+    if (selectAll) selectAll.checked = true;
+    reviewImport();
+}
+
+// Build the selected_keys query fragment from the current selection. Returns ''
+// when the selection is fresh (null => server defaults to all-selected).
+function importSelectedKeysQuery() {
+    if (importSelectedKeys === null) return '';
+    // A present (even empty) selection is sent explicitly so the guard re-runs
+    // over exactly the selected subset server-side.
+    return 'selected_keys=' + encodeURIComponent(importSelectedKeys.join(','));
+}
+
+// Fetch + render the preview (also called on every tier / checkbox change so
+// the caution<redline guard re-runs server-side over the selected subset).
+function reviewImport() {
+    const parts = [];
+    const tierQs = importTierQuery();
+    if (tierQs) parts.push(tierQs);
+    const selQs = importSelectedKeysQuery();
+    if (selQs) parts.push(selQs);
+    const qs = parts.join('&');
+    fetch('/api/settings-import/preview' + (qs ? ('?' + qs) : ''))
+        .then(r => r.json())
+        .then(preview => renderImportPreview(preview))
+        .catch(() => {
+            document.getElementById('import-status').innerHTML =
+                '<span style="color:#ef5350;">Could not build the import preview.</span>';
+        });
+}
+
+// Select / deselect every row (header checkbox), then re-fetch so the guard and
+// apply gating recompute over the new selection.
+function toggleSelectAllImport(checked) {
+    importSelectedKeys = checked ? null : [];
+    document.querySelectorAll('input.import-row-check').forEach(b => { b.checked = checked; });
+    reviewImport();
+}
+
+// A single row checkbox toggled: recompute the selection from the DOM and
+// re-fetch (so the server re-runs the guard over the selected subset — Req 16.6).
+function onImportRowToggle() {
+    importSelectedKeys = importSelectedKeysFromDom();
+    // Keep the header select-all box in sync with the row state.
+    const selectAll = document.getElementById('import-select-all');
+    if (selectAll) {
+        selectAll.checked = importAllSelectionKeys.length > 0
+            && importSelectedKeys.length === importAllSelectionKeys.length;
+    }
+    reviewImport();
+}
+
+function renderImportPreview(preview) {
+    const panel = document.getElementById('import-preview');
+    panel.style.display = '';
+
+    // (Re)build the tier selectors from the preview's prompts, preserving any
+    // existing radio selections since the selectors are rebuilt in place.
+    if (document.getElementById('import-tier-selectors').childElementCount === 0) {
+        buildImportTierSelectors(preview.tier_prompts);
+    }
+
+    // Source note.
+    const noteBox = document.getElementById('import-source-note');
+    if (preview.source_note) {
+        noteBox.style.display = '';
+        noteBox.style.color = '#ffb74d';
+        noteBox.textContent = preview.source_note;
+    } else {
+        noteBox.style.display = 'none';
+    }
+
+    // Diff table. Rows sharing a selection_key (the two vne_* rows share "vne")
+    // collapse into ONE checkbox row so the Vne unit is atomic (Req 16.3/16.4):
+    // it is impossible to tick exactly one of the two Vne keys.
+    const body = document.getElementById('import-diff-body');
+    body.innerHTML = '';
+    const seenSelKeys = [];
+    const grouped = {};   // selection_key -> { selected, rows: [change, ...] }
+    (preview.changes || []).forEach(c => {
+        const selKey = c.selection_key || c.key;
+        if (!grouped[selKey]) {
+            grouped[selKey] = { selected: c.selected, rows: [] };
+            seenSelKeys.push(selKey);
+        }
+        grouped[selKey].rows.push(c);
+        // A group is selected if any of its member rows is (they move together).
+        grouped[selKey].selected = grouped[selKey].selected || c.selected;
+    });
+    importAllSelectionKeys = seenSelKeys.slice();
+
+    seenSelKeys.forEach(selKey => {
+        const group = grouped[selKey];
+        let label, current, proposed, tierSuffix;
+        if (selKey === 'vne') {
+            // Collapse both vne_* rows: show the single active Vne value.
+            const active = group.rows.find(r =>
+                r.proposed !== null && r.proposed !== undefined && r.proposed < 9999);
+            const shown = active || group.rows[0];
+            label = 'Vne';
+            current = shown.current;
+            proposed = shown.proposed;
+            tierSuffix = '';
+        } else {
+            const c = group.rows[0];
+            label = thresholdLabels[c.key] || c.label || c.key;
+            current = c.current;
+            proposed = c.proposed;
+            tierSuffix = c.tier ? ` <span style="color:#888;">(${c.tier})</span>` : '';
+        }
+        const tr = document.createElement('tr');
+        const cell = 'padding:0.25rem 0.5rem; border-bottom:1px solid #2a2a2a;';
+        const checkTd = document.createElement('td');
+        checkTd.style.cssText = cell + ' text-align:center;';
+        const cb = document.createElement('input');
+        cb.type = 'checkbox';
+        cb.className = 'import-row-check';
+        cb.value = selKey;
+        cb.checked = !!group.selected;
+        cb.setAttribute('aria-label', 'Import ' + label);
+        cb.addEventListener('change', onImportRowToggle);
+        checkTd.appendChild(cb);
+        tr.appendChild(checkTd);
+
+        const rest = document.createElement('td');
+        rest.style.cssText = cell;
+        rest.innerHTML = `${label}${tierSuffix}`;
+        tr.appendChild(rest);
+
+        const curTd = document.createElement('td');
+        curTd.style.cssText = cell + ' text-align:right;';
+        curTd.textContent = fmtImportValue(current);
+        tr.appendChild(curTd);
+
+        const propTd = document.createElement('td');
+        propTd.style.cssText = cell + ' text-align:right; color:#66bb6a;';
+        propTd.textContent = fmtImportValue(proposed);
+        tr.appendChild(propTd);
+
+        body.appendChild(tr);
+    });
+
+    // Keep the header select-all checkbox in sync with the rendered rows.
+    const selectAll = document.getElementById('import-select-all');
+    const anySelected = seenSelKeys.some(k => grouped[k].selected);
+    const allSelected = seenSelKeys.length > 0
+        && seenSelKeys.every(k => grouped[k].selected);
+    if (selectAll) selectAll.checked = allSelected;
+
+    // Warnings + apply gating.
+    const warnBox = document.getElementById('import-warnings');
+    const applyBtn = document.getElementById('import-apply-btn');
+    const applyStatus = document.getElementById('import-apply-status');
+    if (preview.warnings && preview.warnings.length > 0) {
+        warnBox.style.display = '';
+        warnBox.innerHTML = preview.warnings.map(w => `⚠ ${w}`).join('<br>');
+    } else {
+        warnBox.style.display = 'none';
+        warnBox.innerHTML = '';
+    }
+
+    // Deselect-all: block apply with a "nothing selected to import" message
+    // (Req 16.7). Otherwise gate on the server's can_apply (guarded subset).
+    if (seenSelKeys.length > 0 && !anySelected) {
+        applyBtn.disabled = true;
+        if (applyStatus) {
+            applyStatus.style.color = '#888';
+            applyStatus.textContent = 'Nothing selected to import.';
+        }
+    } else {
+        applyBtn.disabled = !preview.can_apply;
+        if (applyStatus && applyStatus.textContent === 'Nothing selected to import.') {
+            applyStatus.textContent = '';
+        }
+    }
+}
+
+// Double-confirm apply: the first click is confirm1 (the button), the second is
+// an explicit window.confirm dialog before POSTing.
+function applyImport() {
+    // Deselect-all: nothing to apply (Req 16.7); don't even prompt.
+    const selectedNow = importSelectedKeysFromDom();
+    if (importAllSelectionKeys.length > 0 && selectedNow.length === 0) {
+        const statusEl = document.getElementById('import-apply-status');
+        statusEl.style.color = '#888';
+        statusEl.textContent = 'Nothing selected to import.';
+        return;
+    }
+
+    const proceed = window.confirm(
+        'Overwrite your current alert thresholds with the imported EFIS values?\n\n' +
+        'This cannot be undone from here.');
+    if (!proceed) return;
+
+    const body = { confirm1: true, confirm2: true };
+    importTierConcepts.forEach(tc => {
+        const checked = document.querySelector(`input[name="tier_${tc.concept}"]:checked`);
+        if (checked) body[tc.param] = checked.value;
+    });
+    // Include the per-threshold selection. When fresh (null) we send the full
+    // set so the applied subset matches exactly what the user sees ticked.
+    body.selected_keys = (importSelectedKeys === null)
+        ? importAllSelectionKeys.slice()
+        : importSelectedKeys.slice();
+
+    fetch('/api/settings-import/apply', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(body),
+    })
+    .then(r => r.json())
+    .then(result => {
+        const statusEl = document.getElementById('import-apply-status');
+        if (result.status === 'ok') {
+            statusEl.style.color = '#66bb6a';
+            statusEl.textContent = 'Imported!';
+            // Re-fetch thresholds + config so the existing form reflects the
+            // imported values, then refresh the import status badge.
+            refreshThresholdForm();
+            refreshEngineConfig();
+            loadImportStatus();
+        } else {
+            statusEl.style.color = '#ef5350';
+            statusEl.textContent = result.reason || 'Import declined.';
+        }
+        setTimeout(() => { statusEl.textContent = ''; }, 5000);
+    })
+    .catch(() => {
+        const statusEl = document.getElementById('import-apply-status');
+        statusEl.style.color = '#ef5350';
+        statusEl.textContent = 'Import failed.';
+    });
+}
+
+// Rebuild the Analysis Thresholds form from /api/thresholds (post-import).
+function refreshThresholdForm() {
+    fetch('/api/thresholds').then(r => r.json()).then(thresholds => {
+        const form = document.getElementById('thresholds-form');
+        form.innerHTML = '';
+        for (const [key, value] of Object.entries(thresholds)) {
+            const label = thresholdLabels[key] || key;
+            const tip = thresholdTips[key];
+            const help = tip
+                ? ` <span class="help" tabindex="-1">?<span class="tip">${tip}</span></span>`
+                : '';
+            form.innerHTML += `<div class="form-row">
+                <label>${label}${help}</label>
+                <input type="number" id="thresh_${key}" value="${value}" step="any">
+            </div>`;
+        }
+    });
+}
+
+// Refresh engine-config fields (num_cylinders can change on import).
+function refreshEngineConfig() {
+    fetch('/api/config').then(r => r.json()).then(config => {
+        document.getElementById('num_cylinders').value = config.num_cylinders || 4;
+    });
+}
+
+// Kick off the import status check on load.
+loadImportStatus();
 </script>
 {% endblock %}

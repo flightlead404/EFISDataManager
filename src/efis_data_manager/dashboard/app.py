@@ -162,6 +162,7 @@ def api_flight_detail(flight_id):
         "min_g_load": stats.min_g_load,
         "max_rpm": stats.max_rpm,
         "avg_rpm_cruise": stats.avg_rpm_cruise,
+        "avg_percent_power_cruise": stats.avg_percent_power_cruise,
         "max_cht": stats.max_cht,
         "max_egt": stats.max_egt,
         "cht_spread_max": stats.cht_spread_max,
@@ -207,6 +208,7 @@ def api_flight_data(flight_id):
                       rpm1, cht1, cht2, cht3, cht4,
                       egt1, egt2, egt3, egt4,
                       fuel_flow, oil_temp, oil_pressure, eis_volts,
+                      internal_map,
                       aux1, aux2, aux3, aux4, aux5, aux6
                FROM fdl_data
                WHERE operation_id = ? ORDER BY timestamp""",
@@ -217,6 +219,20 @@ def api_flight_data(flight_id):
         # aux meaning is derived; only MAPPED channels are returned, keyed by
         # parameter_key, so unmapped channels never surface (Req 2.1, 3.2).
         resolved_aux = resolve_aux()
+
+        # Percent_Power is computed on the fly per row from the EFIS Power_Map
+        # (Req 6.1, 5.1, 5.2). Obtain the map once; when unavailable the whole
+        # flight shows no Percent_Power — both the series and its descriptor are
+        # omitted (Req 5.2, 6.3). Imported lazily to avoid an import cycle.
+        from efis_data_manager import power
+        power_map = power.load_power_map()
+        if power_map is not None:
+            map_col = power.map_column_for(resolved_aux)
+            settings = power._read_settings()
+            temp_units_celsius = settings[1] if settings else False
+        else:
+            map_col = None
+            temp_units_celsius = False
 
         # Build response as column arrays. Fixed engine params first, then one
         # empty series per mapped aux parameter (keyed by parameter_key).
@@ -229,6 +245,8 @@ def api_flight_data(flight_id):
         }
         for param_key in resolved_aux:
             engine[param_key] = []
+        if power_map is not None:
+            engine["percent_power"] = []
 
         data = {
             "timestamps": [],
@@ -253,6 +271,18 @@ def api_flight_data(flight_id):
             ],
         }
 
+        # Register Percent_Power as a plottable parameter via the same
+        # aux_params -> mergeAuxParams() path mapped aux parameters use, so it
+        # appears in the picker with graceful omission when unavailable
+        # (Req 6.1, 6.3). Only appended when the Power_Map is available.
+        if power_map is not None:
+            data["aux_params"].append({
+                "key": "percent_power",
+                "label": "% Power",
+                "group": "engine",
+                "precision": 0,
+            })
+
         # (parameter_key, source column) pairs for the mapped aux series.
         aux_series = [
             (param_key, info["channel"])
@@ -276,6 +306,18 @@ def api_flight_data(flight_id):
             data["engine"]["eis_volts"].append(row["eis_volts"])
             for param_key, col in aux_series:
                 data["engine"][param_key].append(row[col])
+            if power_map is not None:
+                oat_raw = row["oat"]
+                oat_f = (
+                    power.oat_to_fahrenheit(oat_raw, temp_units_celsius)
+                    if oat_raw is not None else None
+                )
+                data["engine"]["percent_power"].append(
+                    power.percent_power(
+                        row["rpm1"], row[map_col],
+                        row["pressure_altitude"], oat_f, power_map,
+                    )
+                )
             data["flight"]["ias"].append(row["indicated_airspeed"])
             data["flight"]["tas"].append(row["true_airspeed"])
             data["flight"]["ground_speed"].append(row["ground_speed"])
@@ -476,7 +518,7 @@ def api_oil():
     """Get oil consumption data + change markers."""
     config = load_config()
     window = config.get("trend_window_hours", 25)
-    from efis_data_manager.analysis import get_oil_changes
+    from efis_data_manager.analysis import get_oil_changes, get_oil_age_status
     from efis_data_manager.database import get_oil_events
     cutoff = config.get("oil_cutoff_date", "")
     return jsonify({
@@ -484,6 +526,7 @@ def api_oil():
         "changes": get_oil_changes(),
         "events": get_oil_events(cutoff_date=cutoff),
         "cutoff_date": cutoff,
+        "oil_age": get_oil_age_status(),
     })
 
 
@@ -535,6 +578,193 @@ def api_save_config():
 def api_thresholds():
     """Get current thresholds (defaults + overrides)."""
     return jsonify(get_thresholds())
+
+
+# ---------------------------------------------------------------------------
+# EFIS settings-import endpoints (thin wrappers over Import_Workflow)
+# ---------------------------------------------------------------------------
+
+def _settings_archive_root():
+    """Path(load_config()["archive_path"]) — the settings-import archive root."""
+    from pathlib import Path
+    return Path(load_config()["archive_path"])
+
+
+def _import_info_to_dict(info):
+    """Serialize a NewBackupInfo for the status route (omit the parsed object)."""
+    return {
+        "available": info.available,
+        "source_key": info.source_key,
+        "is_primary": info.is_primary,
+        "bound_import_source": info.bound_import_source,
+        "is_first_for_source": info.is_first_for_source,
+        "is_different_source": info.is_different_source,
+        "is_bound_source_mismatch": info.is_bound_source_mismatch,
+        "candidate_update_value": info.candidate_update_value,
+        "source_last_imported_update": info.source_last_imported_update,
+        "reason": info.reason,
+    }
+
+
+def _preview_to_dict(preview):
+    """Serialize an ImportPreview for the preview/apply routes (omit parsed)."""
+    return {
+        "changes": [
+            {
+                "key": c.key,
+                "label": c.label,
+                "current": c.current,
+                "proposed": c.proposed,
+                "source_sid": c.source_sid,
+                "tier": c.tier,
+                "selected": c.selected,
+                "selection_key": c.selection_key,
+            }
+            for c in preview.changes
+        ],
+        "tier_prompts": preview.tier_prompts,
+        "warnings": preview.warnings,
+        "checksum_note": preview.checksum_note,
+        "backup_update_value": preview.backup_update_value,
+        "source_key": preview.source_key,
+        "is_different_source": preview.is_different_source,
+        "is_bound_source_mismatch": preview.is_bound_source_mismatch,
+        "source_note": preview.source_note,
+        "bound_import_source": preview.bound_import_source,
+        "can_apply": preview.can_apply,
+        "num_cylinders_proposed": preview.num_cylinders_proposed,
+    }
+
+
+def _tier_selections_from(source):
+    """Build the tier_selections dict from a query/JSON source (only valid tiers)."""
+    tiers = {}
+    for concept, param in (("cht", "tier_cht"), ("egt", "tier_egt"), ("oil_temp", "tier_oil")):
+        val = source.get(param)
+        if val is not None and str(val).lower() in ("caution", "redline"):
+            tiers[concept] = str(val).lower()
+    return tiers
+
+
+def _selected_keys_from_query(args):
+    """Parse selected_keys from GET query args into a set, or None if absent.
+
+    Accepts a comma-separated ``selected_keys`` value and/or repeated
+    ``selected_keys`` params. Absent entirely => None => all rows selected
+    (fresh all-checked). Present (even empty) => a concrete set the workflow
+    honors as the selected subset (Req 16.1/16.7).
+    """
+    if "selected_keys" not in args:
+        return None
+    keys: set = set()
+    for raw in args.getlist("selected_keys"):
+        for part in str(raw).split(","):
+            part = part.strip()
+            if part:
+                keys.add(part)
+    return keys
+
+
+def _selected_keys_from_body(body):
+    """Parse selected_keys from a JSON apply body into a set, or None if absent.
+
+    Absent => None => all changes written (backward compat). A present list
+    (including an empty list) => a set the workflow honors (empty => deselect-all
+    no-op, Req 16.7).
+    """
+    if "selected_keys" not in body:
+        return None
+    raw = body.get("selected_keys")
+    if raw is None:
+        return None
+    return {str(k).strip() for k in raw if str(k).strip()}
+
+
+@app.route("/api/settings-import/status")
+def api_settings_import_status():
+    """Detect whether a newer EFIS settings backup should be offered (Req 9.1, 14, 15).
+
+    Thin wrapper over ``Import_Workflow.detect_new_backup``; the ``parsed``
+    backup is never serialized. Returns ``{"available": false, ...}`` for the
+    no-backup and every suppressed case (stale n-1, non-primary, bound-source
+    mismatch), each with a human-readable ``reason``.
+    """
+    from efis_data_manager.efis_settings import Import_Workflow
+    try:
+        info = Import_Workflow.detect_new_backup(load_config(), _settings_archive_root())
+    except Exception as exc:  # noqa: BLE001 — soft error, keep the badge hidden
+        logger.warning("settings-import status failed: %s", exc)
+        return jsonify({"available": False, "reason": f"error: {exc}", "error": str(exc)})
+    if info is None:
+        return jsonify({"available": False, "reason": "no settings backup found"})
+    return jsonify(_import_info_to_dict(info))
+
+
+@app.route("/api/settings-import/preview")
+def api_settings_import_preview():
+    """Build the import preview diff table for the currently detected candidate.
+
+    Query params ``tier_cht`` / ``tier_egt`` / ``tier_oil`` (each
+    ``caution``|``redline``) drive the CHT/EGT/Oil tier choice; changing them
+    re-runs the caution<redline guard (Req 8, 9.2, 9.3). Returns a preview with
+    ``can_apply=false`` and a reason when no eligible candidate exists.
+    """
+    from efis_data_manager.efis_settings import Import_Workflow
+    config = load_config()
+    tier_selections = _tier_selections_from(request.args)
+    selected_keys = _selected_keys_from_query(request.args)
+    try:
+        info = Import_Workflow.detect_new_backup(config, _settings_archive_root())
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("settings-import preview detect failed: %s", exc)
+        return jsonify({"can_apply": False, "reason": f"error: {exc}", "error": str(exc)})
+    if info is None or info.parsed is None:
+        return jsonify({"can_apply": False, "reason": "no settings backup found"})
+    if not info.available:
+        return jsonify({"can_apply": False, "reason": info.reason})
+    preview = Import_Workflow.build_preview(
+        info.parsed, config, tier_selections, selected_keys=selected_keys)
+    return jsonify(_preview_to_dict(preview))
+
+
+@app.route("/api/settings-import/apply", methods=["POST"])
+def api_settings_import_apply():
+    """Apply the previewed import behind a double-confirm (Req 9.4-9.6, 10.3).
+
+    Body ``{confirm1, confirm2, tier_cht, tier_egt, tier_oil}``. Rebuilds the
+    preview from the current detected candidate + tier selections, then calls
+    ``Import_Workflow.apply`` (persisting via the default ``save_config``).
+    On success returns the updated thresholds; otherwise a status/reason.
+    """
+    from efis_data_manager.efis_settings import Import_Workflow
+    body = request.get_json(silent=True) or {}
+    confirm1 = bool(body.get("confirm1"))
+    confirm2 = bool(body.get("confirm2"))
+    tier_selections = _tier_selections_from(body)
+    selected_keys = _selected_keys_from_body(body)
+    config = load_config()
+    try:
+        info = Import_Workflow.detect_new_backup(config, _settings_archive_root())
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("settings-import apply detect failed: %s", exc)
+        return jsonify({"status": "error", "reason": f"error: {exc}", "error": str(exc)})
+    if info is None or info.parsed is None:
+        return jsonify({"status": "error", "reason": "no settings backup found"})
+    if not info.available:
+        return jsonify({"status": "declined", "reason": info.reason})
+
+    preview = Import_Workflow.build_preview(
+        info.parsed, config, tier_selections, selected_keys=selected_keys)
+    result = Import_Workflow.apply(
+        preview, confirm1, confirm2, config, selected_keys=selected_keys)
+    if not result.applied:
+        return jsonify({"status": "declined", "reason": result.reason})
+    return jsonify({
+        "status": "ok",
+        "reason": result.reason,
+        "updated_thresholds": result.updated_thresholds,
+        "thresholds": get_thresholds(),
+    })
 
 
 @app.route("/api/param-catalog")

@@ -143,7 +143,8 @@ def archive_efis_drive(mount_point: str, progress_callback: Optional[Callable] =
 
     # Settings .bak files (copy with date stamp, don't delete from USB)
     settings_dest = archive_root / "Settings"
-    for bak_name in ["Settings.bak", "State.bak", "WP.bak", "Plan.bak"]:
+    for bak_name in ["Settings.bak", "State.bak", "WP.bak", "Plan.bak",
+                     "Settings.dat", "State.dat", "WP.dat", "Plan.dat"]:
         bak_path = os.path.join(mount_point, bak_name)
         if os.path.isfile(bak_path):
             result = _copy_with_datestamp(bak_path, settings_dest, today)

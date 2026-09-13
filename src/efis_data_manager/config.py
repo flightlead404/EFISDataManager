@@ -57,6 +57,10 @@ DEFAULT_CONFIG = {
     },
     # Analysis thresholds (overridable)
     "analysis_thresholds": {},
+    # Per-Source_Key EFIS settings-import markers (map of Source_Key ->
+    # Import_Marker, plus a reserved "bound_import_source" string once bound).
+    # Absent/empty means no import has been performed yet.
+    "settings_import": {},
     # Flight detection
     "airborne_ias_threshold": 40,
     "cruise_vs_threshold": 300,
@@ -67,12 +71,90 @@ DEFAULT_CONFIG = {
     # Oil tracking: ignore oil events before this date (YYYY-MM-DD), for
     # discarding unreliable historical data. Empty = use all.
     "oil_cutoff_date": "",
+    # Oil-age warning: engine hours since the most recent oil change above which
+    # the Oil page shows a banner. 0 disables it (the default, so existing
+    # installs are unaffected until the user opts in). Recommended ~40-50h. A
+    # negative value is treated as 0 (disabled).
+    "oil_age_warning_hours": 0,
 }
 
 
 def ensure_dirs():
     """Create application support and default archive directories if they don't exist."""
     APP_SUPPORT_DIR.mkdir(parents=True, exist_ok=True)
+
+
+# Synthetic Source_Key used to carry a legacy single-object settings_import
+# marker so source-keyed detection can compare against it via the
+# undetermined-source path without crashing or regressing (see
+# migrate_settings_import). It cannot collide with a real Source_Key, which is
+# always "<Mode_S>:<Link_ID>", a bare Mode_S, or ":<Link_ID>".
+LEGACY_SOURCE_KEY = ":legacy"
+
+# Field names that identify a LEGACY single-object settings_import marker (the
+# pre-Req-14 shape stored scalars directly under settings_import).
+_LEGACY_MARKER_FIELDS = {
+    "last_update_value",
+    "last_backup_sha256",
+    "content_hash",
+    "backup_name",
+    "imported_at",
+}
+
+
+def migrate_settings_import(config: dict) -> dict:
+    """Normalize a legacy single-object ``settings_import`` into the map shape.
+
+    The pre-Requirement-14 config stored a single Import_Marker directly under
+    ``settings_import`` (scalar fields like ``last_update_value`` /
+    ``last_backup_sha256``). The current shape is a MAP of per-Source_Key
+    Import_Markers plus a reserved ``bound_import_source`` string.
+
+    This converts a legacy single-object marker into an entry under the
+    synthetic ``LEGACY_SOURCE_KEY`` so source-keyed detection routes it through
+    the undetermined-source Content_Hash + UPDATE fallback (never regressing).
+    An absent ``bound_import_source`` is left absent — it means "not yet bound",
+    and the first eligible Primary import binds it; no explicit step is needed.
+
+    Mutates and returns ``config``. Safe to call repeatedly (idempotent) and on
+    an already-migrated or missing ``settings_import`` (leaves it untouched).
+    ``num_cylinders`` remains a top-level key and is never moved here.
+    """
+    si = config.get("settings_import")
+    if not isinstance(si, dict):
+        # Missing or malformed -> normalize to an empty map so the load path
+        # (and detection) never crashes on its absence.
+        config["settings_import"] = {}
+        return config
+
+    # A legacy single-object marker has scalar marker fields at the top level.
+    looks_legacy = any(field in si for field in _LEGACY_MARKER_FIELDS)
+    if not looks_legacy:
+        return config  # already the map shape (or empty) — nothing to do
+
+    # Extract the reserved bound key (if somehow present) and the legacy scalars.
+    from efis_data_manager.efis_settings import BOUND_IMPORT_SOURCE_KEY
+
+    bound = si.get(BOUND_IMPORT_SOURCE_KEY)
+    legacy_marker = {
+        k: v for k, v in si.items()
+        if k != BOUND_IMPORT_SOURCE_KEY and not isinstance(v, dict)
+    }
+    # Normalize the legacy hash field name to content_hash for the fallback.
+    if "content_hash" not in legacy_marker and "last_backup_sha256" in legacy_marker:
+        legacy_marker["content_hash"] = legacy_marker.get("last_backup_sha256")
+
+    new_si: dict = {}
+    # Preserve any already-keyed map entries alongside the legacy object.
+    for k, v in si.items():
+        if isinstance(v, dict):
+            new_si[k] = v
+    new_si[LEGACY_SOURCE_KEY] = legacy_marker
+    if bound is not None:
+        new_si[BOUND_IMPORT_SOURCE_KEY] = bound
+
+    config["settings_import"] = new_si
+    return config
 
 
 def load_config() -> dict:
@@ -84,6 +166,9 @@ def load_config() -> dict:
                 saved = json.load(f)
             # Merge with defaults so new keys are picked up on upgrade
             config = {**DEFAULT_CONFIG, **saved}
+            # Tolerate a legacy single-object settings_import; ensure the load
+            # path never crashes on an absent/legacy shape (Req 14.2, 14.8, 15.3).
+            migrate_settings_import(config)
             return config
         except (json.JSONDecodeError, OSError):
             # Corrupt config — reset to defaults
