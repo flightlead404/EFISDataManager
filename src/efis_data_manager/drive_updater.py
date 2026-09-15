@@ -748,7 +748,11 @@ def build_jobs(mount_point: str, families: Optional[list] = None) -> list:
 # --- Tree-job payload sync --------------------------------------------------
 
 
-def sync_payload(job: SyncJob, is_aborted: Optional[Callable[[], bool]] = None):
+def sync_payload(
+    job: SyncJob,
+    is_aborted: Optional[Callable[[], bool]] = None,
+    stall_hook: Optional[Callable[[dict], None]] = None,
+):
     """Sync a tree job's payload to the drive via rsync (size+mtime delta).
 
     Implements design.md "Per-job sequence (tree job)" step 3: an efficient
@@ -780,6 +784,19 @@ def sync_payload(job: SyncJob, is_aborted: Optional[Callable[[], bool]] = None):
         job: A ``kind == "tree"`` :class:`SyncJob` with payload roots + excludes.
         is_aborted: Optional predicate polled while rsync runs; when it returns
             True the transfer is terminated and reported as aborted.
+        stall_hook: Optional diagnostic callback invoked exactly once, at the
+            instant the no-progress watchdog latches a stall, with a dict
+            describing the onset. This surfaces the watchdog's EXISTING liveness
+            timing (log-byte growth) for the FSKit root-cause harness — it does
+            NOT add a second detector or change the abort behaviour. The dict
+            carries: ``family`` (job name), ``onset_wall`` (ISO-8601 UTC wall
+            clock at onset), ``onset_monotonic`` (the ``time.monotonic()`` value),
+            ``last_progress_monotonic`` (monotonic time of the last observed log
+            growth), ``no_progress_seconds`` (elapsed since last growth),
+            ``progress_bytes`` (rsync stdout-log size at onset, the liveness
+            proxy) and ``timeout_seconds`` (the configured threshold). Any
+            exception raised by the hook is swallowed so diagnostics can never
+            disturb the sync.
 
     Returns:
         Tuple ``(files_updated, errors)`` where ``files_updated`` is the count of
@@ -881,6 +898,24 @@ def sync_payload(job: SyncJob, is_aborted: Optional[Callable[[], bool]] = None):
             last_progress = now
         elif STALL_TIMEOUT_SECONDS and (now - last_progress) >= STALL_TIMEOUT_SECONDS:
             stalled = True
+            # Surface the watchdog's own onset timing + progress-at-onset to any
+            # diagnostic hook BEFORE terminating rsync (Req 2.1). This reuses the
+            # existing liveness state (last_size / last_progress); it adds no new
+            # detector. Diagnostics must never disturb the sync, so the hook is
+            # best-effort and its exceptions are swallowed.
+            if stall_hook is not None:
+                try:
+                    stall_hook({
+                        "family": job.name,
+                        "onset_wall": datetime.now(timezone.utc).isoformat(),
+                        "onset_monotonic": now,
+                        "last_progress_monotonic": last_progress,
+                        "no_progress_seconds": now - last_progress,
+                        "progress_bytes": last_size if last_size >= 0 else 0,
+                        "timeout_seconds": STALL_TIMEOUT_SECONDS,
+                    })
+                except Exception:  # pragma: no cover - diagnostics are best-effort
+                    logger.debug("stall_hook raised; ignoring", exc_info=True)
             _terminate(proc)
             break
         try:

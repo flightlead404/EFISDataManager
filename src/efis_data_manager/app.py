@@ -25,6 +25,7 @@ import rumps
 
 from efis_data_manager import config
 from efis_data_manager.config import load_config, save_config
+from efis_data_manager.mount_swap import msdos_mount, MountSwapError
 from efis_data_manager.notification_history import (
     NotificationHistory,
     format_entry_line,
@@ -685,6 +686,19 @@ class EFISDataManagerApp(rumps.App):
         volume. Sleep still works: ``_on_will_sleep`` marks whichever watchdog
         is active at-risk, stopping the running rsync safely and leaving the
         interrupted marker (Req 7.2-7.6).
+
+        Mount-swap wiring (chart-sync-stall-fix task 5): the identity/currency
+        READS above run on the normal FSKit mount BEFORE any swap. Only if write
+        work is actually needed (interrupted families to repair, or stale
+        families to update) does the write window run inside
+        ``with msdos_mount(mount_point, poller=self._usb_monitor) as
+        work_mount:`` — the engine then runs against the private in-kernel
+        msdosfs ``work_mount`` (which does not stall), and each write-window
+        watchdog monitors ``work_mount`` (NOT the swapped-out FSKit mount). If
+        nothing needs writing, the swap is never entered (idempotent no-op,
+        Req 5.4). If the swap cannot be established, :class:`MountSwapError` is
+        caught: the sync is reported incomplete, interrupted state is left
+        intact, and the drive is never declared current (Req 7).
         """
         from efis_data_manager.drive_updater import (
             check_drive_currency,
@@ -699,14 +713,16 @@ class EFISDataManagerApp(rumps.App):
             self._set_status(msg)
 
         try:
-            # --- 1. Honor an interrupted sync: verify+repair before trusting. --
-            # sync-state is keyed by the drive's durable id, not the mount path.
-            # Resolve the id once; on an unresolved id (fail-safe None — e.g. a
-            # diskutil hiccup or a non-EFIS/unreadable volume) apply NO
-            # interrupted-sync state (never another drive's) and fall straight
-            # through to the normal quick-check/update below (Req 10.7). The
-            # on-drive markers/payload remain the sole source of truth for
-            # currency.
+            # --- 1. READ-only identity / currency reads (on the FSKit mount). --
+            # These are cheap reads and, per design ("Where the mount-swap layer
+            # lives" / "Preserving correctness"), run against the NORMAL FSKit
+            # /Volumes/ mount BEFORE any swap. sync-state is keyed by the drive's
+            # durable id, not the mount path. Resolve the id once; on an
+            # unresolved id (fail-safe None — a diskutil hiccup or a
+            # non-EFIS/unreadable volume) apply NO interrupted-sync state (never
+            # another drive's) and fall through to the normal quick check
+            # (Req 10.7). On-drive markers/payload remain the sole source of
+            # truth for currency.
             drive_id = resolve_drive_id(mount_point)
             pending = pending_families(drive_id) if drive_id is not None else []
             if pending:
@@ -715,56 +731,107 @@ class EFISDataManagerApp(rumps.App):
                     f"({', '.join(pending)}); running verify+repair before "
                     "declaring current."
                 )
-                self._set_status("Verifying drive after interrupted sync...")
-                self._notify("Verifying Drive", f"Resuming interrupted sync: {', '.join(pending)}.")
-                repair = self._with_active_watchdog(
-                    mount_point,
-                    lambda is_aborted: verify_drive(
-                        mount_point, families=pending, repair=True,
-                        progress_callback=on_progress, is_aborted=is_aborted,
-                    ),
-                )
-                # verify_drive already logs its repair errors at >= WARNING.
-                if not repair["clean"]:
-                    status = "Drive verify incomplete"
-                    logger.warning(
-                        f"Verify+repair left discrepancies on {mount_point}: "
-                        f"{repair['families']}"
-                    )
-                    self._notify("Verify Incomplete", "Some families still differ; will retry "
-                                       "on next mount.")
-                    self._set_status(status)
-                    return
 
-            # --- 2. Quick currency check. -------------------------------------
             self._set_status("Checking drive currency...")
             currency = check_drive_currency(mount_point)
-
-            if currency["is_current"]:
-                logger.info("Drive is up to date, no sync needed.")
-                self._set_status("Drive current")
-                self._notify("Drive Current", "EFIS drive is up to date.")
-                return
-
-            # --- 3. Sync only the stale families. -----------------------------
             stale = [
                 name
                 for name, detail in currency["families"].items()
                 if not detail["current"]
             ]
-            stale_summary = ", ".join(currency["stale_items"][:3])
-            if len(currency["stale_items"]) > 3:
-                stale_summary += f" +{len(currency['stale_items']) - 3} more"
-            self._set_status("Updating drive...")
-            self._notify("Updating Drive", f"{len(stale)} family(ies) to update: {stale_summary}")
 
-            results = self._with_active_watchdog(
-                mount_point,
-                lambda is_aborted: update_drive(
-                    mount_point, families=stale, progress_callback=on_progress,
-                    is_aborted=is_aborted,
-                ),
-            )
+            # --- 2. Idempotent no-op path (Req 5.4 / 6.3). --------------------
+            # If nothing was interrupted AND nothing is stale, there is NO write
+            # work to do. Report current and return WITHOUT entering the swap —
+            # the swap only wraps the write window.
+            if not pending and currency["is_current"]:
+                logger.info("Drive is up to date, no sync needed.")
+                self._set_status("Drive current")
+                self._notify("Drive Current", "EFIS drive is up to date.")
+                return
+
+            # --- 3. Write work is needed: run it against the private msdos ----
+            # work mount for the whole write window (Req 5.1, 5.2). The FSKit
+            # /Volumes/ mount is swapped out for an in-kernel msdosfs mount that
+            # does not stall; the sync engine runs unchanged against work_mount.
+            # The /Volumes/ poller is quiesced across the swap via the poller
+            # hook (guard for a not-yet-initialized monitor).
+            poller = getattr(self, "_usb_monitor", None)
+            try:
+                with msdos_mount(mount_point, poller=poller) as work_mount:
+                    # --- 3a. Honor an interrupted sync: verify+repair first. --
+                    # The watchdog must monitor work_mount, NOT the original
+                    # /Volumes/ mount_point: during the swap the FSKit mount is
+                    # gone, so watching it would instantly false-abort.
+                    if pending:
+                        self._set_status("Verifying drive after interrupted sync...")
+                        self._notify(
+                            "Verifying Drive",
+                            f"Resuming interrupted sync: {', '.join(pending)}.",
+                        )
+                        repair = self._with_active_watchdog(
+                            work_mount,
+                            lambda is_aborted: verify_drive(
+                                work_mount, families=pending, repair=True,
+                                progress_callback=on_progress, is_aborted=is_aborted,
+                            ),
+                        )
+                        # verify_drive already logs its repair errors at >= WARNING.
+                        if not repair["clean"]:
+                            status = "Drive verify incomplete"
+                            logger.warning(
+                                f"Verify+repair left discrepancies on {mount_point}: "
+                                f"{repair['families']}"
+                            )
+                            self._notify(
+                                "Verify Incomplete",
+                                "Some families still differ; will retry on next mount.",
+                            )
+                            self._set_status(status)
+                            return
+
+                    # --- 3b. Sync only the stale families. --------------------
+                    if not stale:
+                        # Interrupted families were repaired clean and nothing is
+                        # stale: no update work remains. Report current.
+                        logger.info("Drive is up to date after verify+repair.")
+                        self._set_status("Drive current")
+                        self._notify("Drive Current", "EFIS drive is up to date.")
+                        return
+
+                    stale_summary = ", ".join(currency["stale_items"][:3])
+                    if len(currency["stale_items"]) > 3:
+                        stale_summary += f" +{len(currency['stale_items']) - 3} more"
+                    self._set_status("Updating drive...")
+                    self._notify(
+                        "Updating Drive",
+                        f"{len(stale)} family(ies) to update: {stale_summary}",
+                    )
+
+                    # Again, watch work_mount (the live mount during the swap).
+                    results = self._with_active_watchdog(
+                        work_mount,
+                        lambda is_aborted: update_drive(
+                            work_mount, families=stale, progress_callback=on_progress,
+                            is_aborted=is_aborted,
+                        ),
+                    )
+            except MountSwapError as e:
+                # The swap could not be established or failed partway; msdos_mount
+                # has already driven teardown toward "FSKit restored" (or logged
+                # loudly and left the device flushed). The write window did NOT
+                # run: report the sync incomplete with safe next-step guidance,
+                # leave the interrupted sync-state intact (the engine leaves it on
+                # failure — we never clear it here), and NEVER declare current
+                # (Req 7.1, 7.2, 7.4, 7.5).
+                logger.error(f"Mount swap failed for {mount_point}: {e}")
+                affected = ", ".join(pending or stale) or "chart data"
+                self._notify(
+                    "Drive Sync Incomplete",
+                    f"Could not prepare drive for sync ({affected}); reinsert and retry.",
+                )
+                self._set_status("Drive sync incomplete")
+                return
 
             jobs = results["jobs"]
             updated = sum(r.files_updated for r in jobs.values())
@@ -792,6 +859,13 @@ class EFISDataManagerApp(rumps.App):
 
     def _with_active_watchdog(self, mount_point: str, run):
         """Run ``run(is_aborted)`` under a fresh, registered MountWatchdog.
+
+        ``mount_point`` is the path the watchdog monitors via
+        ``os.path.ismount``. During a mount swap (see :meth:`_run_drive_update`)
+        this MUST be the private ``work_mount`` the write window runs against,
+        NOT the original FSKit ``/Volumes/`` mount: while swapped, the FSKit
+        mount is gone, so watching it would latch an instant false-abort. Outside
+        a swap it is the live ``/Volumes/`` mount as before.
 
         A new :class:`MountWatchdog` is started for this single operation and
         published on ``self._active_watchdog`` so ``_on_will_sleep`` can mark

@@ -23,6 +23,15 @@ APP_DIR="/Applications/EFIS Data Manager.app"
 PLIST="$HOME/Library/LaunchAgents/com.efisdatamanager.plist"
 LOG_DIR="$HOME/EFIS/DataManagerLogs"
 
+# The user this app runs as (the menu-bar LaunchAgent runs as the login user,
+# NOT root). Derive it the same way regardless of whether install.sh happens to
+# be invoked directly or under sudo: prefer $SUDO_USER (set when run via sudo),
+# otherwise the current login name. Never hardcode a username.
+INSTALL_USER="${SUDO_USER:-$(id -un)}"
+
+# Phase-1 privilege backend (chart-sync-stall-fix): narrow sudoers grant.
+SUDOERS_FILE="/etc/sudoers.d/efis-data-manager"
+
 # Pretty output helpers
 step()  { echo ""; echo "==> $*"; }
 info()  { echo "    $*"; }
@@ -117,6 +126,69 @@ step "Installing chart-checker browser (one-time, ~100 MB — may take a few min
 # --- 6. Log directory ---
 mkdir -p "$LOG_DIR"
 
+# --- 6b. Mount-swap privilege grant (chart-sync-stall-fix, Phase 1) ---
+#
+# The chart-sync mount-swap must unmount the FSKit volume, remount it via
+# /sbin/mount_msdos (the confirmed non-stalling in-kernel msdosfs path), and
+# later restore the FSKit mount — all of which require root. Phase 1 grants
+# that privilege with a narrow, promptless sudoers.d entry so the auto-on-insert
+# menu-bar model keeps working without a password on every sync.
+#
+# INTERIM RISK — DOCUMENTED AND USER-ACCEPTED (retired in Phase 2):
+#   /sbin/mount_msdos takes an arbitrary device node and an arbitrary
+#   mountpoint, and sudoers cannot constrain those arguments. A NOPASSWD grant
+#   for it therefore lets the install user mount a crafted FAT image as root at
+#   an arbitrary path. This broad mount_msdos grant is an ACCEPTED Phase-1 risk.
+#   Phase 2 replaces this sudoers file with a code-signed SMAppService helper
+#   that validates arguments (removable FAT32 device; mountpoint under the app's
+#   private dir) and removes this file (see the uninstall path below).
+#
+#   The diskutil subcommands are scoped to exactly `unmount` and `mount`; the
+#   trailing pattern only matches the arguments of those two subcommands, not
+#   other diskutil verbs.
+step "Installing mount-swap privilege grant ($SUDOERS_FILE)"
+info "This lets chart syncs remount the drive without a password each time."
+info "You may be asked for your Mac password to write this system file."
+
+# Build the sudoers content for THIS install user (never hardcoded). Pin exact
+# absolute binary paths; avoid wildcards except where a subcommand's own
+# arguments are unavoidably variable.
+SUDOERS_CONTENT="# EFIS Data Manager — chart-sync mount-swap privilege grant (Phase 1, interim).
+# Managed by install.sh; removed by the uninstall step below.
+#
+# INTERIM RISK (user-accepted, retired in Phase 2): the /sbin/mount_msdos grant
+# is broad because sudoers cannot constrain its device/mountpoint arguments.
+# Phase 2 replaces this with a signed SMAppService helper that validates args.
+Cmnd_Alias EFIS_MOUNTSWAP = /sbin/mount_msdos, \\
+                            /usr/sbin/diskutil unmount *, \\
+                            /usr/sbin/diskutil mount *
+$INSTALL_USER ALL=(root) NOPASSWD: EFIS_MOUNTSWAP"
+
+# Validate in a temp file with visudo BEFORE touching /etc, then install
+# atomically with the correct 0440 root:wheel perms. Never leave a broken
+# sudoers.d file: if validation fails, we abort without writing to /etc.
+SUDOERS_TMP="$(mktemp -t efis-data-manager-sudoers)"
+printf '%s\n' "$SUDOERS_CONTENT" > "$SUDOERS_TMP"
+
+if ! /usr/sbin/visudo -c -f "$SUDOERS_TMP" >/dev/null 2>&1; then
+    rm -f "$SUDOERS_TMP"
+    fail "Generated sudoers entry failed visudo validation; not installing it."
+fi
+
+# Install behind the admin password (sudo). Set perms/owner on the temp file
+# first so the file lands correctly, then move it into place. visudo -c on the
+# final path is a belt-and-suspenders re-check; if it fails we remove the file
+# so a broken entry can never persist.
+sudo install -m 0440 -o root -g wheel "$SUDOERS_TMP" "$SUDOERS_FILE" \
+    || { rm -f "$SUDOERS_TMP"; fail "Could not install $SUDOERS_FILE (need admin password)."; }
+rm -f "$SUDOERS_TMP"
+
+if ! sudo /usr/sbin/visudo -c -f "$SUDOERS_FILE" >/dev/null 2>&1; then
+    sudo rm -f "$SUDOERS_FILE"
+    fail "$SUDOERS_FILE failed post-install validation and was removed."
+fi
+info "Mount-swap privilege grant installed for user '$INSTALL_USER'."
+
 # --- 7. Menu-bar .app bundle (login-safe, uses this project + venv) ---
 step "Installing menu-bar app to $APP_DIR"
 rm -rf "$APP_DIR"
@@ -137,8 +209,8 @@ cat > "$APP_DIR/Contents/Info.plist" <<PLISTEOF
     <key>CFBundleIdentifier</key><string>com.efisdatamanager.app</string>
     <key>CFBundleExecutable</key><string>launch</string>
     <key>CFBundleIconFile</key><string>EFISDataManager</string>
-    <key>CFBundleShortVersionString</key><string>1.3.0</string>
-    <key>CFBundleVersion</key><string>1.3.0</string>
+    <key>CFBundleShortVersionString</key><string>1.5.0</string>
+    <key>CFBundleVersion</key><string>1.5.0</string>
     <key>CFBundlePackageType</key><string>APPL</string>
     <key>LSUIElement</key><true/>
 </dict>
@@ -192,3 +264,6 @@ echo "  3. Seattle Avionics Login... to store your chart-subscription credential
 echo "  4. Configure number of cylinders and thresholds in the Analysis Dashboard settings."
 echo ""
 echo "To start the app now:  open \"$APP_DIR\""
+echo ""
+echo "To remove everything later (including the mount-swap privilege grant at"
+echo "$SUDOERS_FILE):  ./uninstall.sh"

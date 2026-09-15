@@ -237,6 +237,15 @@ class USBMonitor:
         self._running = False
         self._known_efis_mounts: set[str] = set()
         self._known_candidates: set[str] = set()
+        # Quiesce switch for the mount-swap window. While paused the poll loop
+        # takes no action on /Volumes/ churn (fires NO mount/unmount/candidate
+        # callbacks), so the transient FSKit unmount + mount_msdos remount +
+        # FSKit restore performed by mount_swap does not race the poller or
+        # trigger a spurious auto-sync / redundant archive. The flag and the
+        # known-mount baselines are shared between the caller's thread (which
+        # calls pause()/resume()) and the poll thread, so a lock guards them.
+        self._lock = threading.Lock()
+        self._paused = False
 
     def start(self):
         """Start monitoring for USB events in a background thread."""
@@ -245,11 +254,14 @@ class USBMonitor:
         self._running = True
 
         # Check what's already mounted
-        self._known_efis_mounts, self._known_candidates = _scan_volumes()
-        for mount_point in self._known_efis_mounts:
+        with self._lock:
+            self._known_efis_mounts, self._known_candidates = _scan_volumes()
+            known_mounts = set(self._known_efis_mounts)
+            known_candidates = set(self._known_candidates)
+        for mount_point in known_mounts:
             logger.info(f"EFIS drive already mounted: {mount_point}")
             self.on_efis_mount(mount_point)
-        for mount_point in self._known_candidates:
+        for mount_point in known_candidates:
             logger.info(f"Adoption-candidate drive already mounted: {mount_point}")
             self._notify_candidate(mount_point)
 
@@ -262,6 +274,35 @@ class USBMonitor:
         """Stop monitoring."""
         self._running = False
         logger.info("USB monitor stopped.")
+
+    def pause(self):
+        """Quiesce the poller so it ignores /Volumes/ churn.
+
+        Called by the mount-swap layer BEFORE it unmounts the FSKit volume.
+        While paused the poll loop scans nothing and fires NO mount, unmount,
+        or adoption-candidate callbacks, so the transient disappearance of the
+        volume (FSKit unmount) and its later reappearance (FSKit restore) do
+        not fire ``on_efis_unmount`` / ``on_efis_mount`` and do not trigger a
+        redundant archive or spurious auto-sync. Idempotent.
+        """
+        with self._lock:
+            self._paused = True
+        logger.info("USB monitor paused (mount-swap window).")
+
+    def resume(self):
+        """Re-enable the poller, rebaselining current /Volumes/ as existing.
+
+        Called by the mount-swap layer AFTER it has restored the FSKit mount.
+        It re-reads /Volumes/ and adopts whatever is currently mounted as the
+        EXISTING baseline: the restored managed mount is folded into
+        ``_known_efis_mounts`` (and candidates into ``_known_candidates``) so
+        the next poll sees NO new mount event for it — no spurious auto-sync,
+        no redundant archive. Idempotent.
+        """
+        with self._lock:
+            self._known_efis_mounts, self._known_candidates = _scan_volumes()
+            self._paused = False
+        logger.info("USB monitor resumed (rebaselined /Volumes/ as existing).")
 
     def _notify_candidate(self, mount_point: str):
         """Fire the optional adoption-candidate hint, if wired.
@@ -281,16 +322,28 @@ class USBMonitor:
         while self._running:
             time.sleep(2)
             try:
+                # Quiesce gate: while a mount swap is in progress, take no
+                # action on /Volumes/ churn. Snapshot the flag and baselines
+                # under the lock so pause()/resume() on another thread cannot
+                # tear them mid-iteration. When paused, do not even scan — the
+                # transient unmount/remount must produce no callbacks and the
+                # baseline is owned by resume() (which rebaselines on exit).
+                with self._lock:
+                    if self._paused:
+                        continue
+                    known_mounts = set(self._known_efis_mounts)
+                    known_candidates = set(self._known_candidates)
+
                 current, candidates = _scan_volumes()
 
                 # Detect new managed mounts -> auto-action (Req 10.4).
-                new_mounts = current - self._known_efis_mounts
+                new_mounts = current - known_mounts
                 for mount_point in new_mounts:
                     logger.info(f"EFIS drive mounted: {mount_point}")
                     self.on_efis_mount(mount_point)
 
                 # Detect ejections of managed drives.
-                ejected = self._known_efis_mounts - current
+                ejected = known_mounts - current
                 for mount_point in ejected:
                     logger.info(f"EFIS drive ejected: {mount_point}")
                     self.on_efis_unmount(mount_point)
@@ -299,7 +352,7 @@ class USBMonitor:
                 # automatic action (Req 10.5). Fire once per appearance; a
                 # candidate that disappears and reappears fires again because
                 # it drops out of _known_candidates while absent.
-                new_candidates = candidates - self._known_candidates
+                new_candidates = candidates - known_candidates
                 for mount_point in new_candidates:
                     logger.info(
                         f"Unmanaged adoption-candidate drive detected: "
@@ -308,8 +361,15 @@ class USBMonitor:
                     )
                     self._notify_candidate(mount_point)
 
-                self._known_efis_mounts = current
-                self._known_candidates = candidates
+                # Commit the new baseline, but only if a concurrent resume()
+                # has not paused us again since the scan started. If we became
+                # paused mid-iteration, resume() owns the baseline and this
+                # scan's result (taken across the swap window) must be
+                # discarded to avoid re-introducing the transient churn.
+                with self._lock:
+                    if not self._paused:
+                        self._known_efis_mounts = current
+                        self._known_candidates = candidates
 
             except Exception as e:
                 logger.error(f"USB monitor poll error: {e}")

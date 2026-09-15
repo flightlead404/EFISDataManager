@@ -17,6 +17,24 @@ analyzing what your engine and airframe are doing.
 > Seattle Avionics. Use at your own risk; always verify chart currency before
 > flight.
 
+> ## ⚠️ Important: chart sync needs a one-time password approval
+>
+> Starting in **v1.5.0**, keeping your chart drive current requires granting the
+> app permission to mount the USB drive a special way. **During install you will
+> be asked for your Mac password** to approve this (a one-time step; you are not
+> asked again on every sync).
+>
+> **Why this is needed:** current macOS versions have a bug in the built-in
+> USB/FAT32 filesystem driver ("FSKit") that makes large chart writes to a
+> FAT32 EFIS drive **stall and never finish**. The only reliable workaround is to
+> mount the drive using macOS's older, classic FAT32 driver for the duration of
+> the sync — and switching drivers requires administrator permission. The app
+> grants itself a **narrow** permission to do only that (mount/unmount the EFIS
+> drive); it is removed cleanly by `./uninstall.sh`.
+>
+> Without this approval, chart sync will not be able to complete. Flight-data
+> archiving and the analysis dashboard are unaffected and work without it.
+
 **New here?** See [GETTING-STARTED.md](GETTING-STARTED.md) for a five-minute
 quick start. This README is the full user guide.
 
@@ -72,7 +90,10 @@ sets up everything it needs.
 4. A Terminal window opens and the installer runs. Follow the on-screen prompts:
    - On a new Mac, macOS may ask to install **Command Line Tools** — click
      **Install** and accept.
-   - You may be asked for your **Mac password** (to install Homebrew/Python).
+   - You may be asked for your **Mac password** — once to install
+     Homebrew/Python, and once to approve the chart-sync mount permission
+     described in the note at the top of this README (the FSKit/FAT32
+     workaround). Both are expected.
    - The installer then downloads everything and sets up the app. The one-time
      browser download is ~100 MB, so give it a few minutes.
 5. When it says **"All done,"** the **EFIS Data Manager** icon appears in your

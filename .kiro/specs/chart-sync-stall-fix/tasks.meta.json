@@ -1,0 +1,308 @@
+{
+  "pbtResults": {
+    "7.2 Property test: commit marker only on clean verify": {
+      "status": "passed",
+      "lastRunTimestamp": 1789501120602
+    }
+  },
+  "executionHistory": {
+    "1.1 Create `mount_swap.py` with pure helpers and transient swap state": [
+      {
+        "executionId": "2b88bf55-5c10-42d6-b777-aed9874c4cee",
+        "chatSessionId": "sess_fe59a3b1-3a1b-4a1f-8d2d-744533b0b06b",
+        "timestamp": 1789499045022
+      },
+      {
+        "executionId": "2b88bf55-5c10-42d6-b777-aed9874c4cee",
+        "chatSessionId": "sess_fe59a3b1-3a1b-4a1f-8d2d-744533b0b06b",
+        "timestamp": 1789499054978
+      },
+      {
+        "executionId": "2b88bf55-5c10-42d6-b777-aed9874c4cee",
+        "chatSessionId": "sess_fe59a3b1-3a1b-4a1f-8d2d-744533b0b06b",
+        "timestamp": 1789499476910
+      }
+    ],
+    "1.3 Implement the single `run_privileged` shim with sudoers backend + argument validation": [
+      {
+        "executionId": "2b88bf55-5c10-42d6-b777-aed9874c4cee",
+        "chatSessionId": "sess_fe59a3b1-3a1b-4a1f-8d2d-744533b0b06b",
+        "timestamp": 1789499045084
+      },
+      {
+        "executionId": "2b88bf55-5c10-42d6-b777-aed9874c4cee",
+        "chatSessionId": "sess_fe59a3b1-3a1b-4a1f-8d2d-744533b0b06b",
+        "timestamp": 1789499055922
+      },
+      {
+        "executionId": "2b88bf55-5c10-42d6-b777-aed9874c4cee",
+        "chatSessionId": "sess_fe59a3b1-3a1b-4a1f-8d2d-744533b0b06b",
+        "timestamp": 1789499477061
+      }
+    ],
+    "2. Install the interim narrow `sudoers.d` grant (Phase 1 privilege backend)": [
+      {
+        "executionId": "2b88bf55-5c10-42d6-b777-aed9874c4cee",
+        "chatSessionId": "sess_fe59a3b1-3a1b-4a1f-8d2d-744533b0b06b",
+        "timestamp": 1789499045112
+      },
+      {
+        "executionId": "2b88bf55-5c10-42d6-b777-aed9874c4cee",
+        "chatSessionId": "sess_fe59a3b1-3a1b-4a1f-8d2d-744533b0b06b",
+        "timestamp": 1789499057313
+      },
+      {
+        "executionId": "2b88bf55-5c10-42d6-b777-aed9874c4cee",
+        "chatSessionId": "sess_fe59a3b1-3a1b-4a1f-8d2d-744533b0b06b",
+        "timestamp": 1789499477915
+      }
+    ],
+    "3.1 Implement `msdos_mount` context manager and FSKit unmount / `mount_msdos` remount": [
+      {
+        "executionId": "2b88bf55-5c10-42d6-b777-aed9874c4cee",
+        "chatSessionId": "sess_fe59a3b1-3a1b-4a1f-8d2d-744533b0b06b",
+        "timestamp": 1789499045141
+      },
+      {
+        "executionId": "2b88bf55-5c10-42d6-b777-aed9874c4cee",
+        "chatSessionId": "sess_fe59a3b1-3a1b-4a1f-8d2d-744533b0b06b",
+        "timestamp": 1789499601434
+      },
+      {
+        "executionId": "2b88bf55-5c10-42d6-b777-aed9874c4cee",
+        "chatSessionId": "sess_fe59a3b1-3a1b-4a1f-8d2d-744533b0b06b",
+        "timestamp": 1789500092584
+      }
+    ],
+    "3.2 Implement `robust_unmount` and `restore_fskit_mount`": [
+      {
+        "executionId": "2b88bf55-5c10-42d6-b777-aed9874c4cee",
+        "chatSessionId": "sess_fe59a3b1-3a1b-4a1f-8d2d-744533b0b06b",
+        "timestamp": 1789499045166
+      },
+      {
+        "executionId": "2b88bf55-5c10-42d6-b777-aed9874c4cee",
+        "chatSessionId": "sess_fe59a3b1-3a1b-4a1f-8d2d-744533b0b06b",
+        "timestamp": 1789500110687
+      },
+      {
+        "executionId": "2b88bf55-5c10-42d6-b777-aed9874c4cee",
+        "chatSessionId": "sess_fe59a3b1-3a1b-4a1f-8d2d-744533b0b06b",
+        "timestamp": 1789500287418
+      }
+    ],
+    "4.1 Implement `pause()`/`resume()` quiesce in `usb_monitor.py`": [
+      {
+        "executionId": "2b88bf55-5c10-42d6-b777-aed9874c4cee",
+        "chatSessionId": "sess_fe59a3b1-3a1b-4a1f-8d2d-744533b0b06b",
+        "timestamp": 1789499045191
+      },
+      {
+        "executionId": "2b88bf55-5c10-42d6-b777-aed9874c4cee",
+        "chatSessionId": "sess_fe59a3b1-3a1b-4a1f-8d2d-744533b0b06b",
+        "timestamp": 1789499602252
+      },
+      {
+        "executionId": "2b88bf55-5c10-42d6-b777-aed9874c4cee",
+        "chatSessionId": "sess_fe59a3b1-3a1b-4a1f-8d2d-744533b0b06b",
+        "timestamp": 1789500093770
+      }
+    ],
+    "5. Wire the mount-swap context into `app._run_drive_update`": [
+      {
+        "executionId": "2b88bf55-5c10-42d6-b777-aed9874c4cee",
+        "chatSessionId": "sess_fe59a3b1-3a1b-4a1f-8d2d-744533b0b06b",
+        "timestamp": 1789499045212
+      },
+      {
+        "executionId": "2b88bf55-5c10-42d6-b777-aed9874c4cee",
+        "chatSessionId": "sess_fe59a3b1-3a1b-4a1f-8d2d-744533b0b06b",
+        "timestamp": 1789500314767
+      },
+      {
+        "executionId": "2b88bf55-5c10-42d6-b777-aed9874c4cee",
+        "chatSessionId": "sess_fe59a3b1-3a1b-4a1f-8d2d-744533b0b06b",
+        "timestamp": 1789500478781
+      }
+    ],
+    "6. Checkpoint - Ensure all unit tests pass": [
+      {
+        "executionId": "2b88bf55-5c10-42d6-b777-aed9874c4cee",
+        "chatSessionId": "sess_fe59a3b1-3a1b-4a1f-8d2d-744533b0b06b",
+        "timestamp": 1789499045251
+      },
+      {
+        "executionId": "744ba433-0a6a-4671-8400-e36f643d272e",
+        "chatSessionId": "sess_fe59a3b1-3a1b-4a1f-8d2d-744533b0b06b",
+        "timestamp": 1789513930480
+      }
+    ],
+    "8. Build instrumentation and root-cause reproducibility harness": [
+      {
+        "executionId": "2b88bf55-5c10-42d6-b777-aed9874c4cee",
+        "chatSessionId": "sess_fe59a3b1-3a1b-4a1f-8d2d-744533b0b06b",
+        "timestamp": 1789499045274
+      },
+      {
+        "executionId": "2b88bf55-5c10-42d6-b777-aed9874c4cee",
+        "chatSessionId": "sess_fe59a3b1-3a1b-4a1f-8d2d-744533b0b06b",
+        "timestamp": 1789499058360
+      },
+      {
+        "executionId": "2b88bf55-5c10-42d6-b777-aed9874c4cee",
+        "chatSessionId": "sess_fe59a3b1-3a1b-4a1f-8d2d-744533b0b06b",
+        "timestamp": 1789500094806
+      }
+    ],
+    "9. Build the reproduction / acceptance harness": [
+      {
+        "executionId": "2b88bf55-5c10-42d6-b777-aed9874c4cee",
+        "chatSessionId": "sess_fe59a3b1-3a1b-4a1f-8d2d-744533b0b06b",
+        "timestamp": 1789499045301
+      },
+      {
+        "executionId": "744ba433-0a6a-4671-8400-e36f643d272e",
+        "chatSessionId": "sess_fe59a3b1-3a1b-4a1f-8d2d-744533b0b06b",
+        "timestamp": 1789513935167
+      }
+    ],
+    "11. Test scaffolding and `.gitattributes` exclusion": [
+      {
+        "executionId": "2b88bf55-5c10-42d6-b777-aed9874c4cee",
+        "chatSessionId": "sess_fe59a3b1-3a1b-4a1f-8d2d-744533b0b06b",
+        "timestamp": 1789499045327
+      },
+      {
+        "executionId": "744ba433-0a6a-4671-8400-e36f643d272e",
+        "chatSessionId": "sess_fe59a3b1-3a1b-4a1f-8d2d-744533b0b06b",
+        "timestamp": 1789513937270
+      }
+    ],
+    "12. Phase-1 release / versioning": [
+      {
+        "executionId": "2b88bf55-5c10-42d6-b777-aed9874c4cee",
+        "chatSessionId": "sess_fe59a3b1-3a1b-4a1f-8d2d-744533b0b06b",
+        "timestamp": 1789499045371
+      }
+    ],
+    "13. Phase-1 acceptance checkpoint (Phase-2 gate)": [
+      {
+        "executionId": "2b88bf55-5c10-42d6-b777-aed9874c4cee",
+        "chatSessionId": "sess_fe59a3b1-3a1b-4a1f-8d2d-744533b0b06b",
+        "timestamp": 1789499045394
+      }
+    ],
+    "14. Adopt code signing + notarization (Developer ID)": [
+      {
+        "executionId": "2b88bf55-5c10-42d6-b777-aed9874c4cee",
+        "chatSessionId": "sess_fe59a3b1-3a1b-4a1f-8d2d-744533b0b06b",
+        "timestamp": 1789499045423
+      }
+    ],
+    "17. Update installer and retire the interim sudoers grant": [
+      {
+        "executionId": "2b88bf55-5c10-42d6-b777-aed9874c4cee",
+        "chatSessionId": "sess_fe59a3b1-3a1b-4a1f-8d2d-744533b0b06b",
+        "timestamp": 1789499045451
+      }
+    ],
+    "18. Phase-2 release / versioning": [
+      {
+        "executionId": "2b88bf55-5c10-42d6-b777-aed9874c4cee",
+        "chatSessionId": "sess_fe59a3b1-3a1b-4a1f-8d2d-744533b0b06b",
+        "timestamp": 1789499045484
+      }
+    ],
+    "19. Final checkpoint - Ensure all tests pass": [
+      {
+        "executionId": "2b88bf55-5c10-42d6-b777-aed9874c4cee",
+        "chatSessionId": "sess_fe59a3b1-3a1b-4a1f-8d2d-744533b0b06b",
+        "timestamp": 1789499045514
+      }
+    ],
+    "1. Add mount-swap module skeleton, pure helpers, and privileged shim (sudoers backend)": [
+      {
+        "executionId": "2b88bf55-5c10-42d6-b777-aed9874c4cee",
+        "chatSessionId": "sess_fe59a3b1-3a1b-4a1f-8d2d-744533b0b06b",
+        "timestamp": 1789499477094
+      }
+    ],
+    "4. Add poller quiesce to `usb_monitor`": [
+      {
+        "executionId": "2b88bf55-5c10-42d6-b777-aed9874c4cee",
+        "chatSessionId": "sess_fe59a3b1-3a1b-4a1f-8d2d-744533b0b06b",
+        "timestamp": 1789500093796
+      }
+    ],
+    "3. Implement mount/unmount lifecycle and robust teardown": [
+      {
+        "executionId": "2b88bf55-5c10-42d6-b777-aed9874c4cee",
+        "chatSessionId": "sess_fe59a3b1-3a1b-4a1f-8d2d-744533b0b06b",
+        "timestamp": 1789500287487
+      }
+    ],
+    "1.2 Write unit tests for `resolve_device_node` and `private_mountpoint`": [
+      {
+        "executionId": "744ba433-0a6a-4671-8400-e36f643d272e",
+        "chatSessionId": "sess_fe59a3b1-3a1b-4a1f-8d2d-744533b0b06b",
+        "timestamp": 1789513927045
+      }
+    ],
+    "1.4 Write unit tests for `run_privileged` argument validation": [
+      {
+        "executionId": "744ba433-0a6a-4671-8400-e36f643d272e",
+        "chatSessionId": "sess_fe59a3b1-3a1b-4a1f-8d2d-744533b0b06b",
+        "timestamp": 1789513927073
+      }
+    ],
+    "1.5 Write unit tests for the rollback state machine and `robust_unmount`": [
+      {
+        "executionId": "744ba433-0a6a-4671-8400-e36f643d272e",
+        "chatSessionId": "sess_fe59a3b1-3a1b-4a1f-8d2d-744533b0b06b",
+        "timestamp": 1789513928126
+      }
+    ],
+    "4.2 Write unit tests for poller quiesce": [
+      {
+        "executionId": "744ba433-0a6a-4671-8400-e36f643d272e",
+        "chatSessionId": "sess_fe59a3b1-3a1b-4a1f-8d2d-744533b0b06b",
+        "timestamp": 1789513929078
+      }
+    ],
+    "7.1 Property test: swap never ends unmounted-and-unreported": [
+      {
+        "executionId": "744ba433-0a6a-4671-8400-e36f643d272e",
+        "chatSessionId": "sess_fe59a3b1-3a1b-4a1f-8d2d-744533b0b06b",
+        "timestamp": 1789513931431
+      }
+    ],
+    "7. Implement the three Correctness Properties as Hypothesis property tests": [
+      {
+        "executionId": "744ba433-0a6a-4671-8400-e36f643d272e",
+        "chatSessionId": "sess_fe59a3b1-3a1b-4a1f-8d2d-744533b0b06b",
+        "timestamp": 1789513931461
+      }
+    ],
+    "7.2 Property test: commit marker only on clean verify": [
+      {
+        "executionId": "744ba433-0a6a-4671-8400-e36f643d272e",
+        "chatSessionId": "sess_fe59a3b1-3a1b-4a1f-8d2d-744533b0b06b",
+        "timestamp": 1789513932818
+      }
+    ],
+    "7.3 Property test: sync-state attributed by drive id, invariant to mount path": [
+      {
+        "executionId": "744ba433-0a6a-4671-8400-e36f643d272e",
+        "chatSessionId": "sess_fe59a3b1-3a1b-4a1f-8d2d-744533b0b06b",
+        "timestamp": 1789513933766
+      }
+    ],
+    "10. Physical-drive integration tests (adopted mitigation, EFIS_3)": [
+      {
+        "executionId": "744ba433-0a6a-4671-8400-e36f643d272e",
+        "chatSessionId": "sess_fe59a3b1-3a1b-4a1f-8d2d-744533b0b06b",
+        "timestamp": 1789513936113
+      }
+    ]
+  }
+}

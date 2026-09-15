@@ -6,14 +6,24 @@ how everything works, options, security, and limitations — see
 
 ## 1. Install
 
+> ⚠️ **You'll be asked for your Mac password during install** — once for
+> Python/Homebrew and once to approve the **chart-sync mount permission**. The
+> second one is required because a bug in current macOS's built-in USB/FAT32
+> driver stalls large chart writes; the app works around it by mounting your
+> EFIS drive with macOS's older FAT32 driver, which needs a one-time admin
+> approval. It's a narrow, EFIS-drive-only permission and is removed by
+> `./uninstall.sh`. Chart sync can't complete without it.
+
+
 1. Download `EFISDataManager.zip` from the
    [latest release](https://github.com/flightlead404/EFISDataManager/releases/latest)
    and unzip it (a folder appears, e.g. in Downloads).
 2. Open that folder and **double-click `install.command`**.
 3. A Terminal window opens and sets everything up (Python, dependencies, the
-   chart-checker browser, the menu-bar app, and a login item). You may be asked
-   for your Mac password, and on a new Mac to approve Apple's "Command Line
-   Tools" download. That's expected. It can take a few minutes the first time.
+   chart-checker browser, the menu-bar app, and a login item). You'll be asked
+   for your Mac password (see the note above — once for Python/Homebrew, once
+   for the chart-sync mount permission), and on a new Mac to approve Apple's
+   "Command Line Tools" download. That's expected. It can take a few minutes the first time.
 4. When it says **Install complete**, you can close the window.
 
 First launch may show a macOS security prompt because the app isn't
