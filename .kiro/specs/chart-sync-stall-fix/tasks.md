@@ -203,14 +203,14 @@ The existing `drive-sync-integrity` engine internals (`build_jobs`,
   - Ensure all property/unit tests run green under the venv.
   - _Requirements: 8.1_
 
-- [ ] 12. Phase-1 release / versioning
+- [x] 12. Phase-1 release / versioning
   - Per the versioning policy (menu-bar change): on release, tag the repo, bump
     `__version__` in `src/efis_data_manager/__init__.py` and keep
     `pyproject.toml` `version` in sync; bump `MENUBAR_VERSION`; leave
     `DASHBOARD_VERSION` unchanged.
   - _Requirements: 8.2, 8.3_
 
-- [ ] 13. Phase-1 acceptance checkpoint (Phase-2 gate)
+- [x] 13. Phase-1 acceptance checkpoint (Phase-2 gate)
   - Ensure the full mount-swap workflow (unmount -> `mount_msdos` -> sync ->
     verify -> marker -> restore) passes the acceptance gate on real drives and
     all tests pass. This success is the gate that authorizes Phase 2 and the

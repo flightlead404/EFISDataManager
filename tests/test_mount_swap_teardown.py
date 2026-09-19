@@ -142,7 +142,9 @@ def test_mount_msdos_failure_restores_fskit():
     with mock.patch.object(ms, "resolve_device_node", return_value=DEVICE), \
         mock.patch.object(ms, "run_privileged", side_effect=_run) as rp, \
         mock.patch.object(ms, "private_mountpoint", return_value="/private/tmp/efis-datamanager/EFIS_3"), \
-        mock.patch("os.path.ismount", return_value=False):
+        mock.patch("os.path.ismount", return_value=False), \
+        mock.patch("time.sleep"), \
+        mock.patch("os.sync"):
         with pytest.raises(ms.MountSwapError):
             with ms.msdos_mount(FSKIT_MP):
                 pytest.fail("body must not run when mount_msdos fails")
@@ -364,21 +366,100 @@ def test_robust_unmount_force_succeeds_returns_true():
 
 
 def test_restore_fskit_mount_success():
-    """diskutil mount rc==0 -> True."""
-    with mock.patch.object(ms, "run_privileged", return_value=_cp(returncode=0)) as rp:
+    """diskutil mount rc==0 on the first attempt -> True with a single call.
+
+    The settle sleep runs before the (successful) mount, so exactly one sleep
+    and one privileged call happen.
+    """
+    with mock.patch.object(ms, "run_privileged", return_value=_cp(returncode=0)) as rp, \
+        mock.patch("time.sleep") as slp:
         assert ms.restore_fskit_mount(DEVICE) is True
     assert _argv_calls(rp) == [[ms.DISKUTIL_BIN, "mount", DEVICE]]
+    # A single growing-settle sleep preceded the one successful mount attempt.
+    assert slp.call_count == 1
 
 
 def test_restore_fskit_mount_already_mounted_is_success():
     """rc!=0 but output says "already mounted" -> treated as True."""
     already = _cp(returncode=1, stderr="Volume EFIS_3 on disk4s1 is already mounted")
-    with mock.patch.object(ms, "run_privileged", return_value=already):
+    with mock.patch.object(ms, "run_privileged", return_value=already), \
+        mock.patch("time.sleep"):
         assert ms.restore_fskit_mount(DEVICE) is True
 
 
-def test_restore_fskit_mount_genuine_failure():
-    """Genuine non-zero failure with no "already mounted" -> False."""
+def test_restore_fskit_mount_retries_after_transient_failure():
+    """rc=1 on the first 2 attempts then rc==0 -> True.
+
+    Models the post-force-unmount transient refusal: the device settles and the
+    3rd attempt succeeds. Assert it retried (multiple run_privileged calls) and
+    slept a growing settle before each attempt.
+    """
+    calls = {"n": 0}
+
+    def _run(argv, timeout):
+        calls["n"] += 1
+        if calls["n"] < 3:
+            return _cp(returncode=1, stderr="failed to mount; try readOnly")
+        return _cp(returncode=0)
+
+    with mock.patch.object(ms, "run_privileged", side_effect=_run) as rp, \
+        mock.patch("time.sleep") as slp:
+        assert ms.restore_fskit_mount(DEVICE) is True
+
+    argvs = _argv_calls(rp)
+    # Three mount attempts (two transient failures then success).
+    assert argvs == [[ms.DISKUTIL_BIN, "mount", DEVICE]] * 3
+    # A growing settle preceded every attempt: attempt N waits SETTLE * N.
+    assert slp.call_count == 3
+    slept = [c.args[0] for c in slp.call_args_list]
+    assert slept == [
+        ms.SETTLE_WAIT_SECONDS * 1,
+        ms.SETTLE_WAIT_SECONDS * 2,
+        ms.SETTLE_WAIT_SECONDS * 3,
+    ]
+
+
+def test_restore_fskit_mount_already_mounted_on_retry_is_success():
+    """rc=1 transient first, then an "already mounted" result on retry -> True."""
+    calls = {"n": 0}
+
+    def _run(argv, timeout):
+        calls["n"] += 1
+        if calls["n"] == 1:
+            return _cp(returncode=1, stderr="failed to mount; try readOnly")
+        return _cp(returncode=1, stderr="Volume EFIS_3 on disk4s1 is already mounted")
+
+    with mock.patch.object(ms, "run_privileged", side_effect=_run) as rp, \
+        mock.patch("time.sleep"):
+        assert ms.restore_fskit_mount(DEVICE) is True
+
+    # Retried once; the retry's "already mounted" is treated as restored.
+    assert len(_argv_calls(rp)) == 2
+
+
+def test_restore_fskit_mount_genuine_failure(caplog):
+    """Genuine non-zero failure on ALL attempts -> False and needs-reinsert log.
+
+    Exhausts RESTORE_MAX_ATTEMPTS (one mount call + one settle sleep each) then
+    logs the loud needs-reinsert error.
+    """
     fail = _cp(returncode=1, stderr="mount failed: device not present")
-    with mock.patch.object(ms, "run_privileged", return_value=fail):
+    with mock.patch.object(ms, "run_privileged", return_value=fail) as rp, \
+        mock.patch("time.sleep") as slp:
         assert ms.restore_fskit_mount(DEVICE) is False
+
+    assert len(_argv_calls(rp)) == ms.RESTORE_MAX_ATTEMPTS
+    assert slp.call_count == ms.RESTORE_MAX_ATTEMPTS
+    assert any("needs reinsertion" in r.getMessage() for r in caplog.records)
+
+
+def test_restore_fskit_mount_exception_is_failed_attempt():
+    """A raised run_privileged is treated as a failed attempt, not a crash.
+
+    All attempts raise -> the loop swallows each, exhausts the retries, and
+    returns False without propagating the exception.
+    """
+    with mock.patch.object(ms, "run_privileged", side_effect=OSError("boom")) as rp, \
+        mock.patch("time.sleep"):
+        assert ms.restore_fskit_mount(DEVICE) is False
+    assert len(_argv_calls(rp)) == ms.RESTORE_MAX_ATTEMPTS

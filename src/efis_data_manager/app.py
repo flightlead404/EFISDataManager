@@ -136,6 +136,14 @@ class EFISDataManagerApp(rumps.App):
         self._active_watchdog = None
         self._sleeping = False
         self._sleep_observer = None
+        # Operation-in-progress guard (prepare-drive-mount-swap bugfix). Holds
+        # the mount keys of drives currently being prepared/adopted so the
+        # mount-detect handler (_on_efis_drive_mounted) does not launch a
+        # concurrent archive+auto-sync that would race prepare/adopt's own
+        # populate write. Lock-protected because the poller fires on a separate
+        # thread from the prepare/adopt worker thread.
+        self._provisioning_drives = set()
+        self._provisioning_lock = threading.Lock()
 
         self.menu = [
             "Status: Idle",
@@ -416,9 +424,66 @@ class EFISDataManagerApp(rumps.App):
         except Exception as e:
             logger.warning(f"Wake resume check failed: {e}")
 
+    # ------------------------------------------------------------------
+    # Operation-in-progress guard (prepare-drive-mount-swap bugfix)
+    # ------------------------------------------------------------------
+    def _mark_provisioning(self, key: str):
+        """Register ``key`` as a drive currently being prepared/adopted.
+
+        Called before the format/identity/populate span begins so the
+        mount-detect handler suppresses a concurrent auto-sync for the drive.
+        """
+        if not key:
+            return
+        with self._provisioning_lock:
+            self._provisioning_drives.add(key)
+
+    def _unmark_provisioning(self, key: str):
+        """Unregister ``key`` once prepare/adopt has finished (success or fail)."""
+        if not key:
+            return
+        with self._provisioning_lock:
+            self._provisioning_drives.discard(key)
+
+    def _is_provisioning(self, mount_point: str) -> bool:
+        """Return whether ``mount_point`` is currently being prepared/adopted.
+
+        Matches on the full mount-point string AND its basename, so a drive
+        registered under its ``/Volumes/<label>`` mount path is detected
+        regardless of whether the caller passes the full path or a bare label.
+        """
+        if not mount_point:
+            return False
+        base = os.path.basename(os.path.normpath(mount_point))
+        with self._provisioning_lock:
+            if not self._provisioning_drives:
+                return False
+            # Match if the query (full path or its basename) equals any stored
+            # key by full value OR by basename, so a drive registered under its
+            # /Volumes/<label> mount path is found whether the caller passes the
+            # full path or a bare label, and vice versa.
+            for key in self._provisioning_drives:
+                if mount_point == key or base == key:
+                    return True
+                key_base = os.path.basename(os.path.normpath(key))
+                if mount_point == key_base or base == key_base:
+                    return True
+            return False
+
     def _on_efis_drive_mounted(self, mount_point: str):
         """Called when an EFIS drive is detected."""
         logger.info(f"EFIS drive mounted: {mount_point}")
+        # Serialize against explicit prepare/adopt (prepare-drive-mount-swap
+        # bugfix): if a prepare/adopt owns this drive, its own populate is
+        # already writing through the mount swap. Launching archive+auto-sync
+        # here would race it (auto-sync's swap unmounts the volume out from
+        # under prepare). Skip and let the provisioning flow own the drive.
+        if self._is_provisioning(mount_point):
+            logger.info(
+                f"prepare/adopt in progress for {mount_point}; "
+                "skipping auto-archive/sync"
+            )
+            return
         self._set_drive_status(f"Connected: {mount_point}")
         self._set_status("EFIS drive detected")
         self._notify("EFIS Drive Detected", f"Drive mounted at {mount_point}. Starting archive...")
@@ -1461,8 +1526,21 @@ class EFISDataManagerApp(rumps.App):
         def on_progress(msg):
             self._set_status(msg)
 
+        # Register the in-progress guard for the WHOLE prepare span so the
+        # reformat+remount does not trip a concurrent auto-sync. The pre-format
+        # mount (volume_path, e.g. /Volumes/NO NAME) differs from the
+        # post-format mount the poller will see (/Volumes/<label>), so register
+        # both (belt-and-suspenders).
+        post_format_mount = os.path.join("/Volumes", label)
+        self._mark_provisioning(volume_path)
+        self._mark_provisioning(post_format_mount)
         try:
-            result = prepare_drive(volume_path, label=label, progress_callback=on_progress)
+            result = prepare_drive(
+                volume_path,
+                label=label,
+                progress_callback=on_progress,
+                poller=self._usb_monitor,
+            )
             if result["success"]:
                 self._notify("Drive Prepared", result["message"])
                 self._set_status("Idle")
@@ -1473,6 +1551,9 @@ class EFISDataManagerApp(rumps.App):
             logger.error(f"Prepare drive failed: {e}")
             self._notify("Prepare Drive Failed", str(e)[:100])
             self._set_status("Prepare failed")
+        finally:
+            self._unmark_provisioning(volume_path)
+            self._unmark_provisioning(post_format_mount)
 
     def _do_adopt_drive(self, volume_path: str, archive_first: bool = False):
         """Background thread for the Adopt & update (non-destructive) path.
@@ -1493,8 +1574,16 @@ class EFISDataManagerApp(rumps.App):
         def on_progress(msg):
             self._set_status(msg)
 
+        # Adopt writes identity in place (no reformat), so the drive keeps its
+        # current mount path; register it so the identity-write-triggered
+        # managed remount does not launch a concurrent auto-sync.
+        self._mark_provisioning(volume_path)
         try:
-            result = adopt_drive(volume_path, progress_callback=on_progress)
+            result = adopt_drive(
+                volume_path,
+                progress_callback=on_progress,
+                poller=self._usb_monitor,
+            )
             if result["success"]:
                 self._notify("Drive Adopted", result["message"])
                 self._set_status("Idle")
@@ -1505,6 +1594,8 @@ class EFISDataManagerApp(rumps.App):
             logger.error(f"Adopt drive failed: {e}")
             self._notify("Adopt Drive Failed", str(e)[:100])
             self._set_status("Adopt failed")
+        finally:
+            self._unmark_provisioning(volume_path)
 
     @rumps.clicked("Quit")
     def quit_app(self, _):

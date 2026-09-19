@@ -31,6 +31,7 @@ from typing import Callable, Optional
 
 from efis_data_manager import __version__
 from efis_data_manager.config import load_config
+from efis_data_manager.mount_swap import msdos_mount, MountSwapError
 
 logger = logging.getLogger(__name__)
 
@@ -2367,6 +2368,7 @@ def _summarize_update(update_results: dict) -> tuple:
 def adopt_drive(
     mount_point: str,
     progress_callback: Optional[Callable] = None,
+    poller=None,
 ) -> dict:
     """Adopt an existing (previously-used GRT) chart drive — NON-destructive.
 
@@ -2389,6 +2391,9 @@ def adopt_drive(
     Args:
         mount_point: Path to the mounted drive to adopt (e.g. ``/Volumes/EFIS``).
         progress_callback: Optional ``callable(message)`` for status updates.
+        poller: Optional opaque poller exposing ``pause()``/``resume()``, passed
+            straight through to :func:`msdos_mount` so the swap can quiesce the
+            USB poller across the populate window. Not used otherwise.
 
     Returns:
         Dict ``{"success": bool, "message": str}`` derived from the aggregated
@@ -2415,9 +2420,23 @@ def adopt_drive(
     # completes. Telemetry only — never affects currency (Req 10.8).
     _safe_update_provenance(mount_point, data_cycle=_current_data_cycle())
 
-    # Step 3: incremental sync of only the delta (reuses matching files).
+    # Step 3: incremental sync of only the delta (reuses matching files). The
+    # populate write runs inside an in-kernel msdosfs work mount (via the mount
+    # swap), never the raw FSKit /Volumes/ path — matching app._run_drive_update.
+    # Identity/provenance above are written to the FSKit volume root first so
+    # they travel with the volume; resolve_drive_id reads them on the work mount.
     _status("Updating drive to current data...")
-    update_results = update_drive(mount_point, progress_callback=progress_callback)
+    try:
+        with msdos_mount(mount_point, poller=poller) as work_mount:
+            update_results = update_drive(
+                work_mount, progress_callback=progress_callback
+            )
+    except MountSwapError as e:
+        logger.error("adopt_drive: mount swap failed for %s: %s", mount_point, e)
+        return {
+            "success": False,
+            "message": f"Could not prepare drive for populate (mount swap failed): {e}",
+        }
 
     success, summary = _summarize_update(update_results)
     if success:
@@ -2494,6 +2513,7 @@ def prepare_drive(
     volume_path: str,
     label: str = "EFIS",
     progress_callback: Optional[Callable] = None,
+    poller=None,
 ) -> dict:
     """Format a USB drive for EFIS use and populate with current data.
 
@@ -2508,6 +2528,9 @@ def prepare_drive(
             ``/Volumes/<label>``; we wait for that specific path (and fall back
             to discovering the new EFIS mount if macOS disambiguates the name).
         progress_callback: Optional callable(message) for status updates.
+        poller: Optional opaque poller exposing ``pause()``/``resume()``, passed
+            straight through to :func:`msdos_mount` so the swap can quiesce the
+            USB poller across the populate window. Not used otherwise.
 
     Returns:
         Dict with: {"success": bool, "message": str}
@@ -2642,9 +2665,24 @@ def prepare_drive(
     _safe_update_provenance(mount_point, data_cycle=_current_data_cycle())
 
     # Now run the normal per-family sync to populate it (Req 9.4). A freshly
-    # formatted drive has no markers, so every family is stale and copied.
+    # formatted drive has no markers, so every family is stale and copied. The
+    # heavy from-scratch populate runs inside an in-kernel msdosfs work mount
+    # (via the mount swap), never the raw FSKit /Volumes/ path — matching
+    # app._run_drive_update. Identity/provenance above are written to the FSKit
+    # volume root first so they travel with the volume; resolve_drive_id reads
+    # them on the work mount.
     _status("Populating drive with current data...")
-    update_results = update_drive(mount_point, progress_callback=progress_callback)
+    try:
+        with msdos_mount(mount_point, poller=poller) as work_mount:
+            update_results = update_drive(
+                work_mount, progress_callback=progress_callback
+            )
+    except MountSwapError as e:
+        logger.error("prepare_drive: mount swap failed for %s: %s", mount_point, e)
+        return {
+            "success": False,
+            "message": f"Could not prepare drive for populate (mount swap failed): {e}",
+        }
 
     success, summary = _summarize_update(update_results)
     if success:

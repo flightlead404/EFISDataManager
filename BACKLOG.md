@@ -410,3 +410,111 @@ verify was clean, idempotent re-run current. Follow-up optimization ideas:
 throttle/chunk contingency from the design; avoid full-tree walks during a live
 sync; faster USB port/stick; accept full-repopulate as a rare one-time cost while
 incremental top-ups stay small. Backlog, not a blocker.
+
+## Windows version — LOE analysis (2026-09-15, FUTURE / parked)
+
+Parked: dial in the Mac version first. Premise: a Windows build drops ALL chart
+syncing (Seattle Avionics' own Windows Chart Data Manager handles charts) and
+keeps everything else — settings + logbook archiving, flight-data ingest, the
+analysis dashboard.
+
+Codebase survey (16k LOC total) — portability:
+- PORTS AS-IS (~7.5k LOC, pure Python, no OS coupling): fdl_parser, database
+  (SQLite), analysis, gami, power, aux_map, efis_settings, export,
+  notification_history. The real logic.
+- DASHBOARD PORTS FREE: dashboard/app.py (833 LOC, 29 Flask routes) + 8 HTML
+  templates. Flask is cross-platform; biggest single asset, zero change. This is
+  the crown jewel for a Windows user.
+- MODEST PLATFORM WORK (isolated): config.py one hardcoded
+  ~/Library/Application Support path -> %APPDATA% (~0.5d); credential storage
+  macOS Keychain (currency.py/app.py) -> `keyring`/DPAPI (~0.5d); usb_monitor
+  /Volumes polling -> Windows drive letters D:\ etc (~1-2d, and SIMPLER on
+  Windows since it only triggers archive+ingest, not sync).
+- REAL WORK: app.py (1823 LOC) is rumps menu-bar -> needs a Windows tray shell
+  (pystray) + settings dialog (Tk/PySide) replacing settings_window.py (295 LOC
+  PyObjC/AppKit). Logic mostly reusable; UI shell + event wiring rewritten.
+  Notifications macOS -> Windows toast (small).
+- DROPS ENTIRELY (~7k+ LOC): mount_swap, fskit_diagnostics, repro_harness, most
+  of drive_updater, currency (chart download), the FSKit fix, launchd. Windows
+  is SIMPLER in the areas kept.
+
+LOE: full feature/UX parity ~2.5-4 weeks focused. Dashboard-centric MVP
+(dashboard + simple ingest/archive trigger, skip polished tray UX) ~1 week.
+
+RECOMMENDATION: do NOT fork into two codebases. Extract a shared cross-platform
+CORE (pure logic + dashboard + a platform-abstraction layer for
+paths/credentials/drive-detection/notifications), then thin macOS (rumps) +
+Windows (pystray) front-ends over it. Upfront refactor cost, but kills
+double-maintenance and benefits the Mac version too; the Windows front-end
+becomes the only net-new surface. That refactor is the single biggest lever on
+the estimate.
+
+Open scoping question for when this is picked up: full parity vs
+dashboard-centric MVP? Answer swings the estimate ~4x.
+
+## Note: prepare-drive-mount-swap bugfix vs. future Windows version (2026-09-18)
+
+Q asked: for the prepare-drive-mount-swap bugfix, take the path with least rework
+should we later build a Windows version.
+
+Assessment: the fix as implemented (v1.5.1) is ALREADY the minimal-rework choice
+for Windows portability; no change needed. Reasons:
+- The drive_updater half (wrap prepare/adopt populate in msdos_mount) is 100%
+  macOS-specific — it only exists to dodge the FSKit/FAT32 stall. A Windows
+  build DROPS chart syncing entirely (Seattle Avionics' Windows tool handles
+  charts), so prepare/adopt chart-populate + the mount swap are in the
+  "drops entirely" bucket. No Windows debt created.
+- The app.py provisioning guard (_provisioning_drives/_is_provisioning + the
+  race-suppression in _on_efis_drive_mounted) is a platform-agnostic CONCEPT but
+  lives in the rumps app shell, which Windows rewrites (pystray) regardless.
+- Doing the shared-core refactor NOW just to help a hypothetical Windows version
+  would be premature (adds risk to a working fix, zero present benefit). The
+  refactor is already captured as the recommended approach in the Windows LOE
+  entry above; do it as a deliberate future project, not folded into this bugfix.
+
+Decision: ship the bugfix as written (v1.5.1). Windows portability is unaffected.
+
+## Drive population policy: latest software + settings on prepare, restore override (2026-09-18)
+
+NEW requirement (user). What Prepare Drive / drive population should put on a drive:
+
+DEFAULT (no restore active): put the LATEST of everything on the drive —
+  - latest charts (DONE today: scanned + plates families)
+  - latest nav DB (DONE today: nav family)
+  - latest EFIS/AHRS software (NOT DONE — the HHXRUp*.dat / MiniUp*.dat uploader
+    firmware files; populate does not stage these today)
+  - latest / current settings file (NOT DONE — populate places NO settings file
+    on the drive at all today; settings are only ARCHIVED *from* the drive)
+
+EXCEPTION (restore-settings active): if the user has selected an archived
+settings config to restore (the parked efis-settings-management push-to-USB
+capability), that CHOSEN settings file goes on the drive INSTEAD of the latest —
+placed as a single byte-valid file with the CORRECT UPDATE= so the EFIS treats
+it as current/loadable. Mechanics already cockpit-validated (see the .bak/.dat
++ "Restore All Settings" findings earlier in this file): EFIS loads the
+highest-UPDATE canonical slot; CHECKSUM folds in UPDATE; place byte-valid file,
+never hand-edit. On a fresh prepared drive there is no competing slot so a
+single valid file wins; if a newer-UPDATE file already exists on the drive the
+restored one must out-rank it (UPDATE correctness) — this is the nuance the user
+called out ("the update key needs to be correct in that case").
+
+CURRENT STATE (confirmed in code 2026-09-18): drive_updater populate handles
+ONLY 3 families (scanned/plates/nav = charts + nav DB). It does NOT stage
+EFIS/AHRS software and does NOT place any settings file. The restore-to-USB
+capability (efis-settings-management) is PARKED (designed + cockpit-validated,
+never built). So this requirement is a real, multi-part feature gap.
+
+OPEN QUESTIONS to resolve in the spec (do NOT assume):
+- Source of "latest EFIS/AHRS software": GRT download site? a local folder the
+  user maintains? Which files exactly (HHXRUp-*, MiniUp-*, *proc*)? How is
+  "latest" determined/versioned?
+- Source of "latest / current settings": most-recent archived settings snapshot
+  from ~/EFIS/Archive/Settings, or the live current config? For which device(s)
+  (primary HXr vs Mini — ties into the parked multi-device-settings work)?
+- Interaction with multi-device-settings (each device's own settings/software).
+
+SEQUENCING: depends on efis-settings-management (restore-to-USB) for the restore
+branch. Do NOT fold into the v1.5.1 prepare-drive-mount-swap bugfix (that fix is
+done, ships as-is). Spec this separately (e.g. "drive-population-policy" or fold
+into efis-settings-management). Menu-bar-tool change -> MENUBAR_VERSION bump on
+release.

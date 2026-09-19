@@ -1,0 +1,10 @@
+{
+  "pbtResults": {
+    "1. Write bug condition exploration test": {
+      "status": "passed",
+      "failingExample": "Exploration test failed as expected on unfixed code — confirms both defects.\n\nAssertion (a) test_prop_prepare_adopt_populate_runs_inside_msdos_mount:\n  Failing case: flow='prepare', label='EFIS_TEST' (also fails for 'adopt').\n  AssertionError: [prepare] BUG: msdos_mount was never entered — the populate ran on the raw FSKit mount instead of the swap. update_drive mount_points=['/Volumes/EFIS_TEST']\n  → Defect 1 confirmed: drive_updater.prepare_drive/adopt_drive call update_drive('/Volumes/<label>', ...) directly; drive_updater never references msdos_mount.\n\nAssertion (b) test_prop_no_autosync_launched_while_prepare_in_progress:\n  Failing case: label='EFIS_TEST'.\n  AssertionError: BUG: _on_efis_drive_mounted launched a concurrent auto-sync for a prepare-in-progress drive '/Volumes/EFIS_TEST' — no guard suppressed it. Started threads=[(_run_archive, ('/Volumes/EFIS_TEST',))]\n  → Defect 2 confirmed: _on_efis_drive_mounted has no provisioning guard; it unconditionally launches _run_archive → _run_drive_update via threading.Thread.\n\n2 failed in 0.33s (exit 1). Failure is the intended outcome for a bugfix exploration test — do NOT fix code for task 1.",
+      "lastRunTimestamp": 1789748862453
+    }
+  },
+  "executionHistory": {}
+}

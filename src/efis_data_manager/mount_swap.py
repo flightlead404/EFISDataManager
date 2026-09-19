@@ -562,6 +562,13 @@ SETTLE_WAIT_SECONDS = 2.0
 # go before we escalate to a forced unmount.
 UNMOUNT_MAX_ATTEMPTS = 3
 
+# Bounded retry for restoring the FSKit mount after teardown. After a
+# `diskutil unmount force` (the loginwindow-dissent escalation path), macOS can
+# transiently refuse an immediate `diskutil mount` while the device settles, so
+# restore_fskit_mount() waits a short growing settle before each attempt and
+# retries up to this many times before declaring the drive needs reinsertion.
+RESTORE_MAX_ATTEMPTS = 4
+
 # Marker substrings that indicate the mount is still busy (a lingering holder)
 # rather than a hard failure. Matched case-insensitively against diskutil's
 # stderr/stdout so we know to run the lsof diagnostic and back off before retry.
@@ -726,43 +733,77 @@ def restore_fskit_mount(device_node: str) -> bool:
     the swap. A redundant mount of an already-mounted device is harmless —
     ``diskutil`` reports it as already mounted — so that is treated as success.
 
-    On genuine failure the problem is logged loudly (the caller/UX then instructs
-    the user to reinsert the drive) and False is returned. The data is already
-    flushed by the preceding unmount settle, so the drive is safe; it simply
-    needs a remount to be usable again.
+    Resilient remount (settle + bounded retry): after a
+    ``diskutil unmount force`` (the escalation robust_unmount() takes when a
+    clean unmount is dissented — e.g. ``loginwindow`` holding the volume because
+    the screen locked / display slept mid-teardown), macOS can transiently
+    refuse an immediate remount ("failed to mount ... try readOnly") because the
+    device needs a moment to settle. So each attempt sleeps a short GROWING
+    settle (``SETTLE_WAIT_SECONDS * attempt``) BEFORE the ``diskutil mount``, and
+    up to :data:`RESTORE_MAX_ATTEMPTS` attempts are made. This recovers the
+    loginwindow-dissent-then-force-unmount path without the user having to
+    physically reinsert the drive.
+
+    On genuine failure after all attempts the problem is logged loudly (the
+    caller/UX then instructs the user to reinsert the drive) and False is
+    returned. The data is already flushed by the preceding unmount settle, so
+    the drive is safe; it simply needs a remount to be usable again. Kept
+    None-safe/exception-safe: a raised ``run_privileged`` is treated as a failed
+    attempt and the loop continues.
     """
-    try:
-        result = run_privileged(
-            [DISKUTIL_BIN, "mount", device_node], timeout=MOUNT_TIMEOUT_SECONDS
-        )
-    except Exception:
-        logger.exception(
-            "restore_fskit_mount: diskutil mount of %s raised; drive needs "
-            "reinsertion",
-            device_node,
-        )
-        return False
+    for attempt in range(1, RESTORE_MAX_ATTEMPTS + 1):
+        # Settle FIRST — after a forced unmount the device needs a moment before
+        # it will remount. The wait grows with the attempt number so a slow
+        # settle still recovers within the bounded retries.
+        time.sleep(SETTLE_WAIT_SECONDS * attempt)
 
-    if result.returncode == 0:
-        logger.info("restore_fskit_mount: restored FSKit mount of %s", device_node)
-        return True
+        try:
+            result = run_privileged(
+                [DISKUTIL_BIN, "mount", device_node], timeout=MOUNT_TIMEOUT_SECONDS
+            )
+        except Exception:
+            logger.warning(
+                "restore_fskit_mount: diskutil mount of %s raised "
+                "(attempt %s/%s); retrying",
+                device_node,
+                attempt,
+                RESTORE_MAX_ATTEMPTS,
+            )
+            continue
 
-    # A non-zero exit because the device is already mounted is a success for our
-    # purposes: the volume is back under /Volumes/.
-    blob = f"{result.stdout or ''}\n{result.stderr or ''}".lower()
-    if "already mounted" in blob:
-        logger.info(
-            "restore_fskit_mount: %s already mounted; treating as restored",
+        if result.returncode == 0:
+            logger.info(
+                "restore_fskit_mount: restored FSKit mount of %s on attempt %s",
+                device_node,
+                attempt,
+            )
+            return True
+
+        # A non-zero exit because the device is already mounted is a success for
+        # our purposes: the volume is back under /Volumes/.
+        blob = f"{result.stdout or ''}\n{result.stderr or ''}".lower()
+        if "already mounted" in blob:
+            logger.info(
+                "restore_fskit_mount: %s already mounted; treating as restored",
+                device_node,
+            )
+            return True
+
+        logger.warning(
+            "restore_fskit_mount: diskutil mount of %s did not succeed "
+            "(attempt %s/%s, rc=%s): %s",
             device_node,
+            attempt,
+            RESTORE_MAX_ATTEMPTS,
+            result.returncode,
+            (result.stderr or "").strip()[:500],
         )
-        return True
 
     logger.error(
-        "restore_fskit_mount: diskutil mount of %s failed (rc=%s): %s; drive "
-        "needs reinsertion",
+        "restore_fskit_mount: diskutil mount of %s failed after %s attempts; "
+        "drive needs reinsertion",
         device_node,
-        result.returncode,
-        (result.stderr or "").strip()[:500],
+        RESTORE_MAX_ATTEMPTS,
     )
     return False
 

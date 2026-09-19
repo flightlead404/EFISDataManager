@@ -25,10 +25,27 @@ end-to-end in test_run_sync_job.py; here it is stubbed so the aggregation
 logic is tested deterministically without a real rsync/mount.
 """
 
+import contextlib
+
 import pytest
 
 from efis_data_manager import drive_updater as du
 from efis_data_manager.drive_updater import JobResult
+
+
+@contextlib.contextmanager
+def _fake_msdos_mount(mount_point, poller=None):
+    """Stand-in for ``msdos_mount`` that yields the same mount_point.
+
+    The prepare-drive-mount-swap fix wraps the populate in
+    ``with msdos_mount(mount_point, poller=poller) as work_mount:``. The real
+    swap can't resolve a device node for the tests' fake ``/Volumes/...`` paths
+    and would raise ``MountSwapError``. Yielding the mount_point unchanged lets
+    control reach the (already-stubbed) ``update_drive`` exactly as before the
+    fix; these tests assert on ``update_drive``'s result aggregation, not the
+    mount path.
+    """
+    yield mount_point
 
 
 @pytest.fixture(autouse=True)
@@ -305,6 +322,11 @@ def _prepare_to_populate(monkeypatch, tmp_path):
         return real_makedirs(path, *a, **k)
 
     monkeypatch.setattr(du.os, "makedirs", fake_makedirs)
+
+    # The fix wraps the populate in `with msdos_mount(...) as work_mount:`; the
+    # real swap can't resolve a device for the fake mount, so stub it to yield
+    # straight through to the stubbed update_drive.
+    monkeypatch.setattr(du, "msdos_mount", _fake_msdos_mount)
     return mount
 
 
@@ -424,6 +446,7 @@ def test_prepare_drive_erases_whole_disk_not_slice(monkeypatch, tmp_path):
         return real_makedirs(path, *a, **k)
 
     monkeypatch.setattr(du.os, "makedirs", fake_makedirs)
+    monkeypatch.setattr(du, "msdos_mount", _fake_msdos_mount)
     monkeypatch.setattr(
         du, "update_drive",
         lambda *a, **k: {
@@ -497,6 +520,7 @@ def test_prepare_drive_wholedisk_falls_back_to_device_id(monkeypatch, tmp_path):
         return real_makedirs(path, *a, **k)
 
     monkeypatch.setattr(du.os, "makedirs", fake_makedirs)
+    monkeypatch.setattr(du, "msdos_mount", _fake_msdos_mount)
     monkeypatch.setattr(
         du, "update_drive",
         lambda *a, **k: {

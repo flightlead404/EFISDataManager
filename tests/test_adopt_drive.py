@@ -20,12 +20,27 @@ flow (the interactive rumps dialogs themselves are not unit-tested):
 Requirements: 10.9, 10.10, 10.11, 10.14, 10.16
 """
 
+import contextlib
 import os
 
 import pytest
 
 from efis_data_manager import drive_updater as du
 from efis_data_manager.drive_updater import JobResult
+
+
+@contextlib.contextmanager
+def _fake_msdos_mount(mount_point, poller=None):
+    """Stand-in for ``msdos_mount`` that yields the same mount_point.
+
+    ``adopt_drive`` now wraps its populate in
+    ``with msdos_mount(mount_point, poller=poller) as work_mount:``. The real
+    swap can't resolve a device node for the tests' fake temp-dir "drives" and
+    would raise ``MountSwapError``. Yielding the mount_point unchanged lets the
+    populate run against the same temp drive exactly as before the fix, so these
+    tests keep exercising their real identity/update/non-destructive assertions.
+    """
+    yield mount_point
 
 
 @pytest.fixture(autouse=True)
@@ -196,6 +211,10 @@ def test_adopt_drive_writes_identity_runs_update_no_format(
 
     monkeypatch.setattr(subprocess, "run", _no_diskutil)
 
+    # The fix wraps populate in `with msdos_mount(...) as work_mount:`; stub the
+    # swap to yield the same drive so the real update runs against it.
+    monkeypatch.setattr(du, "msdos_mount", _fake_msdos_mount)
+
     # A pre-existing extra file outside any family root must survive adoption.
     (drive / "keep_me.txt").write_text("do not delete")
 
@@ -228,6 +247,7 @@ def test_adopt_drive_preserves_existing_identity(
     (drive / "ChartData").mkdir(parents=True)
 
     monkeypatch.setattr(du, "wait_for_mount_ready", lambda *a, **k: True)
+    monkeypatch.setattr(du, "msdos_mount", _fake_msdos_mount)
     first_id = du._ensure_identity(str(drive))
 
     result = du.adopt_drive(str(drive))
@@ -258,6 +278,7 @@ def test_adopt_drive_failure_reports_failed_family(
         }
 
     monkeypatch.setattr(du, "update_drive", fake_update_drive)
+    monkeypatch.setattr(du, "msdos_mount", _fake_msdos_mount)
 
     result = du.adopt_drive(str(drive))
     assert result["success"] is False
