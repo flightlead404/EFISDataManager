@@ -271,3 +271,130 @@ def test_commit_marker_on_dest_is_protected_from_delete(tmp_path):
     files = _rel_files(dst)
     assert "SEC/a.png" in files
     assert "ScannedCharts.sqlite" in files  # protected, not deleted
+
+
+# --- files_updated parsing with --info=progress2 ----------------------------
+#
+# Adding --info=progress2 makes rsync stream transfer progress (percent, xfr#,
+# to-chk=, carriage-return in-place rewrites) plus a trailing summary onto the
+# SAME stdout stream as the --out-format=%n filenames. The file counter must
+# ignore that noise and count only real transferred filenames.
+
+
+def test_is_progress2_noise_classification():
+    """The noise filter accepts filenames and rejects progress/summary lines."""
+    # Real filenames rsync would emit via %n -> NOT noise.
+    assert du._is_progress2_noise("Plates/KABC.pdf") is False
+    assert du._is_progress2_noise("SEC/a.png") is False
+    assert du._is_progress2_noise("ChartData/LO/chart 12%off.png".replace("%", "pct")) is False
+
+    # progress2 progress lines -> noise.
+    assert du._is_progress2_noise(
+        "        1,234,567  43%   1.20MB/s    0:00:03 (xfr#120, to-chk=812/22143)"
+    ) is True
+    assert du._is_progress2_noise("  0%    0.00kB/s    0:00:00") is True
+    assert du._is_progress2_noise("(xfr#3, ir-chk=1006/1024)") is True
+
+    # trailing summary lines -> noise.
+    assert du._is_progress2_noise("sent 1,024 bytes  received 35 bytes  2,118.00 bytes/sec") is True
+    assert du._is_progress2_noise("total size is 123,456  speedup is 116.58") is True
+
+    # blank fragments (from \r splitting) -> noise.
+    assert du._is_progress2_noise("") is True
+    assert du._is_progress2_noise("   ") is True
+
+    # directory entries are not "noise" here (they're filtered separately by the
+    # trailing-slash rule in the counter), but must not be misclassified.
+    assert du._is_progress2_noise("SEC/") is False
+
+
+def test_files_updated_ignores_progress2_lines(tmp_path, monkeypatch):
+    """End-to-end: a progress2-laden stdout yields only real filenames counted."""
+    import subprocess
+
+    src = tmp_path / "local"
+    dst = tmp_path / "drive"
+    _write(src / "a.png", "a")
+    dst.mkdir()
+    job = _tree_job(src, dst)
+
+    # Simulated rsync stdout: two real filenames interleaved with progress2
+    # progress rewrites (carriage returns) and a trailing summary block.
+    fake_stdout = (
+        "\r        0   0%    0.00kB/s    0:00:00"
+        "\r    1,024 100%    1.00MB/s    0:00:00 (xfr#1, to-chk=1/2)\n"
+        "SEC/a.png\n"
+        "\r    2,048 100%    2.00MB/s    0:00:00 (xfr#2, to-chk=0/2)\n"
+        "LO/b.png\n"
+        "\n"
+        "sent 4,096 bytes  received 57 bytes  8,306.00 bytes/sec\n"
+        "total size is 3,072  speedup is 0.74\n"
+    )
+
+    class _WritingProc:
+        def __init__(self, out_fh):
+            self._out_fh = out_fh
+            self._polls = 0
+            self.returncode = None
+            self.pid = 5555
+
+        def poll(self):
+            self._polls += 1
+            if self._polls == 1:
+                return None
+            # Write the payload once, then report clean exit.
+            self._out_fh.write(fake_stdout)
+            self._out_fh.flush()
+            self.returncode = 0
+            return 0
+
+        def wait(self, timeout=None):
+            return self.returncode
+
+        def terminate(self):
+            self.returncode = -15
+
+        def kill(self):
+            self.returncode = -9
+
+    def fake_popen(cmd, stdout=None, stderr=None, **k):
+        return _WritingProc(stdout)
+
+    monkeypatch.setattr(subprocess, "Popen", fake_popen)
+    # CPU advancing so the (silent-until-write) first tick is not a stall.
+    cpu = {"t": 0.0}
+
+    def advancing_cpu(pid):
+        cpu["t"] += 1.0
+        return cpu["t"]
+
+    monkeypatch.setattr(du, "_proc_cpu_seconds", advancing_cpu)
+
+    files_updated, errors = du.sync_payload(job)
+
+    assert errors == []
+    # Exactly the two real filenames; none of the progress/summary lines.
+    assert files_updated == 2
+
+
+def test_progress2_flag_in_rsync_command(tmp_path, monkeypatch):
+    """The rsync invocation includes --info=progress2 (continuous progress)."""
+    import subprocess
+
+    src = tmp_path / "local"
+    dst = tmp_path / "drive"
+    _write(src / "a.png", "a")
+    dst.mkdir()
+    job = _tree_job(src, dst)
+
+    captured = {}
+
+    def fake_popen(cmd, stdout=None, stderr=None, **k):
+        captured["cmd"] = list(cmd)
+        raise OSError("stop here — we only want the command line")
+
+    monkeypatch.setattr(subprocess, "Popen", fake_popen)
+
+    du.sync_payload(job)  # returns an error (OSError), but captures cmd
+
+    assert "--info=progress2" in captured["cmd"]

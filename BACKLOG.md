@@ -518,3 +518,47 @@ branch. Do NOT fold into the v1.5.1 prepare-drive-mount-swap bugfix (that fix is
 done, ships as-is). Spec this separately (e.g. "drive-population-policy" or fold
 into efis-settings-management). Menu-bar-tool change -> MENUBAR_VERSION bump on
 release.
+
+## BUG: stall watchdog false-trips on rsync's scan/--delete phase (2026-09-30)
+
+SEVERITY: high-ish — makes ROUTINE incremental chart refreshes on a populated
+drive spuriously fail ("plates update failed", 120s stall), even on fast USB-3
+hardware and even with the v1.5.0 mount_msdos fix in place. Reformatting a drive
+only postpones it (a fresh populate has no tree to scan; the NEXT incremental
+refresh re-creates the tree and stalls again).
+
+ROOT CAUSE (confirmed in code, not hypothesis): sync_payload's stall watchdog
+measures liveness ONLY by growth of rsync's stdout log, which uses
+`--out-format=%n` — that emits ONE LINE PER FILE TRANSFERRED and NOTHING during
+rsync's initial file-list build + `--delete` reconciliation scan. On a large
+existing tree (EFIS_1 plates: ~21.8k files, ~2x with ._* sidecars = ~44k to
+stat), that silent scan easily exceeds STALL_TIMEOUT_SECONDS=120, so the
+watchdog aborts a HEALTHY rsync that is just scanning. It cannot distinguish
+"silently scanning a huge tree" from "genuinely wedged".
+
+EVIDENCE (2026-09-30, EFIS_1 incremental refresh):
+- Drive plates=21,803 vs source=21,923 -> only ~120 files to copy (tiny delta),
+  0 to delete. So NOT a heavy write; the stall was during the compare/scan.
+- Log: swapped to mount_msdos OK -> "Syncing plates..." 15:03:38 -> "plates sync
+  stalled: no progress for 120s" 15:05:38. nav (2 files) synced fine right after.
+  Teardown (v1.5.1) recovered cleanly. Marker NOT written -> plates left pending.
+- Hardware ruled out: device is SanDisk 3.2Gen1 (0781:5583), USB 5 Gb/s link
+  (an Ultra Fit) — modern/fast, not a slow old stick.
+- This is a DIFFERENT stall from the v1.5.0 FSKit write stall. mount_msdos does
+  not help because the phase that stalls produces no stdout regardless of driver.
+
+FIX OPTIONS (spec decision):
+1. PREFERRED: add `--info=progress2` (and/or periodic progress) to the rsync
+   invocation so rsync emits progress to stdout DURING scan + transfer; the log
+   grows, the watchdog sees liveness. Adjust the %n file-count parsing to still
+   work (or count from --itemize/stats). Simplest robust fix.
+2. Measure liveness by the rsync PROCESS advancing (CPU time / still alive /
+   IO), not stdout-byte growth, so a quiet scan is not mistaken for wedged.
+3. Scale/raise the timeout, or suppress the watchdog until first byte transfers.
+4. Reduce scan cost: prune/suppress ._* sidecars (they ~2x the tree rsync must
+   stat), and/or skip `--delete` reconciliation when the family marker is
+   present and count+size already match (only reconcile when needed).
+
+Recommend 1 (+ 4 as a perf win). Contained follow-up to chart-sync-stall-fix;
+menu-bar-tool change -> MENUBAR_VERSION bump. Until fixed, incremental refreshes
+of populated drives are unreliable; a from-scratch prepare works once.

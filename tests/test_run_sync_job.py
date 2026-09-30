@@ -254,40 +254,61 @@ def test_preflight_failure_when_mount_absent(env, monkeypatch, caplog):
 
 # --- stall detection: wedged-but-mounted drive ------------------------------
 # A drive that stops accepting writes but stays mounted is NOT caught by the
-# mount-removal watchdog. sync_payload must detect the stall (rsync alive, its
-# stdout log not growing) within STALL_TIMEOUT_SECONDS, terminate rsync, and
-# report a clear "stalled" error instead of hanging forever.
+# mount-removal watchdog. The stall watchdog uses TWO liveness signals and
+# aborts ONLY when BOTH go flat for STALL_TIMEOUT_SECONDS:
+#   (1) rsync stdout-log growth (--info=progress2 streams transfer progress),
+#   (2) rsync CPU-time advance (proves liveness during the silent file-list /
+#       --delete scan on a large existing tree).
+# The scan phase (no stdout growth) previously tripped a stdout-only watchdog
+# and falsely aborted a healthy incremental refresh; the CPU signal fixes that
+# while preserving detection of a genuine wedge (no output AND no CPU).
+
+
+class _FakeProc:
+    """A fake rsync process driven by the tests.
+
+    ``poll()`` returns None ``alive_polls`` times, then 0 (clean exit) unless
+    the watchdog terminated it first. ``pid`` is present so the CPU probe path
+    can be exercised/patched.
+    """
+
+    def __init__(self, alive_polls=1000, exit_code=0):
+        import subprocess as _sp
+        self._sp = _sp
+        self._terminated = False
+        self._alive_polls = alive_polls
+        self._exit_code = exit_code
+        self.returncode = None
+        self.pid = 4242
+
+    def poll(self):
+        if self._terminated:
+            return self.returncode
+        if self._alive_polls > 0:
+            self._alive_polls -= 1
+            return None
+        self.returncode = self._exit_code
+        return self.returncode
+
+    def wait(self, timeout=None):
+        if self._terminated or self.returncode is not None:
+            return self.returncode
+        raise self._sp.TimeoutExpired(cmd="rsync", timeout=timeout)
+
+    def terminate(self):
+        self._terminated = True
+        self.returncode = -15
+
+    def kill(self):
+        self._terminated = True
+        self.returncode = -9
 
 
 def test_sync_payload_stall_detected(env, monkeypatch, caplog):
+    """GENUINE WEDGE: no stdout growth AND flat CPU -> stalled and aborted."""
     import subprocess
 
     scanned = _job(env, "scanned")
-
-    # A fake rsync that never exits and never writes to its stdout file, so the
-    # stdout log size never grows -> the stall detector must trip.
-    class _FakeProc:
-        def __init__(self):
-            self._terminated = False
-            self.returncode = None
-
-        def poll(self):
-            return self.returncode
-
-        def wait(self, timeout=None):
-            if self._terminated:
-                self.returncode = -15
-                return self.returncode
-            # Simulate a live-but-idle process: honor the poll interval.
-            raise subprocess.TimeoutExpired(cmd="rsync", timeout=timeout)
-
-        def terminate(self):
-            self._terminated = True
-            self.returncode = -15
-
-        def kill(self):
-            self._terminated = True
-            self.returncode = -9
 
     def fake_popen(cmd, stdout=None, stderr=None, **k):
         # stdout/stderr are open file handles (temp files); leave them empty so
@@ -295,8 +316,12 @@ def test_sync_payload_stall_detected(env, monkeypatch, caplog):
         return _FakeProc()
 
     monkeypatch.setattr(subprocess, "Popen", fake_popen)
-    # Tiny timeout so the test is fast.
+    # Flat CPU: the probe always returns the same value -> never "advances".
+    monkeypatch.setattr(du, "_proc_cpu_seconds", lambda pid: 5.0)
+    # Tiny timeout + a fast monotonic clock so the flat window elapses on the
+    # next tick deterministically (no reliance on wall-clock spinning).
     monkeypatch.setattr(du, "STALL_TIMEOUT_SECONDS", 1)
+    _no_real_sleep(monkeypatch)
 
     with caplog.at_level(logging.ERROR, logger=du.logger.name):
         files, errors = du.sync_payload(scanned)
@@ -304,3 +329,91 @@ def test_sync_payload_stall_detected(env, monkeypatch, caplog):
     assert files == 0
     assert any("stalled" in e for e in errors), errors
     assert any("stalled" in rec.getMessage() for rec in caplog.records)
+
+
+def test_sync_payload_scan_phase_cpu_advancing_not_stalled(env, monkeypatch):
+    """SCAN PHASE (the bug being fixed): stdout is silent but CPU keeps
+    advancing -> NOT a stall; rsync is allowed to complete cleanly.
+
+    Simulates a large incremental refresh whose file-list build / --delete
+    reconciliation scan emits nothing on stdout for longer than the timeout.
+    """
+    import subprocess
+
+    scanned = _job(env, "scanned")
+
+    # rsync stays "alive" for several polls, longer than the (tiny) timeout
+    # would allow if only the silent stdout were considered, then exits 0.
+    def fake_popen(cmd, stdout=None, stderr=None, **k):
+        return _FakeProc(alive_polls=6, exit_code=0)
+
+    monkeypatch.setattr(subprocess, "Popen", fake_popen)
+
+    # CPU advances on every probe -> liveness even though stdout never grows.
+    cpu = {"t": 0.0}
+
+    def advancing_cpu(pid):
+        cpu["t"] += 1.0
+        return cpu["t"]
+
+    monkeypatch.setattr(du, "_proc_cpu_seconds", advancing_cpu)
+    # Never let the poll actually sleep a real second.
+    monkeypatch.setattr(du, "STALL_TIMEOUT_SECONDS", 1)
+    _no_real_sleep(monkeypatch)
+
+    files, errors = du.sync_payload(scanned)
+
+    # No stall error: the sync completed (exit 0) despite the silent scan.
+    assert not any("stalled" in e for e in errors), errors
+    assert files == 0  # empty stdout -> nothing counted, but importantly no stall
+
+
+def test_sync_payload_transfer_growing_stdout_not_stalled(env, monkeypatch, tmp_path):
+    """Normal transfer: stdout log grows -> not stalled even with flat CPU."""
+    import subprocess
+
+    scanned = _job(env, "scanned")
+
+    growing = {"n": 0}
+
+    def fake_popen(cmd, stdout=None, stderr=None, **k):
+        return _FakeProc(alive_polls=6, exit_code=0)
+
+    monkeypatch.setattr(subprocess, "Popen", fake_popen)
+    # Flat CPU probe: if the watchdog relied on CPU it would stall; it must not.
+    monkeypatch.setattr(du, "_proc_cpu_seconds", lambda pid: 5.0)
+
+    # os.path.getsize reports an ever-growing log -> stdout-growth liveness.
+    real_getsize = du.os.path.getsize
+
+    def growing_getsize(path):
+        growing["n"] += 100
+        return growing["n"]
+
+    monkeypatch.setattr(du.os.path, "getsize", growing_getsize)
+    monkeypatch.setattr(du, "STALL_TIMEOUT_SECONDS", 1)
+    _no_real_sleep(monkeypatch)
+
+    files, errors = du.sync_payload(scanned)
+
+    assert not any("stalled" in e for e in errors), errors
+
+
+def _no_real_sleep(monkeypatch):
+    """Make proc.wait(timeout=...) a no-op so the poll loop spins fast.
+
+    The loop calls proc.wait(timeout=1) each tick; our _FakeProc raises
+    TimeoutExpired for that. Combined with a monotonic clock that jumps past
+    the (patched, tiny) STALL_TIMEOUT_SECONDS, the loop advances quickly while
+    still exercising the real liveness decision.
+    """
+    # Advance monotonic by 2s per read so (now - last_progress) can exceed a
+    # 1s timeout on the very next flat tick.
+    clock = {"t": 0.0}
+    real_monotonic = du.time.monotonic
+
+    def fast_monotonic():
+        clock["t"] += 2.0
+        return clock["t"]
+
+    monkeypatch.setattr(du.time, "monotonic", fast_monotonic)

@@ -50,10 +50,14 @@ LEGACY_SYNC_MARKER_PATH = os.path.join(SYNC_STATE_DIR, ".sync_in_progress")
 # Stall detection for tree-sync (sync_payload). A drive that wedges mid-write
 # but stays MOUNTED — flaky USB link, controller hang under sustained writes,
 # or hypervisor USB contention — is not caught by the mount-removal watchdog.
-# If rsync stops making progress (its stdout log stops growing) for this many
-# seconds while still running, we abort the family and surface a clear error
-# rather than hanging indefinitely. Field-tuned: routine per-family syncs make
-# steady progress; a genuine stall parks at 0 B/s for far longer than this.
+# The watchdog declares a stall only when BOTH liveness signals go flat for
+# this many seconds while rsync is still running: (1) stdout-log growth (with
+# --info=progress2 rsync streams transfer progress) AND (2) rsync CPU advance
+# (proves the process is alive during the silent file-list/--delete scan on a
+# large existing tree, which emits nothing on stdout and previously tripped a
+# stdout-only watchdog). Only a genuine wedge — no output AND no CPU — aborts.
+# Field-tuned: routine per-family syncs advance at least one signal steadily; a
+# genuine stall parks at 0 B/s and 0% CPU for far longer than this.
 # Set to 0 to disable stall detection.
 STALL_TIMEOUT_SECONDS = 120
 
@@ -83,6 +87,80 @@ def _silent_unlink(path):
         os.unlink(path)
     except OSError:
         pass
+
+
+def _proc_cpu_seconds(pid):
+    """Return cumulative CPU time (user+system, seconds) for ``pid``.
+
+    This is the second liveness signal for the sync_payload stall watchdog: an
+    rsync that is walking a huge directory tree or reconciling ``--delete`` is
+    silent on stdout yet burns CPU, so a monotonically advancing CPU total
+    proves the process is alive even when the log is not growing.
+
+    psutil is not a dependency of this project, so we shell out to ``ps`` (the
+    portable macOS/BSD approach): ``ps -o time= -p <pid>`` prints the process's
+    cumulative CPU time as ``[[DD-]HH:]MM:SS[.ss]``. We parse that to seconds.
+    Returns ``None`` on any failure (dead process, parse error, ps missing); the
+    caller treats ``None`` as "no CPU reading this tick" and falls back to the
+    stdout-growth signal alone.
+    """
+    if pid is None:
+        return None
+    try:
+        out = subprocess.run(
+            ["ps", "-o", "time=", "-p", str(pid)],
+            capture_output=True, text=True, timeout=5,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return None
+    raw = (out.stdout or "").strip()
+    if not raw:
+        return None
+    return _parse_ps_time(raw)
+
+
+def _is_progress2_noise(line):
+    """True if a stdout fragment is an ``--info=progress2`` progress/summary line.
+
+    Such lines must NOT be counted as transferred filenames. Empty fragments
+    (from carriage-return splitting) also return True. rsync's progress2 lines
+    contain a percent sign and/or the ``to-chk=``/``ir-chk=`` and ``xfr#``
+    markers; the trailing summary lines start with ``sent``/``total size`` and
+    report byte counts and speedup. Filenames on an EFIS chart drive never
+    contain any of these tokens, so token presence is a safe discriminator.
+    """
+    line = (line or "").strip()
+    if not line:
+        return True
+    if "%" in line:
+        return True
+    for token in ("to-chk=", "ir-chk=", "xfr#", "speedup is ", "bytes/sec"):
+        if token in line:
+            return True
+    lowered = line.lower()
+    if lowered.startswith(("sent ", "total size is ", "total: ")):
+        return True
+    return False
+
+
+def _parse_ps_time(raw):
+    """Parse a ``ps -o time`` value (``[[DD-]HH:]MM:SS[.ss]``) into seconds.
+
+    Returns ``None`` if the string cannot be parsed.
+    """
+    try:
+        days = 0
+        if "-" in raw:
+            day_part, raw = raw.split("-", 1)
+            days = int(day_part)
+        parts = raw.split(":")
+        parts = [float(p) for p in parts]
+        seconds = 0.0
+        for p in parts:
+            seconds = seconds * 60 + p
+        return days * 86400 + seconds
+    except (ValueError, TypeError):
+        return None
 
 
 # Current durable sync-state schema version (v2, id-keyed map — Req 10.5).
@@ -767,6 +845,12 @@ def sync_payload(
       - ``--size-only``      compare by size only; combined with...
       - ``--modify-window=2`` ...a 2-second mtime tolerance to absorb FAT/exFAT
                              timestamp granularity (Req 4.1).
+      - ``--info=progress2`` emit continuous whole-transfer progress to stdout so
+                             the log keeps growing during the transfer phase.
+                             This is one of the two liveness signals the stall
+                             watchdog watches (see below). Its progress/summary
+                             lines are NOT filenames, so the ``%n`` file-count
+                             parser filters them out.
       - one ``--exclude`` per entry in ``job.excludes`` (common metadata excludes
         plus the family's commit marker, which is written separately as the
         final atomic step).
@@ -787,17 +871,18 @@ def sync_payload(
             True the transfer is terminated and reported as aborted.
         stall_hook: Optional diagnostic callback invoked exactly once, at the
             instant the no-progress watchdog latches a stall, with a dict
-            describing the onset. This surfaces the watchdog's EXISTING liveness
-            timing (log-byte growth) for the FSKit root-cause harness — it does
-            NOT add a second detector or change the abort behaviour. The dict
-            carries: ``family`` (job name), ``onset_wall`` (ISO-8601 UTC wall
-            clock at onset), ``onset_monotonic`` (the ``time.monotonic()`` value),
-            ``last_progress_monotonic`` (monotonic time of the last observed log
-            growth), ``no_progress_seconds`` (elapsed since last growth),
-            ``progress_bytes`` (rsync stdout-log size at onset, the liveness
-            proxy) and ``timeout_seconds`` (the configured threshold). Any
-            exception raised by the hook is swallowed so diagnostics can never
-            disturb the sync.
+            describing the onset. This surfaces the watchdog's liveness timing
+            for the FSKit root-cause harness — it does NOT change the abort
+            behaviour. The dict carries: ``family`` (job name), ``onset_wall``
+            (ISO-8601 UTC wall clock at onset), ``onset_monotonic`` (the
+            ``time.monotonic()`` value), ``last_progress_monotonic`` (monotonic
+            time of the last observed liveness — stdout growth OR CPU advance),
+            ``no_progress_seconds`` (elapsed since last liveness),
+            ``progress_bytes`` (rsync stdout-log size at onset), ``cpu_seconds``
+            (last observed cumulative rsync CPU time, or ``None`` if unavailable)
+            and ``timeout_seconds`` (the configured threshold). Any exception
+            raised by the hook is swallowed so diagnostics can never disturb the
+            sync.
 
     Returns:
         Tuple ``(files_updated, errors)`` where ``files_updated`` is the count of
@@ -824,7 +909,8 @@ def sync_payload(
     metadata_used = [p for p in job.excludes if p in metadata]
 
     cmd = ["rsync", "-r", "--delete", "--delete-excluded",
-           "--size-only", "--modify-window=2", "--out-format=%n"]
+           "--size-only", "--modify-window=2",
+           "--info=progress2", "--out-format=%n"]
     # Protect structural excludes from --delete-excluded.
     for pattern in structural:
         cmd += ["--filter", f"P {pattern}"]
@@ -874,15 +960,28 @@ def sync_payload(
     #   1. is_aborted() — mount removed / system sleeping (watchdog).
     #   2. Stall detection — no progress for STALL_TIMEOUT_SECONDS. A drive that
     #      wedges mid-write but stays mounted (flaky USB link, controller hang,
-    #      hypervisor USB contention) is NOT caught by the mount watchdog, so we
-    #      watch the stdout log's byte-size as a liveness proxy: rsync appends a
-    #      line per transferred file, so a growing log means real progress. If it
-    #      stops growing for the timeout window while rsync is still running, we
-    #      treat the drive as stalled, abort, and surface a clear error instead
-    #      of hanging forever.
+    #      hypervisor USB contention) is NOT caught by the mount watchdog.
+    #
+    #      Liveness is measured by TWO independent signals, and we abort ONLY
+    #      when BOTH have been flat for the timeout window:
+    #        (a) stdout-log GROWTH — with --info=progress2 rsync streams
+    #            continuous transfer progress (plus a line per file via %n), so a
+    #            growing log means the transfer phase is making progress; and
+    #        (b) rsync CPU ADVANCE — during the file-list build and --delete
+    #            reconciliation scan rsync is SILENT on stdout (it emits nothing
+    #            until the first byte transfers) yet burns CPU walking the tree.
+    #            On a large existing tree (~22k plates) that silent scan can run
+    #            well past the timeout, so the byte-size signal alone falsely
+    #            aborts a healthy rsync. Polling cumulative CPU time proves the
+    #            process is alive during the scan.
+    #      Either signal advancing resets the clock. Only a genuine wedge — no
+    #      log growth AND no CPU advance for the full window (rsync blocked in
+    #      write() to a dead filesystem, 0% CPU, 0 progress) — is treated as a
+    #      stall: we abort and surface a clear error instead of hanging forever.
     aborted = False
     stalled = False
     last_size = -1
+    last_cpu = _proc_cpu_seconds(proc.pid)
     last_progress = time.monotonic()
     while proc.poll() is None:
         if is_aborted is not None and is_aborted():
@@ -893,17 +992,26 @@ def sync_payload(
             cur_size = os.path.getsize(out_path)
         except OSError:
             cur_size = last_size
+        cur_cpu = _proc_cpu_seconds(proc.pid)
         now = time.monotonic()
-        if cur_size != last_size:
+        stdout_grew = cur_size != last_size
+        # A CPU reading may be unavailable (None) on any tick; only count it as
+        # liveness when we have a reading that strictly exceeds the last one.
+        cpu_advanced = (
+            cur_cpu is not None and last_cpu is not None and cur_cpu > last_cpu
+        )
+        if stdout_grew or cpu_advanced:
+            # At least one liveness signal advanced -> the process is alive.
             last_size = cur_size
+            if cur_cpu is not None:
+                last_cpu = cur_cpu
             last_progress = now
         elif STALL_TIMEOUT_SECONDS and (now - last_progress) >= STALL_TIMEOUT_SECONDS:
             stalled = True
-            # Surface the watchdog's own onset timing + progress-at-onset to any
-            # diagnostic hook BEFORE terminating rsync (Req 2.1). This reuses the
-            # existing liveness state (last_size / last_progress); it adds no new
-            # detector. Diagnostics must never disturb the sync, so the hook is
-            # best-effort and its exceptions are swallowed.
+            # Surface the watchdog's onset timing + liveness state to any
+            # diagnostic hook BEFORE terminating rsync (Req 2.1). Diagnostics
+            # must never disturb the sync, so the hook is best-effort and its
+            # exceptions are swallowed.
             if stall_hook is not None:
                 try:
                     stall_hook({
@@ -913,6 +1021,7 @@ def sync_payload(
                         "last_progress_monotonic": last_progress,
                         "no_progress_seconds": now - last_progress,
                         "progress_bytes": last_size if last_size >= 0 else 0,
+                        "cpu_seconds": last_cpu,
                         "timeout_seconds": STALL_TIMEOUT_SECONDS,
                     })
                 except Exception:  # pragma: no cover - diagnostics are best-effort
@@ -952,12 +1061,24 @@ def sync_payload(
         logger.error(msg)
         return 0, errors
 
-    # Count transferred files from --out-format lines. rsync emits one line per
-    # transferred item; directory entries end in a separator and are ignored.
+    # Count transferred files from --out-format=%n lines. rsync emits one %n
+    # line per transferred item; directory entries end in a separator and are
+    # ignored. --info=progress2 ALSO writes progress and summary lines to the
+    # same stdout stream, so we must filter those out or they inflate the count:
+    #   - progress lines carry a percentage ("... 43% ...", "to-chk=812/22143",
+    #     "xfr#120") and are rewritten in place using carriage returns, so a
+    #     single physical line can hold several \r-separated progress updates;
+    #   - the trailing summary lines ("sent X bytes  received Y bytes ...",
+    #     "total size is ...  speedup is ...") contain digits+units, not paths.
+    # We split on both newlines and carriage returns (to break up in-place
+    # progress rewrites) and skip any fragment that looks like progress/summary
+    # rather than a filename.
     files_updated = 0
     if stdout:
-        for line in stdout.splitlines():
-            name = line.strip()
+        for raw in stdout.replace("\r", "\n").splitlines():
+            name = raw.strip()
+            if _is_progress2_noise(name):
+                continue
             if name and not name.endswith("/"):
                 files_updated += 1
 
