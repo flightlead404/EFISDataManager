@@ -1544,6 +1544,10 @@ class EFISDataManagerApp(rumps.App):
             if result["success"]:
                 self._notify("Drive Prepared", result["message"])
                 self._set_status("Idle")
+                # See _do_adopt_drive: reconcile the connected-status UI against
+                # the now-mounted managed drive (the swap resume() did not fire
+                # on_efis_mount).
+                self._reconcile_drive_status()
             else:
                 self._notify("Prepare Drive Failed", result["message"][:100])
                 self._set_status("Prepare failed")
@@ -1587,6 +1591,11 @@ class EFISDataManagerApp(rumps.App):
             if result["success"]:
                 self._notify("Drive Adopted", result["message"])
                 self._set_status("Idle")
+                # The managed mount was restored by the swap teardown without an
+                # on_efis_mount callback (and the mount handler is gated while
+                # provisioning), so the connected-status UI was never set.
+                # Reconcile against what is actually mounted.
+                self._reconcile_drive_status()
             else:
                 self._notify("Adopt Drive Failed", result["message"][:100])
                 self._set_status("Adopt failed")
@@ -1751,6 +1760,32 @@ class EFISDataManagerApp(rumps.App):
             self._update_title(status_text)
 
         NSOperationQueue.mainQueue().addOperationWithBlock_(_do_update)
+
+    def _reconcile_drive_status(self):
+        """Set the drive-connected UI to match what is ACTUALLY mounted.
+
+        The ``_drive_connected`` flag (and the Eject/Verify enablement) is
+        otherwise only edge-triggered by the auto mount/eject callbacks. Those
+        callbacks are deliberately bypassed in two situations, which left the UI
+        stale ("Drive: Not connected", Eject/Verify greyed out) even though a
+        managed drive was mounted:
+          * a Prepare/Adopt owns the drive, so ``_on_efis_drive_mounted``
+            returns early at the ``_is_provisioning`` guard (never setting
+            connected status); and
+          * the mount-swap ``resume()`` folds the restored FSKit mount into the
+            monitor's baseline WITHOUT firing ``on_efis_mount``.
+        So after a provisioning operation completes we reconcile against ground
+        truth: scan ``/Volumes/`` for a mounted managed drive and assert the UI.
+        Idempotent and safe to call from a worker thread (``_set_drive_status``
+        marshals the actual menu mutation onto the main queue).
+        """
+        from efis_data_manager.usb_monitor import find_mounted_managed_drive
+
+        mount_point = find_mounted_managed_drive()
+        if mount_point is not None:
+            self._set_drive_status(f"Connected: {mount_point}")
+        else:
+            self._set_drive_status("Not connected")
 
     def _set_drive_status(self, drive_text: str):
         """Update drive connection status."""

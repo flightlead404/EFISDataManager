@@ -617,8 +617,8 @@ tool (`archiver.py`, `efis_settings.py`) and the dashboard (`dashboard/app.py`,
 `settings.html`); per the versioning policy it bumps both `MENUBAR_VERSION` (the
 archiver changed) and `DASHBOARD_VERSION` (the preview `checksum_note` removal).
 
-- [ ] 21. Remove the GRT-checksum verification machinery (Req 1.5, 2 revised)
-  - [ ] 21.1 Strip `ChecksumStatus` / `verify_checksum` and simplify `Settings_Selector`
+- [x] 21. Remove the GRT-checksum verification machinery (Req 1.5, 2 revised)
+  - [x] 21.1 Strip `ChecksumStatus` / `verify_checksum` and simplify `Settings_Selector`
     - In `src/efis_data_manager/efis_settings.py`, DELETE the `ChecksumStatus`
       enum and the `verify_checksum` function. Remove the `checksize`/`checksum`
       fields from `ParsedBackup` and stop assigning them in `Settings_Parser.parse`
@@ -633,14 +633,14 @@ archiver changed) and `DASHBOARD_VERSION` (the preview `checksum_note` removal).
       (verified by task 4.2's existing hash-stability test).
     - _Requirements: 1.4, 1.5, 2.1, 2.2, 2.3_
 
-  - [ ] 21.2 Remove `checksum_note` from the preview and dashboard surface
+  - [x] 21.2 Remove `checksum_note` from the preview and dashboard surface
     - Drop `checksum_note` from `ImportPreview` (efis_settings.py) and from the
       `GET /api/settings-import/preview` JSON in `dashboard/app.py`; remove any
       `checksum_note` rendering in `dashboard/templates/settings.html`. No user-
       facing integrity note is shown (none was ever meaningful).
     - _Requirements: 2.3_
 
-  - [ ]* 21.3 Revise Property 5 and Property 6 tests; delete Property 7 test
+  - [x]* 21.3 Revise Property 5 and Property 6 tests; delete Property 7 test
     - REVISE the Property 5 test (task 1.6) to assert `UPDATE=` extraction and
       that `CHECKSIZE=`/`CHECKSUM=`/`UPDATE=` are EXCLUDED from `content_hash`
       (no longer that `checksize`/`checksum` fields are populated). REVISE the
@@ -652,8 +652,8 @@ archiver changed) and `DASHBOARD_VERSION` (the preview `checksum_note` removal).
       and route tests) to the simplified shapes.
     - _Requirements: 1.4, 1.5, 2.1, 2.2, 2.3_
 
-- [ ] 22. Rewrite the Archiver to content-aware per-family archive-on-change (Req 3 revised)
-  - [ ] 22.1 Add the per-family current-slot + most-recent-archive helpers
+- [x] 22. Rewrite the Archiver to content-aware per-family archive-on-change (Req 3 revised)
+  - [x] 22.1 Add the per-family current-slot + most-recent-archive helpers
     - In `archiver.py` (or small helpers reusing `efis_settings.py`), add logic
       to, for a family in {Settings, WP, Plan}: locate the drive `<family>.bak`/
       `<family>.dat`, parse via `Settings_Parser`, and pick the current slot via
@@ -662,7 +662,7 @@ archiver changed) and `DASHBOARD_VERSION` (the preview `checksum_note` removal).
       Archive_Date (reuse `parse_archive_date`; never mtime/UPDATE — Req 3.5).
     - _Requirements: 3.1, 3.5_
 
-  - [ ] 22.2 Replace the datestamp copy loop with content-aware archive-on-change
+  - [x] 22.2 Replace the datestamp copy loop with content-aware archive-on-change
     - In `archive_efis_drive`, replace the current `_copy_with_datestamp` loop
       over the 8 `.bak`/`.dat` names with the per-family algorithm: for each of
       Settings/WP/Plan, archive the current slot as `<family>-<today>.<ext>` IFF
@@ -674,7 +674,7 @@ archiver changed) and `DASHBOARD_VERSION` (the preview `checksum_note` removal).
       skip path in `_copy_with_datestamp` if nothing else uses it.
     - _Requirements: 3.1, 3.2, 3.3, 3.4, 3.6, 3.7, 3.8_
 
-  - [ ]* 22.3 Revise the archiver integration test for archive-on-change
+  - [x]* 22.3 Revise the archiver integration test for archive-on-change
     - REVISE the task 7.2 archiver test: assert (a) an unchanged family mounted
       again (same content, later date) is NOT re-archived; (b) a changed family
       IS archived under the new date; (c) an A→B→A sequence yields three dated
@@ -684,13 +684,13 @@ archiver changed) and `DASHBOARD_VERSION` (the preview `checksum_note` removal).
       unchanged (Req 3.2); (g) the current slot chosen is the higher-UPDATE one.
     - _Requirements: 3.1, 3.2, 3.3, 3.4, 3.6, 3.7, 3.8_
 
-- [ ] 23. Checkpoint - archiving + checksum removal
+- [x] 23. Checkpoint - archiving + checksum removal
   - Run the full suite; ensure green. Confirm no remaining references to
     `verify_checksum`/`ChecksumStatus`/`checksum_note`/`ParsedBackup.checksize`/
     `.checksum`, and that SHA-256 sync-integrity in `drive_updater.py`/
     `archiver.py` is untouched. Ask the user if questions arise.
 
-- [ ] 24. Version bump + release
+- [x] 24. Version bump + release
   - Per the versioning policy: bump `__version__` + `pyproject.toml` to the new
     release version and tag; bump BOTH `MENUBAR_VERSION` (archiver changed) and
     `DASHBOARD_VERSION` (preview surface changed). Only on explicit user

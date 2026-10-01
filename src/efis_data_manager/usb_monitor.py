@@ -57,6 +57,27 @@ def is_managed_drive(mount_point: str) -> bool:
     return isinstance(data, dict) and data.get("kind") == IDENTITY_KIND
 
 
+def find_mounted_managed_drive(volumes_dir: str = "/Volumes") -> Optional[str]:
+    """Return the mount path of a currently-mounted MANAGED EFIS drive, or None.
+
+    Pure, side-effect-free scan of ``volumes_dir`` for the first entry that
+    passes :func:`is_managed_drive` (identity-only detection). Used to reconcile
+    the menu-bar "Drive: connected" UI against ground truth after operations
+    (prepare/adopt, mount-swap resume) that intentionally bypass the auto
+    mount/eject callbacks. Returns None when nothing managed is mounted or the
+    directory cannot be listed.
+    """
+    try:
+        names = os.listdir(volumes_dir)
+    except OSError:
+        return None
+    for name in names:
+        path = os.path.join(volumes_dir, name)
+        if is_managed_drive(path):
+            return path
+    return None
+
+
 def is_adoption_candidate(mount_point: str) -> bool:
     """Return True if the drive looks like a previously-used GRT chart drive.
 
