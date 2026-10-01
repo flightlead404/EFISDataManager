@@ -1701,13 +1701,12 @@ class EFISDataManagerApp(rumps.App):
                 ok="OK",
             )
             return
-        # Already newest-first.
+        # Already newest-first. Shown in a non-modal, resizable, scrollable
+        # window (NOT rumps.alert) so a long history cannot grow a modal dialog
+        # off-screen with no reachable close button.
+        from efis_data_manager.text_list_window import show_text_list
         body = "\n\n".join(format_entry_line(e) for e in entries)
-        rumps.alert(
-            title=f"Recent Notifications ({len(entries)})",
-            message=body,
-            ok="OK",
-        )
+        show_text_list(f"Recent Notifications ({len(entries)})", body)
 
     @rumps.clicked("Recent Errors...")
     def show_recent_errors(self, _):
@@ -1719,13 +1718,11 @@ class EFISDataManagerApp(rumps.App):
                 ok="OK",
             )
             return
-        # Show most recent first
+        # Show most recent first, in the same non-modal scrollable window as
+        # Recent Notifications (avoids the off-screen modal-alert bug).
+        from efis_data_manager.text_list_window import show_text_list
         body = "\n\n".join(reversed(errors))
-        rumps.alert(
-            title=f"Recent Errors ({len(errors)})",
-            message=body,
-            ok="OK",
-        )
+        show_text_list(f"Recent Errors ({len(errors)})", body)
 
     @rumps.clicked("About")
     def about(self, _):

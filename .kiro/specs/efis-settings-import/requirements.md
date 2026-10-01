@@ -56,17 +56,30 @@ the power-map SIDs).
   falls back to the available identity SIDs, and WHERE no identity SID is
   readable the Source_Key is undetermined.
 - **Content_Hash**: A hash computed over the parsed SID/value content of a
-  Settings_Backup, used as a secondary signal to detect whether a backup's
-  content differs from the last imported content.
+  GRT settings-format file (any Archived_Settings_Family — Settings, WP, or
+  Plan), EXCLUDING the volatile keys `UPDATE=`, `CHECKSIZE=`, and `CHECKSUM=`
+  so the hash tracks configuration content and not incidental churn (an
+  UPDATE-only or checksum-only change does not alter the Content_Hash). Used
+  both as a secondary signal to detect whether a backup's content differs from
+  the last imported content, and by the Archiver to decide whether a family's
+  current content differs from its Most_Recent_Archive (Requirement 3).
+- **Archived_Settings_Family**: A GRT settings-format family the Archiver keeps
+  a change-history for: Settings, WP (`CHECKTYPE=UWP`, user waypoints), and Plan
+  (`CHECKTYPE=PLAN`, flight plan/route). Each family may present up to two slots
+  (`.bak` / `.dat`); the current slot is the higher UPDATE_Value (Requirement 2
+  selection). The State family is explicitly NOT an Archived_Settings_Family
+  (Requirement 3.8).
+- **Most_Recent_Archive**: For a given Archived_Settings_Family, the archived
+  snapshot with the latest Archive_Date (and, within that date, the
+  latest-written). Recency is determined only by Archive_Date (our observation
+  order), never by UPDATE_Value or EFIS-written FAT modification times.
 - **Import_Marker**: A per-Source_Key record persisted after a successful
   import, storing that source's last-imported UPDATE_Value, Content_Hash, and
   import timestamp. Import_Markers are tracked per Source_Key, not globally.
-- **Checksum_Lines**: The `CHECKSIZE=` and `CHECKSUM=` lines a Settings_Backup
-  carries for integrity verification.
 - **Settings_Parser**: The component that reads a Settings_Backup file and
   produces a map of SID → value.
 - **Settings_Selector**: The component that, given a `.bak` and/or `.dat` pair,
-  chooses the current (newer, integrity-verified) Settings_Backup.
+  chooses the current (higher-UPDATE_Value) Settings_Backup.
 - **Settings_Mapper**: The component that translates parsed SID values into
   dashboard threshold keys, applying units, rounding, and disabled-value rules.
 - **Import_Workflow**: The user-facing flow that previews and applies imported
@@ -126,8 +139,11 @@ hand-entering them.
    Settings_Mapper SHALL ignore the unrecognized SID.
 4. THE Settings_Parser SHALL read the `UPDATE=` line as the UPDATE_Value of the
    file.
-5. THE Settings_Parser SHALL read the `CHECKSIZE=` and `CHECKSUM=` lines as the
-   Checksum_Lines of the file.
+5. THE Settings_Parser SHALL recognize the `CHECKSIZE=` and `CHECKSUM=` lines
+   as volatile, non-configuration lines and SHALL exclude them from the
+   Content_Hash. (The system does not attempt to verify these GRT checksums:
+   the algorithm is undocumented and this EFIS line is no longer developed, so
+   no integrity claim is made from them.)
 6. IF a Settings_Backup file cannot be read or contains no valid `KEY=VALUE`
    lines, THEN THE Settings_Parser SHALL report a parse failure and SHALL leave
    the source file unmodified.
@@ -144,29 +160,56 @@ so that the imported limits reflect the aircraft's current configuration.
    UPDATE_Value as the current Settings_Backup.
 2. WHEN only one of the `.bak` or `.dat` Settings_Backup is present, THE
    Settings_Selector SHALL select that file as the current Settings_Backup.
-3. WHEN evaluating a Settings_Backup for selection, THE Settings_Selector SHALL
-   verify the file against its Checksum_Lines.
-4. IF a candidate Settings_Backup fails Checksum_Lines verification AND another
-   candidate passes, THEN THE Settings_Selector SHALL select the candidate that
-   passes verification.
-5. IF all candidate Settings_Backup files fail Checksum_Lines verification,
-   THEN THE Settings_Selector SHALL report a verification failure and SHALL NOT
-   select a file for import.
+3. WHEN both candidates are present and neither carries a readable UPDATE_Value,
+   or their UPDATE_Values are equal, THE Settings_Selector SHALL apply a
+   deterministic tiebreak (prefer the `.dat` slot, then the lexically-first
+   path) so selection is stable.
 
-### Requirement 3: Archive both .bak and .dat settings files
+### Requirement 3: Archive settings families as a record of changes
 
-**User Story:** As a pilot, I want every settings backup snapshot preserved in
-the archive, so that I keep a dated history of the aircraft's configuration.
+**User Story:** As a pilot, I want the app to keep a chronological record of my
+settings as they change over time, so that I have a dated history of the
+aircraft's configuration without accumulating redundant copies of settings that
+did not change.
 
 #### Acceptance Criteria
 
-1. WHEN the Archiver processes the EFIS USB drive, THE Archiver SHALL copy each
-   present `Settings.dat`, `State.dat`, `Plan.dat`, and `WP.dat` file to the
-   date-stamped Settings archive in addition to the existing `.bak` files.
-2. THE Archiver SHALL copy each Settings_Backup file without deleting or
-   modifying the source file on the USB drive.
-3. WHEN a date-stamped copy of a Settings_Backup with identical size already
-   exists in the archive, THE Archiver SHALL skip re-copying that file.
+1. WHEN the Archiver processes the EFIS USB drive, THEN for each
+   Archived_Settings_Family present on the drive (Settings, WP, Plan), THE
+   Archiver SHALL select the current slot of that family — the file with the
+   higher UPDATE_Value when both a `.bak` and `.dat` slot are present, otherwise
+   the single present slot — using the same current-slot selection as
+   Requirement 2, and SHALL consider only that current slot for archiving.
+2. THE Archiver SHALL NOT delete or modify any source settings file on the USB
+   drive.
+3. WHEN the current slot of an Archived_Settings_Family has a Content_Hash that
+   differs from the Content_Hash of that family's Most_Recent_Archive, OR WHEN
+   that family has no existing archive, THEN THE Archiver SHALL copy the current
+   slot to the Settings archive as a new snapshot date-stamped with the current
+   date (Archive_Date).
+4. WHEN the current slot of an Archived_Settings_Family has a Content_Hash equal
+   to the Content_Hash of that family's Most_Recent_Archive, THEN THE Archiver
+   SHALL skip archiving that family (no new snapshot is written).
+5. WHEN determining a family's Most_Recent_Archive, THE Archiver SHALL order
+   existing archives by Archive_Date and SHALL NOT use UPDATE_Value or
+   EFIS-written file modification times for recency (consistent with
+   Requirement 17); within a single Archive_Date the latest-written snapshot is
+   the most recent.
+6. WHERE a family's current-slot content is unchanged relative to an older
+   archive but DIFFERS from the Most_Recent_Archive (an intervening change was
+   recorded), THE Archiver SHALL archive it as a new snapshot. (A change
+   sequence A→B→A yields three chronological snapshots — A, B, A — the first and
+   third byte-identical but distinct in time.)
+7. WHERE the Archiver would write a new snapshot for a family but a snapshot
+   with the current Archive_Date already exists for that family, THE Archiver
+   SHALL write to a non-destructive sequence-suffixed name
+   (`<Family>-YYYY-MM-DD-N.<ext>`, N starting at 2; the first same-date snapshot
+   keeps the un-suffixed `<Family>-YYYY-MM-DD.<ext>` name) and SHALL NOT
+   overwrite or discard the existing same-date snapshot.
+8. THE Archiver SHALL NOT archive the State family (`State.bak` / `State.dat`).
+   State is an ephemeral runtime snapshot (position, fuel, baro, selected
+   frequencies) that changes every power cycle and carries no configuration
+   history value.
 
 ### Requirement 4: Map engine limit SIDs to dashboard thresholds
 
@@ -310,9 +353,9 @@ bad backup file never crashes the app or corrupts my settings.
 
 1. THE Settings_Parser SHALL treat every Settings_Backup as read-only and SHALL
    NOT modify the source file.
-2. WHEN a Settings_Backup contains malformed lines, unknown SIDs, missing
-   Checksum_Lines, or a missing UPDATE_Value, THE Settings_Parser SHALL handle
-   the condition and SHALL continue without terminating abnormally.
+2. WHEN a Settings_Backup contains malformed lines, unknown SIDs, or a missing
+   UPDATE_Value, THE Settings_Parser SHALL handle the condition and SHALL
+   continue without terminating abnormally.
 3. IF an import cannot be completed, THEN THE Import_Workflow SHALL report the
    reason and SHALL leave all Dashboard_Thresholds unchanged.
 
@@ -524,7 +567,7 @@ imported over a newer one.
    ordering backups, because they are unreliable FAT timestamps.
 5. WHEN the Import_Workflow compares the current backup for a Source_Key against
    that Source_Key's last-imported backup, THE Import_Workflow SHALL detect a
-   content change using the Content_Hash (equivalently the GRT CHECKSUM), and
+   content change using the Content_Hash, and
    SHALL treat identical Content_Hash as "nothing new to import" regardless of
    Archive_Date, raising no new-backup prompt and causing no regression. This
    refines Requirement 14 so that regression-proof detection is based on

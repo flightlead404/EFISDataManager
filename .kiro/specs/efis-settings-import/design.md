@@ -67,15 +67,17 @@ increments on a genuine save), and EFIS-written FAT modification times are junk,
 so the latest Archive_Date is the only reliable "which capture is newest" signal
 across dates. `UPDATE=` is used **only** to disambiguate the `.bak`/`.dat` pair
 *within the same date* (Requirement 2.1, 17.3). Whether a newest-dated backup is
-actually worth offering is decided by **Content_Hash** (equivalently GRT's
-`CHECKSUM`, which the same data proved is 1:1 with content): an identical hash to
+actually worth offering is decided by **Content_Hash** (which excludes the
+volatile `UPDATE=`/`CHECKSIZE=`/`CHECKSUM=` lines): an identical hash to
 the last-imported marker means "nothing new," regardless of date or `UPDATE=`
 (Requirement 17.5, refining Requirement 14).
 
 The design adds one new module, `src/efis_data_manager/efis_settings.py`,
 housing the parsing/selection/mapping/orchestration components, plus:
 
-- A small extension to `archiver.py` to also archive `.dat` files (Requirement 3).
+- A revised archiver dedup in `archiver.py`: a content-aware, per-family
+  archive-on-change for Settings/WP/Plan; State is no longer archived
+  (Requirement 3).
 - Three new entries in `analysis.py` `DEFAULT_THRESHOLDS` and new alert paths in
   `detect_episodes()` / `_check_alerts()` (Requirements 5, 11, 12).
 - New dashboard routes and a Settings-page import UI (preview + double-confirm)
@@ -99,15 +101,12 @@ to the `percent-power` spec).
   documentation. These SID numbers are treated as the authoritative contract
   from the requirements; the mapping table is declarative and easy to correct if
   a SID number is later found wrong.
-- **Checksum algorithm — UNKNOWN.** GRT's exact `CHECKSIZE=` / `CHECKSUM=`
-  algorithm is **not documented to us**. This design does **not** invent a
-  formula and present it as fact. Instead, checksum verification is **best
-  effort** (see "Checksum verification" below): the parser always reads the
-  Checksum_Lines, but the selector only *uses* them when a verifier is known to
-  be correct. Absent a confirmed algorithm, selection falls back to the
-  `UPDATE=` value and the system logs that the checksum could not be verified.
-  The exact algorithm should be confirmed with GRT before enabling strict
-  verification.
+- **GRT checksum — NOT used.** GRT's exact `CHECKSIZE=` / `CHECKSUM=` algorithm
+  is undocumented and this EFIS line is no longer developed, so the design makes
+  **no integrity claim** from these lines and contains no checksum verifier. The
+  parser recognizes the two keys only to exclude them (with `UPDATE=`) from the
+  Content_Hash. Selection is by `UPDATE=` (within a date) + Archive_Date (across
+  dates); change detection is by Content_Hash.
 - **`UPDATE=` is NOT globally monotonic — validated 2026-09-12 (real HXr).**
   An earlier draft assumed `UPDATE=` rose over time and could order backups
   across dates. Real HXr captures disproved this: across a run of no-change
@@ -115,9 +114,7 @@ to the `percent-power` spec).
   (`1 → 2`) when a genuine settings change was saved — so it is *not* a
   cross-date "when" signal. The same data confirmed EFIS-written file
   modification times are unreliable FAT timestamps (they do not track capture
-  order), and that the GRT `CHECKSUM` line is **1:1 with the computed
-  Content_Hash** (equal content ⇒ equal `CHECKSUM`, changed content ⇒ changed
-  `CHECKSUM`). The consequences, threaded through the design below (Requirement
+  order). The consequences, threaded through the design below (Requirement
   17): cross-capture ordering uses **Archive_Date** as the primary key;
   `UPDATE=` disambiguates only the same-date `.bak`/`.dat` pair; and
   "is there anything new to import" is answered by **Content_Hash / `CHECKSUM`
@@ -128,15 +125,16 @@ to the `percent-power` spec).
 
 The feature is a read → select → map → preview → apply pipeline. Detection of a
 "new backup" is driven from the dashboard (where thresholds live and where a
-table + modal UI can be rendered); the menu-bar Archiver's only new
-responsibility is to also copy `.dat` files so the pair is present in the
-archive.
+table + modal UI can be rendered); the menu-bar Archiver's revised
+responsibility is a content-aware, per-family archive-on-change (Settings/WP/
+Plan) so the archive is a de-duplicated chronological record and both slots of
+the current pair are available.
 
 ```mermaid
 flowchart TD
     subgraph MenuBar["Menu-bar app (archiver.py)"]
         USB[EFIS USB drive] -->|drive insert| ARCH[Archiver]
-        ARCH -->|copy .bak AND .dat, read-only| ARCHIVE[(Date-stamped\nSettings archive)]
+        ARCH -->|archive-on-change: Settings/WP/Plan,\nread-only| ARCHIVE[(Date-stamped\nSettings archive)]
     end
 
     subgraph Dashboard["Dashboard (Flask)"]
@@ -158,7 +156,7 @@ flowchart TD
         DATE --> SEL[Settings_Selector\nsame-date .bak/.dat pair]
         SEL --> P1[Settings_Parser .bak]
         SEL --> P2[Settings_Parser .dat]
-        SEL -->|higher UPDATE= within date,\nchecksum best-effort\nR17.3| CUR[Current backup map]
+        SEL -->|higher UPDATE= within date\nR17.3| CUR[Current backup map]
         CUR --> MAP[Settings_Mapper]
         MAP -->|proposed thresholds\n+ num_cylinders| PREVIEW[Preview diff table\nper-row checkboxes\nVne = 1 row R16]
         PREVIEW -->|tier prompt CHT/EGT/Oil\n+ caution<redline guard\nover selected subset R16.6| MODAL[Confirm modal]
@@ -213,8 +211,6 @@ class ParsedBackup:
     path: str
     sids: dict[str, str]          # SID -> raw value, both strings (Req 1.1)
     update_value: Optional[int]   # from UPDATE=  (Req 1.4)
-    checksize: Optional[str]      # raw CHECKSIZE= line value (Req 1.5)
-    checksum: Optional[str]       # raw CHECKSUM=  line value (Req 1.5)
     line_count: int
     valid_pairs: int
 
@@ -226,9 +222,13 @@ class Settings_Parser:
         # For each line: split on the FIRST "=" only. LHS must be a non-empty
         # token to be a SID; RHS is the raw value (Req 1.1). Malformed lines
         # (no "=", empty key) are skipped and parsing continues (Req 1.2, 10.2).
-        # UPDATE=, CHECKSIZE=, CHECKSUM= are recognized specially (Req 1.4, 1.5)
-        # AND also retained in sids (harmless — mapper ignores unknown SIDs).
-        # Unknown SIDs are retained in sids (Req 1.3).
+        # UPDATE= is parsed into update_value (Req 1.4). CHECKSIZE=/CHECKSUM=
+        # are recognized only so they can be EXCLUDED from the Content_Hash
+        # (Req 1.5); no dedicated field and no integrity check is kept for them
+        # (the GRT algorithm is undocumented and this EFIS line is no longer
+        # developed). All KEY=VALUE pairs, including UPDATE=/CHECKSIZE=/CHECKSUM=
+        # and unknown SIDs, are still retained in sids (Req 1.3); content_hash
+        # filters the excluded keys by name.
 ```
 
 - Read-only guarantee: the parser only ever opens files for reading; it never
@@ -239,28 +239,17 @@ class Settings_Parser:
   read (OSError) or contains **zero** valid `KEY=VALUE` pairs (Req 1.6, 6). The
   source is left unmodified in every failure path.
 - Tolerance: malformed lines, unknown SIDs, missing `UPDATE=`, and missing
-  Checksum_Lines are all handled without raising as long as ≥1 valid pair exists
-  (Req 10.2). `update_value` / `checksize` / `checksum` are `None` when absent.
+  `CHECKSIZE=`/`CHECKSUM=` lines are all handled without raising as long as ≥1
+  valid pair exists (Req 10.2). `update_value` is `None` when absent.
 
-### Checksum verification (best-effort — algorithm unknown)
+### GRT checksum: not verified (removed)
 
-```python
-class ChecksumStatus(Enum):
-    VERIFIED = "verified"        # a known algorithm confirmed integrity
-    FAILED = "failed"            # a known algorithm was run and mismatched
-    UNVERIFIABLE = "unverifiable"  # no known algorithm / missing lines
-
-def verify_checksum(parsed: ParsedBackup) -> ChecksumStatus: ...
-```
-
-Because GRT's checksum algorithm is **not documented to us**, `verify_checksum`
-is pluggable and defaults to returning `UNVERIFIABLE`. If/when a verified
-algorithm is confirmed with GRT, it is implemented here and returns
-`VERIFIED` / `FAILED`. This keeps an honest boundary: the code never claims a
-file is integrity-checked when it is not. The Settings_Selector treats
-`UNVERIFIABLE` as "no integrity signal" and falls back to `UPDATE=` ordering,
-logging that the checksum could not be verified (Req 2.3–2.5, 10). We deliberately
-do not fabricate a formula.
+The GRT `CHECKSIZE=`/`CHECKSUM=` algorithm is undocumented and this EFIS line is
+no longer developed, so the system makes **no integrity claim** from these
+lines. There is no `verify_checksum` / `ChecksumStatus` component. The parser
+recognizes the two keys only to exclude them (with `UPDATE=`) from the
+Content_Hash. Selection is driven purely by `UPDATE=` (within a date) and
+Archive_Date (across dates); content-change detection is driven by Content_Hash.
 
 ### Settings_Selector
 
@@ -270,9 +259,8 @@ current backup.
 ```python
 @dataclass
 class SelectionResult:
-    current: Optional[ParsedBackup]     # chosen file, or None on total failure
+    current: Optional[ParsedBackup]     # chosen file, or None when no candidates
     reason: str                         # human-readable selection rationale
-    checksum_note: Optional[str]        # e.g. "checksum unverifiable; used UPDATE="
 
 class Settings_Selector:
     @staticmethod
@@ -282,19 +270,16 @@ class Settings_Selector:
 Selection rules (Req 2):
 
 1. Parse all present candidates (Selector receives already-parsed backups).
-2. Run `verify_checksum` on each. If **some** verify and **some** fail, restrict
-   the candidate set to those that pass (`VERIFIED`), discarding `FAILED`
-   (Req 2.4). `UNVERIFIABLE` candidates are retained (no integrity signal;
-   best-effort — Req 2.3).
-3. If **all** candidates are `FAILED` (a known algorithm ran and every file
-   mismatched), return `current=None` with a verification-failure reason
-   (Req 2.5). `UNVERIFIABLE`-only sets do **not** trigger this — they proceed on
-   `UPDATE=`.
-4. Among the surviving candidates, select the one with the highest
-   `update_value` (Req 2.1). A present `update_value` beats a `None` one; if all
-   are `None`, fall back to a deterministic tiebreak (prefer `.dat`, then path)
-   and note it.
-5. If only one candidate is present, select it (Req 2.2).
+2. Select the candidate with the highest `update_value` (Req 2.1). A present
+   `update_value` beats a `None` one.
+3. If all `update_value`s are `None` or equal, fall back to a deterministic
+   tiebreak (prefer `.dat`, then lexically-first path) so selection is stable
+   (Req 2.3) and note it.
+4. If only one candidate is present, select it (Req 2.2).
+
+There is no checksum gate: GRT's checksum is not verified (see "GRT checksum:
+not verified" above), so selection never discards a candidate for integrity and
+never returns `current=None` for a verification failure.
 
 `Settings_Selector.select` remains the **same-date pair chooser**: it is given
 the `.bak`/`.dat` candidates for one concept *within a single Archive_Date* and
@@ -361,7 +346,7 @@ across everything" to "latest Archive_Date, then `UPDATE=` within it."
 latest-dated current backup is selected, whether to *offer* it is decided by
 Content_Hash, not by `UPDATE=` magnitude. `detect_new_backup` offers an import
 when the latest-dated backup for the bound primary Source_Key has a Content_Hash
-(equivalently GRT `CHECKSUM`, proven 1:1 with content on real data) that
+(which excludes the volatile UPDATE=/CHECKSIZE=/CHECKSUM= lines) that
 **differs** from that source's last-imported Import_Marker; an **identical**
 Content_Hash means "nothing new to import" and raises no prompt, regardless of
 Archive_Date or `UPDATE=` (Req 17.5). This makes the regression-proof detection
@@ -558,7 +543,6 @@ class ImportPreview:
     changes: list[ThresholdChange]
     tier_prompts: list[str]     # concepts needing a tier decision: CHT/EGT/Oil Temp
     warnings: list[str]         # e.g. caution >= redline conflicts
-    checksum_note: Optional[str]
     backup_update_value: Optional[int]
     source_key: Optional[str]              # candidate Source_Key (R14.1)
     is_different_source: bool = False      # flag "from a different display/aircraft" (R14.6, 14.7)
@@ -802,20 +786,61 @@ the write, none do and the reason is reported.
 
 ### Archiver extension (Requirement 3)
 
-`archive_efis_drive` already copies `Settings.bak`, `State.bak`, `WP.bak`,
-`Plan.bak` via `_copy_with_datestamp` (size-based skip). The change adds the
-`.dat` siblings to the same loop:
+The archiver keeps a **chronological record of settings as they change**, per
+Archived_Settings_Family. It replaces the old per-file, size-based
+`_copy_with_datestamp` skip (which re-archived unchanged settings under a new
+dated name every day and could miss same-size content changes).
+
+**Scope:** the families archived are **Settings, WP, Plan** only. **State is NOT
+archived** (Req 3.8) — it is an ephemeral runtime snapshot that changes every
+power cycle and carries no configuration history.
+
+**Per-family algorithm** (run for each of Settings / WP / Plan present on the
+drive):
 
 ```python
-for bak_name in ["Settings.bak", "State.bak", "WP.bak", "Plan.bak",
-                 "Settings.dat", "State.dat", "WP.dat", "Plan.dat"]:
-    ...
+FAMILIES = ["Settings", "WP", "Plan"]   # State intentionally excluded (Req 3.8)
+
+for family in FAMILIES:
+    # 1. Current slot on the drive: parse the present <family>.bak / <family>.dat
+    #    and pick the higher-UPDATE slot via Settings_Selector.select()
+    #    (Req 3.1, reusing Req 2 selection). Skip the family if neither slot
+    #    is present or parseable.
+    current = select_current_slot_on_drive(mount_point, family)
+    if current is None:
+        continue
+
+    # 2. Most_Recent_Archive for this family: among existing
+    #    <family>-YYYY-MM-DD[-N].<ext> archives, the one with the latest
+    #    Archive_Date (and, within a date, the latest-written). Ordering is by
+    #    Archive_Date only — never UPDATE= or FAT mtime (Req 3.5, cf. Req 17).
+    latest = most_recent_archive(archive_dir, family)
+
+    # 3. Archive iff content changed vs. the most recent archive, or none exists
+    #    (Req 3.3/3.4). content_hash() excludes UPDATE=/CHECKSIZE=/CHECKSUM=, so
+    #    an UPDATE-only or checksum-only bump is NOT a change.
+    if latest is not None and content_hash(current) == content_hash(latest.parsed):
+        continue  # unchanged — skip (Req 3.4)
+
+    # 4. Write a new dated snapshot. Non-destructive same-day collision handling
+    #    (Req 3.7): first same-date snapshot is <family>-YYYY-MM-DD.<ext>; a
+    #    later same-date distinct change gets <family>-YYYY-MM-DD-N.<ext>
+    #    (N starting at 2), never overwriting an existing same-date snapshot.
+    write_dated_snapshot(current, archive_dir, family, today)   # Req 3.3, 3.7
 ```
 
-`_copy_with_datestamp` already copies without deleting the source (Req 3.2) and
-skips when a same-size dated copy exists (Req 3.3). No other archiver change is
-needed; `.dat` files land in the same date-stamped `Settings/` archive dir
-(Req 3.1).
+Notes:
+- **Source is never modified or deleted** (Req 3.2) — the archiver only reads
+  the drive files and writes into the local archive.
+- **Identical content may recur** across the timeline (Req 3.6): the compare is
+  against the *most recent* archive only, so a change sequence A→B→A yields three
+  dated snapshots (A, B, A). This is by design — the record tracks the *sequence*
+  of changes, not content uniqueness.
+- **Extension of the snapshot** follows whichever slot was current (`.bak` or
+  `.dat`); the extension is incidental, the family is the unit of history.
+- The old `_copy_with_datestamp` size-based skip is removed. `content_hash` and
+  the `Settings_Selector` / Archive_Date helpers already exist in
+  `efis_settings.py` and are reused here rather than reimplemented.
 
 ### analysis.py integration (Requirements 5, 11, 12)
 
@@ -1147,8 +1172,7 @@ and every valid pair SHALL appear in the parsed map.
 *For any* input consisting of valid `KEY=VALUE` pairs interleaved with arbitrary
 malformed lines (no `=`, empty key, non-ASCII bytes) in any order, the parser
 SHALL return without raising, SHALL recover every valid pair, and SHALL default
-missing `UPDATE=` / `CHECKSIZE=` / `CHECKSUM=` to `None` — provided at least one
-valid pair exists.
+a missing `UPDATE=` to `None` — provided at least one valid pair exists.
 
 **Validates: Requirements 1.2, 10.2**
 
@@ -1167,33 +1191,24 @@ after `parse()`, and the source SHALL still exist.
 
 **Validates: Requirements 1.6**
 
-### Property 5: UPDATE / checksum extraction
+### Property 5: UPDATE extraction; CHECKSIZE/CHECKSUM excluded from hash
 
 *For any* integer `n` and any strings `s1`, `s2`, a backup containing
 `UPDATE=n`, `CHECKSIZE=s1`, `CHECKSUM=s2` SHALL parse to `update_value == n`,
-`checksize == s1`, `checksum == s2`.
+and the three keys SHALL be retained in `sids` but EXCLUDED from `content_hash`
+(so changing only `s1`/`s2`/`n` does not change the Content_Hash).
 
 **Validates: Requirements 1.4, 1.5**
 
 ### Property 6: Selector picks the higher UPDATE_Value
 
-*For any* pair of candidate backups with distinct `update_value`s and no
-integrity signal (all `UNVERIFIABLE`), the selector SHALL choose the candidate
-with the higher `update_value`; *for any* single candidate, the selector SHALL
-choose it.
+*For any* pair of candidate backups with distinct `update_value`s, the selector
+SHALL choose the candidate with the higher `update_value`; *for any* single
+candidate, the selector SHALL choose it. When `update_value`s are equal or both
+absent, the selector SHALL apply the deterministic tiebreak (prefer `.dat`, then
+lexically-first path).
 
-**Validates: Requirements 2.1, 2.2**
-
-### Property 7: Selector honors integrity verification when available
-
-*For any* candidate set where at least one is `VERIFIED` and at least one is
-`FAILED`, the selector SHALL choose a `VERIFIED` candidate (even if it has a
-lower `update_value`); *for any* set where every candidate is `FAILED`, the
-selector SHALL select nothing (`current is None`) and report a verification
-failure; a set with only `UNVERIFIABLE` candidates SHALL NOT be treated as a
-verification failure and SHALL proceed on `UPDATE=`.
-
-**Validates: Requirements 2.3, 2.4, 2.5**
+**Validates: Requirements 2.1, 2.2, 2.3**
 
 ### Property 8: Mapper ignores unrecognized SIDs
 
@@ -1512,11 +1527,9 @@ independent of Archive_Date and `UPDATE_Value`.
   it never writes, truncates, renames, or deletes. The Archiver copies (never
   moves) settings files, preserving the USB source (Req 3.2). Property 3 asserts
   the source hash is unchanged across parse, including failure paths.
-- **Checksum verification failure (Req 2.5):** if a *known* verifier is enabled
-  and all candidates fail, the selector returns `current=None` with a failure
-  reason and the workflow aborts without changing thresholds. When the algorithm
-  is unknown (`UNVERIFIABLE`), the system proceeds on `UPDATE=` and logs a note
-  that the checksum could not be verified — it never silently claims integrity.
+- **No checksum gate (Req 2):** the GRT checksum is not verified, so selection
+  never aborts for a verification failure; the current slot is chosen purely by
+  `UPDATE=` with a deterministic tiebreak.
 - **Tier conflict (Req 8.2):** `caution >= redline` sets `can_apply=False` and
   surfaces a warning; the apply endpoint refuses until resolved.
 - **Decline / partial confirmation (Req 9.6, 10.3):** any missing confirmation,
@@ -1634,9 +1647,6 @@ independent of Archive_Date and `UPDATE_Value`.
 - **SID values**: bounded numeric strategies per kind (temps, speeds, G in
   ±ranges, voltages, RPM, cooling rate, cylinder counts 4/6), including each
   SID's Disabled_Value for Property 9.
-- **Verification status**: a stub `verify_checksum` injected into the selector
-  returning `VERIFIED` / `FAILED` / `UNVERIFIABLE` so Property 7 is testable
-  without GRT's (unknown) algorithm.
 - **Time series**: `(timestamp, value)` sequences at 1 Hz for `rpm1`,
   `true_airspeed`, `indicated_airspeed`, and hottest-CHT, with controlled
   slopes for the cooling-rate property (steep descents that do/do not exceed the

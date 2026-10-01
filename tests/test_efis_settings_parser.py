@@ -21,6 +21,7 @@ from efis_data_manager.efis_settings import (
     ParsedBackup,
     Settings_Parser,
     SettingsParseError,
+    content_hash,
 )
 
 
@@ -102,10 +103,8 @@ def test_property2_garbage_tolerance(tmp_path, pairs, garbage):
 
     for k, v in pairs.items():
         assert parsed.sids[k] == v
-    # Missing special lines default to None.
+    # Missing UPDATE= line defaults to None.
     assert parsed.update_value is None
-    assert parsed.checksize is None
-    assert parsed.checksum is None
 
 
 # ---------------------------------------------------------------------------
@@ -158,18 +157,28 @@ def test_property4_empty_of_valid_pairs_fails(tmp_path, garbage):
 @settings(max_examples=200, suppress_health_check=[HealthCheck.function_scoped_fixture])
 @given(
     n=st.integers(min_value=-(10**9), max_value=10**9),
+    m=st.integers(min_value=-(10**9), max_value=10**9),
     s1=sid_values,
     s2=sid_values,
+    t1=sid_values,
+    t2=sid_values,
 )
-def test_property5_update_checksum_extraction(tmp_path, n, s1, s2):
+def test_property5_update_checksum_extraction(tmp_path, n, m, s1, s2, t1, t2):
+    # UPDATE= is parsed into update_value (Req 1.4).
     text = f"151=400\nUPDATE={n}\nCHECKSIZE={s1}\nCHECKSUM={s2}\n"
     path = _write(tmp_path, text)
-
     parsed = Settings_Parser.parse(path)
-
     assert parsed.update_value == n
-    assert parsed.checksize == s1
-    assert parsed.checksum == s2
+
+    # CHECKSIZE=/CHECKSUM= are recognized as volatile and, together with
+    # UPDATE=, excluded from the Content_Hash (Req 1.5). A second backup that
+    # differs ONLY in UPDATE=/CHECKSIZE=/CHECKSUM= has the SAME content_hash.
+    other_text = f"151=400\nUPDATE={m}\nCHECKSIZE={t1}\nCHECKSUM={t2}\n"
+    other_path = tmp_path / "Settings.dat"
+    other_path.write_text(other_text, encoding="ascii", errors="replace")
+    other = Settings_Parser.parse(str(other_path))
+
+    assert content_hash(parsed) == content_hash(other)
 
 
 # ---------------------------------------------------------------------------

@@ -22,8 +22,6 @@ def _parsed(sids: dict, update_value=1) -> ParsedBackup:
         path="Settings.bak",
         sids={k: str(v) for k, v in sids.items()},
         update_value=update_value,
-        checksize="10",
-        checksum="ABCD",
         line_count=len(sids),
         valid_pairs=len(sids),
     )
@@ -80,15 +78,22 @@ def test_content_hash_unchanged_when_only_update_differs():
 
 
 def test_content_hash_excludes_checksum_lines():
-    a = _parsed({"151": "400"})
+    # CHECKSIZE=/CHECKSUM=/UPDATE= are retained in sids but excluded from the
+    # Content_Hash by key name, so two backups differing ONLY in those volatile
+    # lines hash equal.
+    a = ParsedBackup(
+        path="Settings.bak",
+        sids={"151": "400", "CHECKSIZE": "10", "CHECKSUM": "ABCD"},
+        update_value=1,
+        line_count=3,
+        valid_pairs=3,
+    )
     b = ParsedBackup(
         path="Settings.dat",
-        sids={"151": "400"},
-        update_value=1,
-        checksize="DIFFERENT",
-        checksum="DIFFERENT",
-        line_count=1,
-        valid_pairs=1,
+        sids={"151": "400", "CHECKSIZE": "DIFFERENT", "CHECKSUM": "DIFFERENT"},
+        update_value=2,
+        line_count=3,
+        valid_pairs=3,
     )
     assert content_hash(a) == content_hash(b)
 

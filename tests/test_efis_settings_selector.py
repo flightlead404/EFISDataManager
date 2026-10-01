@@ -3,20 +3,20 @@
 #
 # SPDX-License-Identifier: AGPL-3.0-or-later
 
-"""Tests for Settings_Selector and best-effort checksum (efis_settings.py).
+"""Tests for Settings_Selector (efis_settings.py).
 
-Property-based tests (Hypothesis, Properties 6-7) plus supporting examples.
+Property-based tests (Hypothesis, Property 6 — pure UPDATE=-based selection)
+plus supporting examples for the deterministic tiebreak. GRT checksum
+verification was removed (the algorithm is undocumented and this EFIS line is no
+longer developed), so there is no integrity gate here.
 
-Requirements: 2.1, 2.2, 2.3, 2.4, 2.5
+Requirements: 2.1, 2.2, 2.3
 """
 
-import efis_data_manager.efis_settings as es
 from efis_data_manager.efis_settings import (
-    ChecksumStatus,
     ParsedBackup,
     SelectionResult,
     Settings_Selector,
-    verify_checksum,
 )
 from hypothesis import given, settings
 from hypothesis import strategies as st
@@ -27,15 +27,9 @@ def _backup(path: str, update_value) -> ParsedBackup:
         path=path,
         sids={"151": "400"},
         update_value=update_value,
-        checksize=None,
-        checksum=None,
         line_count=1,
         valid_pairs=1,
     )
-
-
-def test_verify_checksum_defaults_unverifiable():
-    assert verify_checksum(_backup("Settings.bak", 1)) == ChecksumStatus.UNVERIFIABLE
 
 
 # ---------------------------------------------------------------------------
@@ -46,7 +40,7 @@ def test_verify_checksum_defaults_unverifiable():
 @settings(max_examples=200)
 @given(a=st.integers(-10**6, 10**6), b=st.integers(-10**6, 10**6))
 def test_property6_selector_higher_update(a, b):
-    # Distinct update values (all UNVERIFIABLE — default checksum).
+    # Distinct update values -> the higher UPDATE= wins (Req 2.1).
     if a == b:
         b = a + 1
     bak = _backup("Settings.bak", a)
@@ -57,71 +51,46 @@ def test_property6_selector_higher_update(a, b):
     expected = bak if a > b else dat
     assert result.current is expected
 
-    # Single candidate is chosen.
+    # Single candidate is chosen (Req 2.2).
     single = Settings_Selector.select([bak])
     assert single.current is bak
 
 
 # ---------------------------------------------------------------------------
-# Property 7: Selector honors integrity verification when available
-# Feature: efis-settings-import, Property 7: Selector honors integrity verification when available
-# Validates: Requirements 2.3, 2.4, 2.5
+# Property 6 (tiebreak): equal or absent UPDATE= -> deterministic tiebreak
+# Feature: efis-settings-import, Property 6: Selector deterministic tiebreak
+# Validates: Requirements 2.3
 # ---------------------------------------------------------------------------
 @settings(max_examples=200)
 @given(
-    verified_update=st.integers(-10**6, 10**6),
-    failed_update=st.integers(-10**6, 10**6),
+    u=st.one_of(st.none(), st.integers(-10**6, 10**6)),
+    swap=st.booleans(),
 )
-def test_property7_verified_over_failed(verified_update, failed_update):
-    verified = _backup("Settings.dat", verified_update)
-    failed = _backup("Settings.bak", failed_update)
+def test_property6_equal_or_none_update_prefers_dat(u, swap):
+    # Both candidates carry the SAME update_value (equal, or both None): the
+    # deterministic tiebreak prefers the .dat slot (Req 2.3), independent of
+    # the order the candidates are supplied in.
+    bak = _backup("Settings.bak", u)
+    dat = _backup("Settings.dat", u)
+    candidates = [dat, bak] if swap else [bak, dat]
 
-    def stub(parsed):
-        if parsed is verified:
-            return ChecksumStatus.VERIFIED
-        return ChecksumStatus.FAILED
+    result = Settings_Selector.select(candidates)
 
-    original = es.verify_checksum
-    es.verify_checksum = stub
-    try:
-        result = Settings_Selector.select([verified, failed])
-        # VERIFIED chosen even when it has a lower UPDATE (Req 2.4).
-        assert result.current is verified
-    finally:
-        es.verify_checksum = original
+    assert result.current is dat
 
 
-@settings(max_examples=100)
-@given(u1=st.integers(-10**6, 10**6), u2=st.integers(-10**6, 10**6))
-def test_property7_all_failed_selects_nothing(u1, u2):
-    a = _backup("Settings.bak", u1)
-    b = _backup("Settings.dat", u2)
+@settings(max_examples=200)
+@given(swap=st.booleans())
+def test_property6_all_none_tiebreak_lexical_path(swap):
+    # Two .bak candidates with no UPDATE= -> tiebreak falls through to the
+    # lexically-first path (Req 2.3), order-independent.
+    a = _backup("A-Settings.bak", None)
+    z = _backup("Z-Settings.bak", None)
+    candidates = [z, a] if swap else [a, z]
 
-    def stub(parsed):
-        return ChecksumStatus.FAILED
+    result = Settings_Selector.select(candidates)
 
-    original = es.verify_checksum
-    es.verify_checksum = stub
-    try:
-        result = Settings_Selector.select([a, b])
-        assert result.current is None  # Req 2.5
-        assert "fail" in result.reason.lower()
-    finally:
-        es.verify_checksum = original
-
-
-@settings(max_examples=100)
-@given(u1=st.integers(-10**6, 10**6), u2=st.integers(-10**6, 10**6))
-def test_property7_unverifiable_only_not_failure(u1, u2):
-    if u1 == u2:
-        u2 = u1 + 1
-    a = _backup("Settings.bak", u1)
-    b = _backup("Settings.dat", u2)
-
-    # Default verify_checksum returns UNVERIFIABLE — proceeds on UPDATE=.
-    result = Settings_Selector.select([a, b])
-    assert result.current is not None
-    assert result.current is (a if u1 > u2 else b)
+    assert result.current is a
 
 
 # ---------------------------------------------------------------------------

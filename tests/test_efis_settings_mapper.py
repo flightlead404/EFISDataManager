@@ -26,8 +26,6 @@ def _parsed(sids: dict) -> ParsedBackup:
         path="Settings.bak",
         sids={k: str(v) for k, v in sids.items()},
         update_value=1,
-        checksize=None,
-        checksum=None,
         line_count=len(sids),
         valid_pairs=len(sids),
     )

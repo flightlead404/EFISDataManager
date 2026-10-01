@@ -624,7 +624,6 @@ def _preview_to_dict(preview):
         ],
         "tier_prompts": preview.tier_prompts,
         "warnings": preview.warnings,
-        "checksum_note": preview.checksum_note,
         "backup_update_value": preview.backup_update_value,
         "source_key": preview.source_key,
         "is_different_source": preview.is_different_source,

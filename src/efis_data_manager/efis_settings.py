@@ -14,8 +14,6 @@ Pure (I/O-light) logic for the EFIS Settings Import feature:
 
 - ``Settings_Parser`` / ``ParsedBackup`` — read-only, tolerant parse of a
   ``Settings.bak`` / ``Settings.dat`` file into a SID -> value map.
-- ``ChecksumStatus`` / ``verify_checksum`` — best-effort integrity boundary
-  (GRT's checksum algorithm is undocumented; defaults to ``UNVERIFIABLE``).
 - ``Settings_Selector`` / ``SelectionResult`` — pick the current backup from a
   ``.bak`` / ``.dat`` pair.
 - ``Settings_Mapper`` / ``MappedValue`` / ``MappedSettings`` — translate parsed
@@ -37,7 +35,6 @@ import os
 import re
 from dataclasses import dataclass, field
 from datetime import date, datetime
-from enum import Enum
 from pathlib import Path
 from typing import Optional, Union
 
@@ -59,8 +56,6 @@ class ParsedBackup:
     path: str
     sids: dict[str, str]          # SID -> raw value (both strings) — Req 1.1
     update_value: Optional[int]   # from UPDATE= — Req 1.4
-    checksize: Optional[str]      # raw CHECKSIZE= value — Req 1.5
-    checksum: Optional[str]       # raw CHECKSUM= value — Req 1.5
     line_count: int
     valid_pairs: int
 
@@ -82,9 +77,12 @@ class Settings_Parser:
         ``errors="replace"`` so non-ASCII bytes never raise. Each line is split
         on the FIRST "=" only; the left side must be a non-empty token to count
         as a key. Malformed lines (no "=", empty key) are skipped and parsing
-        continues. ``UPDATE=`` / ``CHECKSIZE=`` / ``CHECKSUM=`` are recognized
-        specially and also retained in ``sids`` (harmless — the mapper ignores
-        unknown SIDs). Unknown SIDs are retained.
+        continues. ``UPDATE=`` is parsed into ``update_value``.
+        ``CHECKSIZE=`` / ``CHECKSUM=`` are recognized only so they stay retained
+        in ``sids`` and can be EXCLUDED (with ``UPDATE=``) from the Content_Hash
+        by key name (Req 1.5); no integrity claim is made from them (the GRT
+        algorithm is undocumented and this EFIS line is no longer developed).
+        Unknown SIDs are retained.
 
         Raises:
             SettingsParseError: on OSError (unreadable) or zero valid pairs.
@@ -93,8 +91,6 @@ class Settings_Parser:
         """
         sids: dict[str, str] = {}
         update_value: Optional[int] = None
-        checksize: Optional[str] = None
-        checksum: Optional[str] = None
         line_count = 0
         valid_pairs = 0
 
@@ -120,10 +116,9 @@ class Settings_Parser:
                             update_value = int(value.strip())
                         except (TypeError, ValueError):
                             update_value = None
-                    elif key == _KEY_CHECKSIZE:
-                        checksize = value
-                    elif key == _KEY_CHECKSUM:
-                        checksum = value
+                    # CHECKSIZE=/CHECKSUM= are recognized but need no dedicated
+                    # field: they are retained in ``sids`` below and excluded
+                    # from the Content_Hash by key name (_HASH_EXCLUDED_KEYS).
 
                     # Retain every valid pair, including unknown SIDs and the
                     # special keys (mapper ignores non-mapped keys) (Req 1.3).
@@ -140,36 +135,21 @@ class Settings_Parser:
             path=path,
             sids=sids,
             update_value=update_value,
-            checksize=checksize,
-            checksum=checksum,
             line_count=line_count,
             valid_pairs=valid_pairs,
         )
 
 
 # ---------------------------------------------------------------------------
-# Checksum verification — best-effort (algorithm unknown) (Requirement 2.3)
+# GRT checksum: NOT verified (removed)
 # ---------------------------------------------------------------------------
-
-class ChecksumStatus(Enum):
-    """Result of a best-effort integrity check on a Settings_Backup."""
-
-    VERIFIED = "verified"          # a known algorithm confirmed integrity
-    FAILED = "failed"              # a known algorithm ran and mismatched
-    UNVERIFIABLE = "unverifiable"  # no known algorithm / missing lines
-
-
-def verify_checksum(parsed: ParsedBackup) -> ChecksumStatus:
-    """Best-effort integrity check for a Settings_Backup.
-
-    GRT's exact CHECKSIZE=/CHECKSUM= algorithm is NOT documented to us, so this
-    deliberately does not invent a formula. It always returns ``UNVERIFIABLE``
-    until a confirmed algorithm is implemented here. This keeps the boundary
-    honest: the code never claims a file is integrity-checked when it is not.
-    The pluggable shape lets a real verifier drop in later and return
-    ``VERIFIED`` / ``FAILED`` without changing callers (Req 2.3, 10.1).
-    """
-    return ChecksumStatus.UNVERIFIABLE
+# GRT's exact CHECKSIZE=/CHECKSUM= algorithm is undocumented and this EFIS line
+# is no longer developed, so the system makes NO integrity claim from these
+# lines. There is deliberately no verify_checksum / ChecksumStatus component.
+# The parser recognizes the two keys only so content_hash can exclude them (by
+# key name, via _HASH_EXCLUDED_KEYS) along with UPDATE=. Selection is driven by
+# UPDATE= (within a date) + Archive_Date (across dates); content-change
+# detection is driven by Content_Hash.
 
 
 # ---------------------------------------------------------------------------
@@ -180,9 +160,8 @@ def verify_checksum(parsed: ParsedBackup) -> ChecksumStatus:
 class SelectionResult:
     """Outcome of choosing the current backup from a candidate set."""
 
-    current: Optional[ParsedBackup]     # chosen file, or None on total failure
+    current: Optional[ParsedBackup]     # chosen file, or None when no candidates
     reason: str                         # human-readable selection rationale
-    checksum_note: Optional[str] = None  # e.g. "checksum unverifiable; used UPDATE="
 
 
 class Settings_Selector:
@@ -190,84 +169,48 @@ class Settings_Selector:
 
     @staticmethod
     def select(candidates: list[ParsedBackup]) -> SelectionResult:
-        """Select the current backup per Requirement 2.
+        """Select the current backup per Requirement 2 (UPDATE=-based).
 
         Rules:
-          1. Run verify_checksum on each candidate.
-          2. If some VERIFIED and some FAILED, restrict to the VERIFIED set
-             (discard FAILED); UNVERIFIABLE candidates are retained (Req 2.4).
-          3. If ALL candidates are FAILED, return current=None with a
-             verification-failure reason (Req 2.5). An UNVERIFIABLE-only set is
-             NOT a verification failure — it proceeds on UPDATE=.
-          4. Among survivors, pick the highest update_value (Req 2.1). A present
-             update_value beats None; if all None, deterministic tiebreak
-             (prefer .dat, then path) with a note.
-          5. A single candidate is selected outright (Req 2.2).
+          1. Empty candidates -> ``current=None``.
+          2. A single candidate is selected outright (Req 2.2).
+          3. Otherwise pick the highest ``update_value`` (Req 2.1). A present
+             ``update_value`` beats ``None``.
+          4. If all ``update_value``s are ``None`` or equal, apply a
+             deterministic tiebreak (prefer ``.dat``, then lexically-first path)
+             so selection is stable (Req 2.3).
+
+        There is no checksum gate: GRT's checksum is not verified, so selection
+        never discards a candidate for integrity and never returns
+        ``current=None`` for a verification failure.
         """
         if not candidates:
             return SelectionResult(current=None, reason="no candidates provided")
 
-        statuses = {id(c): verify_checksum(c) for c in candidates}
-        verified = [c for c in candidates if statuses[id(c)] == ChecksumStatus.VERIFIED]
-        failed = [c for c in candidates if statuses[id(c)] == ChecksumStatus.FAILED]
-        unverifiable = [c for c in candidates if statuses[id(c)] == ChecksumStatus.UNVERIFIABLE]
-
-        checksum_note: Optional[str] = None
-
-        # All FAILED under a known algorithm => verification failure (Req 2.5).
-        if failed and not verified and not unverifiable:
+        if len(candidates) == 1:
             return SelectionResult(
-                current=None,
-                reason="all candidates failed checksum verification",
-                checksum_note="checksum verification failed for every candidate",
-            )
-
-        # Some verify, some fail => keep only the verified (Req 2.4).
-        if verified and failed:
-            survivors = verified + unverifiable
-            checksum_note = "discarded checksum-failed candidate(s); kept verified"
-        elif verified:
-            survivors = verified + unverifiable
-        else:
-            # No integrity signal (UNVERIFIABLE only) — best-effort (Req 2.3).
-            survivors = unverifiable
-            checksum_note = "checksum unverifiable; used UPDATE= ordering"
-
-        if not survivors:
-            # Defensive: nothing survived (e.g. every candidate FAILED but the
-            # earlier branch was bypassed). Report a verification failure.
-            return SelectionResult(
-                current=None,
-                reason="no candidate survived checksum verification",
-                checksum_note="checksum verification failed for every candidate",
-            )
-
-        if len(survivors) == 1:
-            return SelectionResult(
-                current=survivors[0],
+                current=candidates[0],
                 reason="single candidate selected",
-                checksum_note=checksum_note,
             )
 
         # Highest update_value wins; a present value beats None (Req 2.1).
-        with_update = [c for c in survivors if c.update_value is not None]
-        if with_update:
+        with_update = [c for c in candidates if c.update_value is not None]
+        distinct_updates = {c.update_value for c in with_update}
+        if with_update and len(distinct_updates) > 1:
             best = max(with_update, key=lambda c: c.update_value)
             reason = f"selected highest UPDATE= ({best.update_value})"
-            return SelectionResult(current=best, reason=reason, checksum_note=checksum_note)
+            return SelectionResult(current=best, reason=reason)
 
-        # All update_value None — deterministic tiebreak: prefer .dat, then path.
+        # All update_value None or equal — deterministic tiebreak: prefer .dat,
+        # then lexically-first path (Req 2.3).
         def _tiebreak(c: ParsedBackup) -> tuple[int, str]:
             is_dat = 0 if c.path.lower().endswith(".dat") else 1
             return (is_dat, c.path)
 
-        best = min(survivors, key=_tiebreak)
-        note = "no UPDATE= on any candidate; tiebreak prefer .dat then path"
-        checksum_note = "; ".join(n for n in [checksum_note, note] if n)
+        best = min(candidates, key=_tiebreak)
         return SelectionResult(
             current=best,
-            reason="no UPDATE= values; deterministic tiebreak",
-            checksum_note=checksum_note,
+            reason="UPDATE= absent or equal; deterministic tiebreak (prefer .dat, then path)",
         )
 
 
@@ -341,12 +284,9 @@ def select_current_backup(archived: list[ArchivedBackup]) -> SelectionResult:
     if result.current is None:
         return result
 
-    note = f"latest Archive_Date {latest.isoformat()}"
-    combined_note = "; ".join(n for n in [note, result.checksum_note] if n)
     return SelectionResult(
         current=result.current,
         reason=f"{result.reason} (Archive_Date {latest.isoformat()})",
-        checksum_note=combined_note or None,
     )
 
 
@@ -726,7 +666,6 @@ class ImportPreview:
     changes: list[ThresholdChange] = field(default_factory=list)
     tier_prompts: list[str] = field(default_factory=list)   # concepts needing a tier decision
     warnings: list[str] = field(default_factory=list)       # e.g. caution >= redline conflicts
-    checksum_note: Optional[str] = None
     backup_update_value: Optional[int] = None
     source_key: Optional[str] = None              # candidate Source_Key (R14.1)
     is_different_source: bool = False      # flag "from a different display/aircraft" (R14.6/7)
@@ -1049,7 +988,6 @@ class Import_Workflow:
             return None
 
         info = _decide(result.current, config)
-        # Attach the selection's checksum note context is carried by callers;
         # NewBackupInfo already holds the parsed candidate.
         return info
 

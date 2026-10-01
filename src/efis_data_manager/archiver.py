@@ -42,7 +42,11 @@ def sha256_file(filepath: str) -> str:
     return h.hexdigest()
 
 
-def archive_efis_drive(mount_point: str, progress_callback: Optional[Callable] = None) -> dict:
+def archive_efis_drive(
+    mount_point: str,
+    progress_callback: Optional[Callable] = None,
+    today: Optional[str] = None,
+) -> dict:
     """Archive all EFIS data from a mounted USB drive.
 
     Runs sequentially: all reads/copies from USB first, then deletions.
@@ -50,6 +54,9 @@ def archive_efis_drive(mount_point: str, progress_callback: Optional[Callable] =
     Args:
         mount_point: Path to the mounted EFIS volume (e.g. /Volumes/EFIS).
         progress_callback: Optional callable(message) for status updates.
+        today: Optional ``YYYY-MM-DD`` date string to stamp into archived
+            settings snapshots. Defaults to the current date. Tests inject this
+            to drive Archive_Date ordering deterministically.
 
     Returns:
         Dict with results: {
@@ -60,7 +67,8 @@ def archive_efis_drive(mount_point: str, progress_callback: Optional[Callable] =
     """
     config = load_config()
     archive_root = Path(config["archive_path"])
-    today = datetime.now().strftime("%Y-%m-%d")
+    if today is None:
+        today = datetime.now().strftime("%Y-%m-%d")
 
     results = {
         "fdl_moved": 0, "demo_moved": 0, "snap_moved": 0,
@@ -141,19 +149,29 @@ def archive_efis_drive(mount_point: str, progress_callback: Optional[Callable] =
             except OSError as e:
                 results["errors"].append(f"Logbook delete failed (archived OK): {e}")
 
-    # Settings .bak files (copy with date stamp, don't delete from USB)
+    # Settings families: content-aware, per-family archive-on-change (Req 3).
+    # For each family (Settings/WP/Plan — State is NOT archived, Req 3.8) pick
+    # the current slot on the drive, compare its Content_Hash against the
+    # family's Most_Recent_Archive, and write a new dated snapshot only when the
+    # content changed (or no archive exists). Source files are never modified or
+    # deleted (Req 3.2).
     settings_dest = archive_root / "Settings"
-    for bak_name in ["Settings.bak", "State.bak", "WP.bak", "Plan.bak",
-                     "Settings.dat", "State.dat", "WP.dat", "Plan.dat"]:
-        bak_path = os.path.join(mount_point, bak_name)
-        if os.path.isfile(bak_path):
-            result = _copy_with_datestamp(bak_path, settings_dest, today)
-            if result == "copied":
-                results["settings_copied"] += 1
-            elif result == "skipped":
-                results["skipped"] += 1
-            else:
-                results["errors"].append(result)
+    for family in _ARCHIVED_SETTINGS_FAMILIES:
+        try:
+            result = _archive_settings_family(
+                mount_point, settings_dest, family, today
+            )
+        except Exception as e:  # fault tolerance (Req 10): never crash the run
+            logger.info(f"Settings family {family} archive skipped: {e}")
+            continue
+        if result == "copied":
+            results["settings_copied"] += 1
+        elif result == "skipped":
+            results["skipped"] += 1
+        elif result == "none":
+            pass  # family not present / unparseable — nothing to do
+        else:
+            results["errors"].append(result)
 
     # --- Bulk archival: DEMO and snapshot files (not time-sensitive) ---
 
@@ -296,29 +314,163 @@ def _copy_file(src: str, dest_dir: Path) -> str:
         return f"Copy failed {filename}: {e}"
 
 
-def _copy_with_datestamp(src: str, dest_dir: Path, date_str: str) -> str:
-    """Copy a file with date stamp appended to the name.
+# ---------------------------------------------------------------------------
+# Settings families archive-on-change (Requirement 3)
+# ---------------------------------------------------------------------------
 
-    E.g. Settings.bak -> Settings-2026-08-13.bak
+# Families the Archiver keeps a change-history for. State is intentionally
+# excluded — it is an ephemeral runtime snapshot with no configuration history
+# value (Req 3.8).
+_ARCHIVED_SETTINGS_FAMILIES = ["Settings", "WP", "Plan"]
+
+
+def _current_settings_slot(mount_point: str, family: str):
+    """Select the current slot of ``family`` on the drive (Req 3.1).
+
+    Parses whichever of ``<family>.bak`` / ``<family>.dat`` are present and
+    picks the current slot via ``Settings_Selector.select`` (higher UPDATE=,
+    with the deterministic .dat/path tiebreak). Returns the chosen
+    ``ParsedBackup`` (its ``path`` tells which file/extension to copy), or
+    ``None`` when neither slot is present or neither parses.
+    """
+    from efis_data_manager.efis_settings import (
+        Settings_Parser,
+        Settings_Selector,
+        SettingsParseError,
+    )
+
+    candidates = []
+    for ext in (".bak", ".dat"):
+        path = os.path.join(mount_point, f"{family}{ext}")
+        if not os.path.isfile(path):
+            continue
+        try:
+            candidates.append(Settings_Parser.parse(path))
+        except SettingsParseError as e:
+            logger.debug(f"{family}{ext} did not parse, ignoring: {e}")
+
+    if not candidates:
+        return None
+
+    return Settings_Selector.select(candidates).current
+
+
+def _most_recent_family_archive(settings_dest: Path, family: str):
+    """Find the Most_Recent_Archive for ``family`` (Req 3.5).
+
+    Scans existing ``<family>-YYYY-MM-DD[-N].<ext>`` archives, orders by
+    Archive_Date (via ``parse_archive_date`` — never mtime or UPDATE=), and
+    within the same date by the highest sequence suffix (un-suffixed == 1).
+    Returns the parsed ``ParsedBackup`` of the most recent archive, or ``None``
+    when no archive exists for the family (or none parses).
+    """
+    from efis_data_manager.efis_settings import (
+        Settings_Parser,
+        SettingsParseError,
+        parse_archive_date,
+    )
+
+    if not settings_dest.is_dir():
+        return None
+
+    best = None  # (archive_date, sequence, path)
+    for path in settings_dest.iterdir():
+        if not path.is_file():
+            continue
+        name = path.name
+        base, dot, ext = name.rpartition(".")
+        if not dot:
+            continue
+        # Must be "<family>-..." for this family.
+        prefix = f"{family}-"
+        if not base.startswith(prefix):
+            continue
+        archive_date = parse_archive_date(name)
+        if archive_date is None:
+            continue  # no parseable datestamp — ignore for recency
+        seq = _archive_sequence(base, prefix)
+        key = (archive_date, seq)
+        if best is None or key > best[0]:
+            best = (key, str(path))
+
+    if best is None:
+        return None
+
+    try:
+        return Settings_Parser.parse(best[1])
+    except SettingsParseError as e:
+        logger.debug(f"Most-recent archive {best[1]} did not parse: {e}")
+        return None
+
+
+def _archive_sequence(base: str, prefix: str) -> int:
+    """Return the same-date sequence number encoded in an archive base name.
+
+    ``<family>-YYYY-MM-DD`` -> 1 (un-suffixed first same-date snapshot).
+    ``<family>-YYYY-MM-DD-N`` -> N. Falls back to 1 when unparseable.
+    """
+    remainder = base[len(prefix):]  # e.g. "2026-09-12" or "2026-09-12-3"
+    parts = remainder.split("-")
+    # A bare date is Y, M, D (3 parts). A sequenced one is Y, M, D, N (4 parts).
+    if len(parts) >= 4:
+        try:
+            return int(parts[3])
+        except ValueError:
+            return 1
+    return 1
+
+
+def _next_available_snapshot_name(
+    settings_dest: Path, family: str, date_str: str, ext: str
+) -> Path:
+    """Return the next non-destructive same-date snapshot path (Req 3.7).
+
+    First same-date snapshot is ``<family>-YYYY-MM-DD.<ext>``; if that exists a
+    distinct same-date change gets ``<family>-YYYY-MM-DD-2.<ext>``, then -3, etc.
+    Never returns a path that already exists.
+    """
+    primary = settings_dest / f"{family}-{date_str}{ext}"
+    if not primary.exists():
+        return primary
+    seq = 2
+    while True:
+        candidate = settings_dest / f"{family}-{date_str}-{seq}{ext}"
+        if not candidate.exists():
+            return candidate
+        seq += 1
+
+
+def _archive_settings_family(
+    mount_point: str, settings_dest: Path, family: str, date_str: str
+) -> str:
+    """Archive one settings family on change (Req 3.1/3.3/3.4/3.5/3.7).
 
     Returns:
-        "copied" on success, "skipped" if identical dated file exists, or error string.
+        "copied" when a new snapshot was written, "skipped" when the content was
+        unchanged vs. the Most_Recent_Archive, "none" when the family is not
+        present / unparseable on the drive, or an error string on write failure.
     """
-    filename = os.path.basename(src)
-    name, ext = os.path.splitext(filename)
-    dated_name = f"{name}-{date_str}{ext}"
-    dest_path = dest_dir / dated_name
+    from efis_data_manager.efis_settings import content_hash
 
-    if dest_path.exists() and dest_path.stat().st_size == os.path.getsize(src):
+    current = _current_settings_slot(mount_point, family)
+    if current is None:
+        return "none"
+
+    _, ext = os.path.splitext(current.path)
+
+    latest = _most_recent_family_archive(settings_dest, family)
+    if latest is not None and content_hash(current) == content_hash(latest):
+        # Unchanged vs. most recent archive — no new snapshot (Req 3.4).
         return "skipped"
 
-    dest_dir.mkdir(parents=True, exist_ok=True)
+    dest_path = _next_available_snapshot_name(settings_dest, family, date_str, ext)
+    settings_dest.mkdir(parents=True, exist_ok=True)
     try:
-        shutil.copy2(src, dest_path)
-        logger.info(f"Copied with datestamp: {dated_name}")
+        shutil.copy2(current.path, dest_path)
+        logger.info(f"Archived settings snapshot: {dest_path.name}")
         return "copied"
     except OSError as e:
-        return f"Copy failed {dated_name}: {e}"
+        return f"Settings archive failed {dest_path.name}: {e}"
 
 
 def _import_fdl_to_database(fdl_paths: list[Path], results: dict):

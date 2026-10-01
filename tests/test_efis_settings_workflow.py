@@ -51,8 +51,6 @@ def _parsed(sids: dict, update_value=1, path="Settings.dat") -> ParsedBackup:
         path=path,
         sids=str_sids,
         update_value=update_value,
-        checksize="10",
-        checksum="ABCD",
         line_count=len(str_sids),
         valid_pairs=len(str_sids),
     )
