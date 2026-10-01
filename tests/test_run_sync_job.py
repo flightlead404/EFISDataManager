@@ -256,7 +256,7 @@ def test_preflight_failure_when_mount_absent(env, monkeypatch, caplog):
 # A drive that stops accepting writes but stays mounted is NOT caught by the
 # mount-removal watchdog. The stall watchdog uses TWO liveness signals and
 # aborts ONLY when BOTH go flat for STALL_TIMEOUT_SECONDS:
-#   (1) rsync stdout-log growth (--info=progress2 streams transfer progress),
+#   (1) rsync stdout-log growth (--out-format=%n emits one line per file),
 #   (2) rsync CPU-time advance (proves liveness during the silent file-list /
 #       --delete scan on a large existing tree).
 # The scan phase (no stdout growth) previously tripped a stdout-only watchdog

@@ -104,26 +104,92 @@ def test_resolve_device_node_none_raises_and_never_unmounts():
 
 
 def test_fskit_unmount_failure_raises_no_mount_no_restore():
-    """FSKit `diskutil unmount` returns non-zero -> raise.
+    """FSKit `diskutil unmount` keeps returning non-zero -> raise after retries.
 
-    Because the FSKit unmount failed the volume is still mounted: NO mount_msdos
-    is attempted and NO restore (diskutil mount of the device) is needed.
+    The entry unmount now settles + retries UNMOUNT_MAX_ATTEMPTS times (a fresh
+    volume is often held briefly by a transient dissenter such as Spotlight). If
+    every attempt still fails the volume is left mounted at /Volumes/: NO
+    mount_msdos is attempted and NO restore (diskutil mount of the device) is
+    needed. Crucially the entry unmount does NOT escalate to `unmount force`
+    (that is teardown-only), so nothing is ever forced here.
     """
     unmount_fail = _cp(returncode=1, stderr="unmount failed")
     with mock.patch.object(ms, "resolve_device_node", return_value=DEVICE), \
         mock.patch.object(ms, "run_privileged", return_value=unmount_fail) as rp, \
+        mock.patch.object(ms, "_lsof_holders", return_value=""), \
+        mock.patch("time.sleep"), \
         mock.patch("os.path.ismount", return_value=True):
         with pytest.raises(ms.MountSwapError):
             with ms.msdos_mount(FSKIT_MP):
                 pytest.fail("body must not run when FSKit unmount fails")
 
     argvs = _argv_calls(rp)
-    # Exactly one privileged call: the failed FSKit unmount.
-    assert len(argvs) == 1
-    assert argvs[0][:2] == [ms.DISKUTIL_BIN, "unmount"]
+    # UNMOUNT_MAX_ATTEMPTS bounded retries of the FSKit unmount, nothing else.
+    assert len(argvs) == ms.UNMOUNT_MAX_ATTEMPTS
+    assert all(a[:2] == [ms.DISKUTIL_BIN, "unmount"] and a[-1] == FSKIT_MP
+               for a in argvs)
+    # No FORCE escalation on the entry side.
+    assert not any("force" in a for a in argvs)
     # No mount_msdos and no `diskutil mount` (restore) were attempted.
     assert not any(a[0] == ms.MOUNT_MSDOS_BIN for a in argvs)
     assert not any(a[:2] == [ms.DISKUTIL_BIN, "mount"] for a in argvs)
+
+
+def test_entry_unmount_transient_dissent_then_succeeds():
+    """Entry FSKit unmount fails once (transient dissenter) then succeeds.
+
+    Regression guard for the "could not prepare for sync" abort: a freshly
+    mounted volume is briefly held by Spotlight, so the first `diskutil unmount`
+    dissents. The settle+retry must recover on a later attempt and let the swap
+    proceed to mount_msdos rather than aborting the whole prepare.
+    """
+    work_mount = "/private/tmp/efis-datamanager/EFIS_3"
+    fskit_mounted = {"v": True}
+    calls = {"unmount": 0}
+
+    def _run(argv, timeout):
+        binary = argv[0]
+        if binary == ms.DISKUTIL_BIN and argv[1] == "unmount" and argv[-1] == FSKIT_MP:
+            calls["unmount"] += 1
+            if calls["unmount"] == 1:
+                # First attempt dissents (volume still held).
+                return _cp(returncode=1, stderr="Dissenter ... Spotlight")
+            fskit_mounted["v"] = False
+            return _cp(returncode=0)
+        if binary == ms.MOUNT_MSDOS_BIN:
+            return _cp(returncode=0)
+        # Teardown work-mount unmount + FSKit restore succeed harmlessly.
+        return _cp(returncode=0)
+
+    def _ismount(path):
+        if path == FSKIT_MP:
+            return fskit_mounted["v"]
+        if path == work_mount:
+            # Mounted after mount_msdos, until teardown; simplest: report mounted
+            # so teardown attempts the work-mount unmount.
+            return True
+        return path.startswith("/Volumes/")
+
+    body_ran = {"v": False}
+    with mock.patch.object(ms, "resolve_device_node", return_value=DEVICE), \
+        mock.patch.object(ms, "run_privileged", side_effect=_run) as rp, \
+        mock.patch.object(ms, "private_mountpoint", return_value=work_mount), \
+        mock.patch.object(ms, "_clear_stray_volume"), \
+        mock.patch.object(ms, "_lsof_holders", return_value=""), \
+        mock.patch("time.sleep"), \
+        mock.patch("os.sync"), \
+        mock.patch("os.path.ismount", side_effect=_ismount):
+        with ms.msdos_mount(FSKIT_MP) as wm:
+            body_ran["v"] = True
+            assert wm == work_mount
+
+    # The swap proceeded (body ran) despite the first-attempt dissent.
+    assert body_ran["v"] is True
+    # Two entry-unmount attempts were made (fail, then succeed).
+    assert calls["unmount"] >= 2
+    argvs = _argv_calls(rp)
+    # mount_msdos was reached -> the transient dissent did not abort the prepare.
+    assert any(a[0] == ms.MOUNT_MSDOS_BIN for a in argvs)
 
 
 def test_mount_msdos_failure_restores_fskit():

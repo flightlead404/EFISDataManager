@@ -79,14 +79,19 @@ def test_prop_swap_never_ends_unmounted_and_unreported(scenario):
     # Tracks whether the work mount currently looks mounted. It starts unmounted
     # (nothing there yet); a successful mount_msdos flips it to mounted; a
     # successful teardown unmount flips it back.
-    ismount_state = {"work_mounted": False}
+    ismount_state = {"work_mounted": False, "fskit_mounted": True}
 
     def _ismount(path):
         if path == WORK_MOUNT:
             return ismount_state["work_mounted"]
-        # The FSKit /Volumes path and anything else are treated as mounted so
-        # stray-volume probing does not misfire; only work_mount toggles.
-        return path != WORK_MOUNT and path.startswith("/Volumes/")
+        if path == FSKIT_MP:
+            # The entry unmount (and its settle+retry) verifies the FSKit volume
+            # is actually gone, not just rc==0, so this must flip when the
+            # unmount succeeds — mirrored in _run_privileged below.
+            return ismount_state["fskit_mounted"]
+        # Any other /Volumes/ path is treated as mounted so stray-volume probing
+        # does not misfire.
+        return path.startswith("/Volumes/")
 
     def _run_privileged(argv, timeout):
         """Return a return code driven by the argv + generated outcome map."""
@@ -117,8 +122,10 @@ def test_prop_swap_never_ends_unmounted_and_unreported(scenario):
                 # Stray /Volumes/<label> clear is best-effort; let it succeed.
                 if any(a.startswith("/Volumes/") for a in argv):
                     if argv[-1] == FSKIT_MP:
-                        # The initial FSKit unmount.
+                        # The initial FSKit unmount (settle+retry). On success
+                        # the volume is verified gone, so flip its mount state.
                         if scenario["fskit_unmount_ok"]:
+                            ismount_state["fskit_mounted"] = False
                             return _cp(returncode=0)
                         return _cp(returncode=1, stderr="unmount failed")
                     return _cp(returncode=0)

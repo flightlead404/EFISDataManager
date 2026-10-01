@@ -51,11 +51,14 @@ LEGACY_SYNC_MARKER_PATH = os.path.join(SYNC_STATE_DIR, ".sync_in_progress")
 # but stays MOUNTED — flaky USB link, controller hang under sustained writes,
 # or hypervisor USB contention — is not caught by the mount-removal watchdog.
 # The watchdog declares a stall only when BOTH liveness signals go flat for
-# this many seconds while rsync is still running: (1) stdout-log growth (with
-# --info=progress2 rsync streams transfer progress) AND (2) rsync CPU advance
-# (proves the process is alive during the silent file-list/--delete scan on a
-# large existing tree, which emits nothing on stdout and previously tripped a
-# stdout-only watchdog). Only a genuine wedge — no output AND no CPU — aborts.
+# this many seconds while rsync is still running: (1) stdout-log growth (rsync
+# emits one --out-format=%n line per transferred file, so the log grows during
+# the transfer phase) AND (2) rsync CPU advance (proves the process is alive
+# during the silent file-list/--delete scan on a large existing tree, which
+# emits NOTHING on stdout and previously tripped a stdout-only watchdog). CPU
+# is the only signal available during that scan because we cannot use
+# --info=progress2 (the launchd-resolved system rsync rejects it). Only a
+# genuine wedge — no output AND no CPU — aborts.
 # Field-tuned: routine per-family syncs advance at least one signal steadily; a
 # genuine stall parks at 0 B/s and 0% CPU for far longer than this.
 # Set to 0 to disable stall detection.
@@ -845,12 +848,17 @@ def sync_payload(
       - ``--size-only``      compare by size only; combined with...
       - ``--modify-window=2`` ...a 2-second mtime tolerance to absorb FAT/exFAT
                              timestamp granularity (Req 4.1).
-      - ``--info=progress2`` emit continuous whole-transfer progress to stdout so
-                             the log keeps growing during the transfer phase.
-                             This is one of the two liveness signals the stall
-                             watchdog watches (see below). Its progress/summary
-                             lines are NOT filenames, so the ``%n`` file-count
-                             parser filters them out.
+      - ``--out-format=%n``  emit one line per transferred file (the file-count
+                             signal + the transfer-phase stdout-growth liveness
+                             signal). NOTE: we deliberately do NOT pass
+                             ``--info=progress2``. The app runs under launchd,
+                             whose minimal PATH resolves bare ``rsync`` to the
+                             system ``/usr/bin/rsync`` (openrsync 2.6.9), which
+                             rejects ``--info`` outright ("unrecognized option").
+                             During the silent file-list/``--delete`` scan on a
+                             large existing tree there is therefore no stdout at
+                             all; the rsync CPU-advance signal (below) is what
+                             proves liveness through that phase.
       - one ``--exclude`` per entry in ``job.excludes`` (common metadata excludes
         plus the family's commit marker, which is written separately as the
         final atomic step).
@@ -910,7 +918,7 @@ def sync_payload(
 
     cmd = ["rsync", "-r", "--delete", "--delete-excluded",
            "--size-only", "--modify-window=2",
-           "--info=progress2", "--out-format=%n"]
+           "--out-format=%n"]
     # Protect structural excludes from --delete-excluded.
     for pattern in structural:
         cmd += ["--filter", f"P {pattern}"]
@@ -964,9 +972,9 @@ def sync_payload(
     #
     #      Liveness is measured by TWO independent signals, and we abort ONLY
     #      when BOTH have been flat for the timeout window:
-    #        (a) stdout-log GROWTH — with --info=progress2 rsync streams
-    #            continuous transfer progress (plus a line per file via %n), so a
-    #            growing log means the transfer phase is making progress; and
+    #        (a) stdout-log GROWTH — rsync emits one --out-format=%n line per
+    #            transferred file, so a growing log means the transfer phase is
+    #            making progress; and
     #        (b) rsync CPU ADVANCE — during the file-list build and --delete
     #            reconciliation scan rsync is SILENT on stdout (it emits nothing
     #            until the first byte transfers) yet burns CPU walking the tree.

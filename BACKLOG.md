@@ -562,3 +562,70 @@ FIX OPTIONS (spec decision):
 Recommend 1 (+ 4 as a perf win). Contained follow-up to chart-sync-stall-fix;
 menu-bar-tool change -> MENUBAR_VERSION bump. Until fixed, incremental refreshes
 of populated drives are unreliable; a from-scratch prepare works once.
+
+## RESOLVED v1.5.3: stall watchdog + the --info=progress2 launchd gotcha (2026-09-30)
+
+The stall-watchdog false-trip (entry above) is FIXED in v1.5.3. Implementation
+note / trap for the future:
+
+- The watchdog now uses TWO liveness signals and aborts only when BOTH are flat
+  for STALL_TIMEOUT_SECONDS: (a) rsync stdout-log growth (--out-format=%n, one
+  line per transferred file — the transfer phase) and (b) rsync CPU-time advance
+  (via `ps -o time= -p <pid>`, no psutil dep). CPU-advance is what proves
+  liveness during the SILENT file-list/--delete scan on a large tree, which
+  emits zero stdout and used to false-trip the stdout-only watchdog.
+- GOTCHA (cost us a bad v1.5.2 release): we initially also added
+  `--info=progress2`. It works with Homebrew rsync 3.4.4 (/opt/homebrew/bin,
+  first on an INTERACTIVE shell PATH), but the app runs under LAUNCHD, whose
+  minimal PATH resolves bare `rsync` to /usr/bin/rsync = openrsync 2.6.9, which
+  REJECTS `--info` ("unrecognized option") and aborts the whole transfer. So
+  v1.5.2 made populated-drive syncs HARD-FAIL. v1.5.3 drops progress2 entirely;
+  CPU-advance covers the scan phase on any rsync version.
+- LESSON: validate rsync flag changes against /usr/bin/rsync (the launchd-
+  resolved binary), NOT the interactive-shell Homebrew rsync. Field-validated
+  live on EFIS_1: a ~48-min / ~16k-file repair rode through with zero false
+  stalls (old code died at 120s).
+
+## v1.5.3: entry-side FSKit unmount now settles + retries (2026-09-30)
+
+Symptom: "could not prepare for sync, reinsert and retry" on a freshly mounted
+drive. Cause: msdos_mount step 3 (the diskutil unmount of /Volumes/<label> that
+STARTS the swap) was single-shot. A just-mounted volume is commonly held for a
+second or two by a transient dissenter (Spotlight mds/mdworker indexing the
+fresh mount), so the single attempt intermittently dissented and aborted the
+whole swap. Fix: new _unmount_fskit_for_swap() mirrors robust_unmount's
+settle-then-bounded-retry (SETTLE_WAIT_SECONDS first, then UNMOUNT_MAX_ATTEMPTS
+with growing backoff), but deliberately does NOT escalate to `unmount force`
+(entry side is still healthy on FSKit; a persistent holder should abort cleanly
+and leave the user on the working mount). Field-validated: swap started clean on
+EFIS_1 reinsert, no abort.
+
+## BUG: FSKit remount fails when device drops off USB bus during teardown (2026-09-30)
+
+SEVERITY: medium — leaves the drive needing a physical reinsert after an
+otherwise-successful sync; data is intact (sync completed + marker written
+before teardown).
+
+Observed on EFIS_1 after the ~48-min plates repair (2026-09-30 ~17:36):
+1. Sync completed cleanly ("plates sync complete" x2, "Drive update complete").
+2. Teardown robust_unmount of the private work mount was DISSENTED by
+   loginwindow (PID 604) on all 3 attempts — the screen had locked during the
+   long sync. robust_unmount correctly escalated to `diskutil unmount force`
+   (succeeded).
+3. restore_fskit_mount then failed all 4 attempts: attempt 1 rc=1 ("failed to
+   mount"), attempts 2-4 RAISED. `diskutil list disk4` afterwards: "Could not
+   find disk for disk4" — the DEVICE NODE WAS GONE. The drive had re-enumerated
+   off the bus (likely the force-unmount under the loginwindow lock, or a
+   SanDisk Ultra Fit reset after 48 min sustained load).
+4. App correctly fell back to "drive needs reinsertion" (no corruption). A
+   physical reinsert brought it back clean; .sync_state.json was already cleared
+   so NO re-sync triggered — the repair stuck.
+
+CANDIDATE FIXES (spec decision):
+- Detect device-gone in restore_fskit_mount (resolve_device_node returns
+  None / diskutil can't find the disk) and emit a precise "reinsert the drive"
+  message immediately instead of 4 failing/raising retries.
+- Hold a power/display-sleep assertion (IOPMAssertionCreateWithName /
+  `caffeinate`) for the duration of a long sync so the screen does not lock and
+  loginwindow never grabs the volume mid-teardown.
+- Consider shortening the teardown window / unmounting before the OS idle-locks.

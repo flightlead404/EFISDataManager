@@ -273,9 +273,11 @@ def test_commit_marker_on_dest_is_protected_from_delete(tmp_path):
     assert "ScannedCharts.sqlite" in files  # protected, not deleted
 
 
-# --- files_updated parsing with --info=progress2 ----------------------------
+# --- files_updated parsing robustness (defensive noise filter) --------------
 #
-# Adding --info=progress2 makes rsync stream transfer progress (percent, xfr#,
+# We no longer pass --info=progress2 (see the command test below), but the
+# _is_progress2_noise filter is retained defensively. Historically progress2
+# made rsync stream transfer progress (percent, xfr#,
 # to-chk=, carriage-return in-place rewrites) plus a trailing summary onto the
 # SAME stdout stream as the --out-format=%n filenames. The file counter must
 # ignore that noise and count only real transferred filenames.
@@ -377,8 +379,17 @@ def test_files_updated_ignores_progress2_lines(tmp_path, monkeypatch):
     assert files_updated == 2
 
 
-def test_progress2_flag_in_rsync_command(tmp_path, monkeypatch):
-    """The rsync invocation includes --info=progress2 (continuous progress)."""
+def test_rsync_command_has_no_info_progress2_flag(tmp_path, monkeypatch):
+    """The rsync invocation must NOT include --info=progress2.
+
+    Regression guard for the v1.5.2 -> v1.5.3 fix: the app runs under launchd,
+    whose minimal PATH resolves bare ``rsync`` to /usr/bin/rsync (openrsync
+    2.6.9), which rejects ``--info`` with "unrecognized option" and aborts the
+    whole transfer. Liveness during the silent scan phase is carried by the
+    rsync CPU-advance signal, not progress2, so the flag must stay out of the
+    command. ``--out-format=%n`` (file-count + transfer-phase stdout signal)
+    must remain.
+    """
     import subprocess
 
     src = tmp_path / "local"
@@ -397,4 +408,6 @@ def test_progress2_flag_in_rsync_command(tmp_path, monkeypatch):
 
     du.sync_payload(job)  # returns an error (OSError), but captures cmd
 
-    assert "--info=progress2" in captured["cmd"]
+    assert "--info=progress2" not in captured["cmd"]
+    assert not any(str(a).startswith("--info") for a in captured["cmd"])
+    assert "--out-format=%n" in captured["cmd"]

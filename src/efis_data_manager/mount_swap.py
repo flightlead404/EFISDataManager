@@ -813,6 +813,74 @@ def restore_fskit_mount(device_node: str) -> bool:
 # ---------------------------------------------------------------------------
 
 
+def _unmount_fskit_for_swap(fskit_mount_point: str):
+    """Unmount the FSKit ``/Volumes/`` volume at the START of a swap.
+
+    This is the entry-side counterpart to :func:`robust_unmount` (which handles
+    the teardown-side unmount of the private work mount). A volume that has JUST
+    appeared under ``/Volumes/`` is commonly held for a second or two by a
+    transient dissenter — most often Spotlight (``mds``/``mdworker``) indexing
+    the fresh mount. A single-shot ``diskutil unmount`` races that indexing burst
+    and intermittently fails with "failed to unmount ... Dissenter ...", which
+    aborts the whole swap and surfaces as "could not prepare for sync".
+
+    So we mirror robust_unmount's SETTLE-then-bounded-RETRY shape: an initial
+    settle (:data:`SETTLE_WAIT_SECONDS`) lets the indexing burst finish before
+    the first attempt, and each subsequent attempt waits a GROWING backoff
+    (``SETTLE_WAIT_SECONDS * attempt``) so a slower dissenter still gets time to
+    let go. Up to :data:`UNMOUNT_MAX_ATTEMPTS` attempts are made.
+
+    UNLIKE robust_unmount, this does NOT escalate to ``diskutil unmount force``.
+    On the entry side the volume is still healthy on FSKit and nothing has been
+    swapped yet, so a genuine persistent holder should abort cleanly and leave
+    the user on the working FSKit mount rather than have us force-yank a volume
+    we have not even started writing to.
+
+    Returns the last ``diskutil`` result (a completed process with ``returncode``
+    and ``stderr``) so the caller can build a precise MountSwapError message.
+    ``returncode == 0`` with the volume no longer mounted indicates success.
+    """
+    # Settle FIRST so a freshly-mounted volume's indexing burst can finish
+    # before we ask to unmount it.
+    time.sleep(SETTLE_WAIT_SECONDS)
+
+    result = None
+    for attempt in range(1, UNMOUNT_MAX_ATTEMPTS + 1):
+        result = run_privileged(
+            [DISKUTIL_BIN, "unmount", fskit_mount_point],
+            timeout=UNMOUNT_TIMEOUT_SECONDS,
+        )
+        if result.returncode == 0 and not os.path.ismount(fskit_mount_point):
+            if attempt > 1:
+                logger.info(
+                    "_unmount_fskit_for_swap: unmounted %s on attempt %s",
+                    fskit_mount_point,
+                    attempt,
+                )
+            return result
+
+        stderr = (result.stderr or "").strip()[:500]
+        logger.warning(
+            "_unmount_fskit_for_swap: unmount of %s did not succeed "
+            "(attempt %s/%s): %s",
+            fskit_mount_point,
+            attempt,
+            UNMOUNT_MAX_ATTEMPTS,
+            stderr or "no diskutil output",
+        )
+        holders = _lsof_holders(fskit_mount_point)
+        if holders:
+            logger.warning(
+                "_unmount_fskit_for_swap: lingering holders on %s:\n%s",
+                fskit_mount_point,
+                holders,
+            )
+        if attempt < UNMOUNT_MAX_ATTEMPTS:
+            time.sleep(SETTLE_WAIT_SECONDS * attempt)
+
+    return result
+
+
 @contextmanager
 def msdos_mount(
     fskit_mount_point: str, poller: Optional[PollerControl] = None
@@ -877,13 +945,14 @@ def msdos_mount(
     fskit_unmounted = False
 
     try:
-        # Step 3: unmount the FSKit volume. If this fails the volume is still at
-        # /Volumes/, so we abort WITHOUT having mounted anything privately.
-        unmount = run_privileged(
-            [DISKUTIL_BIN, "unmount", fskit_mount_point],
-            timeout=UNMOUNT_TIMEOUT_SECONDS,
-        )
-        if unmount.returncode != 0:
+        # Step 3: unmount the FSKit volume. A freshly-mounted volume is often
+        # held for a second or two by a transient dissenter (Spotlight indexing
+        # the new mount), so we settle + bounded-retry rather than single-shot;
+        # see _unmount_fskit_for_swap. If it still fails the volume is unharmed
+        # at /Volumes/, so we abort WITHOUT having mounted anything privately and
+        # the caller keeps the user on the healthy FSKit mount.
+        unmount = _unmount_fskit_for_swap(fskit_mount_point)
+        if unmount.returncode != 0 or os.path.ismount(fskit_mount_point):
             raise MountSwapError(
                 f"mount swap aborted: diskutil unmount of {fskit_mount_point!r} "
                 f"failed (rc={unmount.returncode}): "
