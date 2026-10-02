@@ -1,6 +1,6 @@
 # Implementation Plan
 
-- [ ] 1. Write bug condition exploration test
+- [x] 1. Write bug condition exploration test
   - **Property 1: Bug Condition** - Prepare/Adopt Populate Routes Through The Mount Swap And Does Not Race
   - **IMPORTANT**: Write this property-based test BEFORE implementing the fix.
   - **CRITICAL**: This test MUST FAIL on the current (unfixed) code — failure confirms the bug exists. DO NOT attempt to fix the test or the code when it fails.
@@ -16,7 +16,7 @@
   - Mark this task complete when the test is written, run, and its failure is documented.
   - _Requirements: 1.1, 1.2, 1.3_
 
-- [ ] 2. Write preservation property tests (BEFORE implementing fix)
+- [x] 2. Write preservation property tests (BEFORE implementing fix)
   - **Property 2: Preservation** - Managed Auto-Sync And Sync Semantics Unchanged
   - **IMPORTANT**: Follow the observation-first methodology — observe the UNFIXED behavior, then assert it.
   - **GOAL**: Capture the baseline behavior for inputs where the bug condition does NOT hold (a normal managed mount with no prepare/adopt in progress), so the fix can be proven not to regress it.
@@ -30,9 +30,9 @@
   - Mark this task complete when the tests are written, run, and passing on unfixed code.
   - _Requirements: 3.1, 3.2, 3.3, 3.4_
 
-- [ ] 3. Fix: route prepare/adopt populate through the mount swap and serialize against auto-sync
+- [x] 3. Fix: route prepare/adopt populate through the mount swap and serialize against auto-sync
 
-  - [ ] 3.1 Route prepare/adopt populate through `msdos_mount` in `drive_updater`
+  - [x] 3.1 Route prepare/adopt populate through `msdos_mount` in `drive_updater`
     - In `src/efis_data_manager/drive_updater.py`, add an optional `poller=None` parameter to `prepare_drive(volume_path, label, progress_callback, poller=None)` and `adopt_drive(mount_point, progress_callback, poller=None)`.
     - Keep `_ensure_identity` + provenance stamp BEFORE the swap (identity must be at the volume root so `resolve_drive_id` reads it on the work mount).
     - Wrap the populate call: `with msdos_mount(mount_point, poller=poller) as work_mount: update_results = update_drive(work_mount, progress_callback=...)` (import `msdos_mount`, `MountSwapError` from `efis_data_manager.mount_swap`).
@@ -43,7 +43,7 @@
     - _Preservation: identity-before-populate + update_drive semantics unchanged (Property 2)_
     - _Requirements: 2.1, 2.3, 3.2_
 
-  - [ ] 3.2 Add the operation-in-progress guard and consult it in the mount-detect handler
+  - [x] 3.2 Add the operation-in-progress guard and consult it in the mount-detect handler
     - In `src/efis_data_manager/app.py`, add a lock-protected in-progress set (e.g. `self._provisioning_drives`) with register/unregister helpers keyed on a value stable across a reformat+remount (e.g. whole-disk/device id and/or label + discovered mount path).
     - In `_do_prepare_drive`/`_do_adopt_drive`: register the drive BEFORE format/identity and unregister in a `finally` AFTER populate (covers the whole format → identity → populate span). Pass `poller=self._usb_monitor` into `prepare_drive`/`adopt_drive`.
     - In `_on_efis_drive_mounted`: if the mounted drive matches an in-progress key, log and RETURN without launching `_run_archive`/`_run_drive_update`.
@@ -52,21 +52,21 @@
     - _Preservation: normal managed-mount auto-sync unchanged when no prepare in progress (Property 2)_
     - _Requirements: 2.2, 3.1, 3.3_
 
-  - [ ] 3.3 Verify bug condition exploration test now passes
+  - [x] 3.3 Verify bug condition exploration test now passes
     - **Property 1: Expected Behavior** - Prepare/Adopt Populate Routes Through The Mount Swap And Does Not Race
     - **IMPORTANT**: Re-run the SAME test from task 1 — do NOT write a new test.
     - Run `tests/test_prop_prepare_adopt_uses_swap.py`.
     - **EXPECTED OUTCOME**: Test PASSES (populate runs inside `msdos_mount` on the work mount; no concurrent auto-sync launches for an in-progress drive) — confirms the bug is fixed.
     - _Requirements: 2.1, 2.2, 2.3_
 
-  - [ ] 3.4 Verify preservation tests still pass
+  - [x] 3.4 Verify preservation tests still pass
     - **Property 2: Preservation** - Managed Auto-Sync And Sync Semantics Unchanged
     - **IMPORTANT**: Re-run the SAME tests from task 2 — do NOT write new tests.
     - Run `tests/test_prop_prepare_adopt_preserves_autosync.py`.
     - **EXPECTED OUTCOME**: Tests PASS (normal managed-mount auto-sync, identity-before-populate, and update_drive semantics unchanged) — confirms no regressions.
     - _Requirements: 3.1, 3.2, 3.3, 3.4_
 
-- [ ] 4. Checkpoint - Ensure all tests pass
+- [x] 4. Checkpoint - Ensure all tests pass
   - Run the full test suite (`./venv/bin/python -m pytest`); ensure all tests pass, including the existing `chart-sync-stall-fix` mount-swap/usb-monitor tests (no regressions).
   - Manually validate Prepare Drive → Start clean on one of the two remaining fresh test drives (EFIS_4 is being salvaged by the auto-sync fallback and is not a clean test).
   - Release step (per versioning policy): bump `__version__` and `MENUBAR_VERSION` to the v1.5.1 patch, keep `pyproject.toml` `version` in sync with `__version__`, and leave `DASHBOARD_VERSION` unchanged. Tag `v1.5.1`.

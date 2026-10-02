@@ -3,6 +3,197 @@
 Non-urgent ideas and parked work. Not commitments; a scratchpad for the next
 versions.
 
+---
+
+# ROADMAP (authoritative — top of file)
+
+This section is the authoritative map of where the project is going. The dated
+entries below it are the detailed evidence/record (cockpit tests, investigations)
+that these roadmap items draw on; titles down there are chat-derived and may not
+match the job name — use THIS section as the index.
+
+## ACTIVE NOW
+
+### Image-based drive write (dd an image instead of rsync-to-mount)
+STATUS: investigation; design-first spec at `.kiro/specs/image-based-drive-write/`
+(design.md only, no requirements/tasks yet by design). Mac side VALIDATED
+2026-10-02 (compose FAT32 image locally -> dd to raw slice -> raw-readback hash
+matched exactly). BLOCKED on the single GO/NO-GO gate: does the GRT EFIS read a
+dd'd drive (airport test). If GO: eliminates the FSKit stall, the ~86% AppleDouble
+sidecar tax, AND the screen-lock teardown bug in one architecture; graduate to
+requirements/tasks. If NO-GO: fall back to Strategy C (mtools mcopy to raw device).
+Subsumes the open bug "FSKit remount fails when device drops off bus during
+teardown" (that bug disappears with no mount-swap). Detailed findings: this
+session's cycle-delta measurement (~68% churn) + the FSKit/mount_msdos entries
+below.
+
+## PRIORITIZED BIG-PICTURE ITEMS (parked; flesh out next)
+
+### 1. Multi-device handling  [FLESHED OUT 2026-10-02]
+Draft spec parked at `.kiro/specs/multi-device-settings/` (predates this; will be
+rewritten to match the decisions below). For an aircraft with more than one GRT
+display (this user: primary HXr Link_ID=1 + backup Mini A/P Link_ID=2, both
+Mode_S A60670). SINGLE-AIRCRAFT assumption (multi-aircraft is a separate parked
+heading). Max 3 devices.
+
+SCOPE OF THIS ITEM = device identity + per-device archiving separation + naming +
+the drive<->device BINDING model. The actual placing of a device's settings onto
+a drive (prepare/sync population) lives under item #2 Settings management, which
+consumes the identity/binding model defined here.
+
+Decisions:
+- **Device identity = Link_ID** (SID 387) read from the drive's current settings
+  file via the existing extract_source_key (Source_Key = Mode_S:Link_ID). Within
+  one aircraft Mode_S is constant, so Link_ID is the discriminator — this tells
+  two IDENTICAL HXrs apart (distinct Link_IDs, which the inter-display link
+  requires). Mode_S kept as a consistency check, not a separate axis.
+- **Affected files = Settings, WP, Plan ONLY** (the GRT settings-format files that
+  carry Link_ID). Charts/nav are aircraft-level/device-independent (unchanged).
+  FDL is unchanged: one recorder, and existing (filename+start_time) dedup already
+  handles the same flight appearing on multiple drives.
+- **Per-device archive subdirs**, keyed by Link_ID, e.g.
+  `~/EFIS/Archive/Settings/link1/Settings-YYYY-MM-DD.dat`,
+  `~/EFIS/Archive/Settings/link2/WP-...`. The v1.5.4 content-aware
+  archive-on-change dedup is reused but scoped PER DEVICE (its "most recent" is
+  per-Link_ID), so device A never clobbers device B. This evolves the shipped
+  archiver (same mechanism, device-scoped), not a new one.
+- **Friendly names:** config map Link_ID -> name, DEFAULTS to "Link N", editable
+  in the DM (menu-bar) Settings page (where drives are managed; the dashboard
+  defers drive settings to the DM). Auto-detected on mount; NO blocking prompt
+  (preserves shove-in-and-walk-away). Name is a display label only; Link_ID is
+  the stable key.
+- **Drive<->device binding:** a drive must be associated with a device so #2 can
+  place the right device's settings on it. Two paths: (a) read Link_ID from the
+  drive's existing settings file (works for an already-populated drive on sync);
+  (b) EXPLICIT binding at Prepare time for a new/blank drive (no settings file to
+  read yet) when >1 device is configured — DM asks which device (short list, max
+  3) and stores the binding, e.g. extend EFIS_DRIVE_ID.json with a
+  `device_link_id` field. (The identity file is otherwise device-agnostic today —
+  a random UUID for sync-state only.)
+- **Undetermined source** (no Link_ID AND no Mode_S derivable): MESSAGE ONLY, no
+  archive/no action. A settings file is almost always present (DM-populated,
+  restored, or EFIS-saved since last sync), so this is a true edge case.
+
+Already DONE / reused: extract_source_key / Source_Key (efis-settings-import),
+the primary-only import gate (Req 15, shipped), the content-aware archiver
+(v1.5.4). This item makes archiving device-aware and defines the binding model.
+
+### 2. Settings management  [FLESHED OUT 2026-10-02]
+Three capabilities (A/B/C) plus the settings-population-to-drive mechanic moved
+here from #1. Settings are flight-CRITICAL (Vne, redlines, limits, cylinder
+count) — correctness over convenience throughout. Context: settings are very
+static once dialed in, but churn heavily during initial flight-test/config and
+mission changes (e.g. starting IFR ops). Builds on #1's per-device identity.
+
+CROSS-CUTTING CONSTRAINT — the CHECKSUM wall (cockpit-confirmed 2026-09-15):
+GRT's CHECKSIZE=/CHECKSUM= algorithm is UNKNOWN, and the CHECKSUM folds in
+UPDATE. A settings file whose CHECKSUM does not match its contents is SILENTLY
+IGNORED by the EFIS — it reports "settings restored" but loads the OLD values
+(proven: edited Vso 48->44 without recomputing CHECKSUM -> EFIS kept 48). So we
+can NEVER fabricate or bump UPDATE/CHECKSUM. Every write-to-drive reuses an
+archived file's OWN original, valid UPDATE+CHECKSUM byte-for-byte.
+
+**A. Per-device dated archive** (largely built via #1 + v1.5.4): content-aware,
+per-Link_ID, archive-on-change for Settings/WP/Plan. Principle: the settings file
+on a returning drive IS the current settings, so it is archived with today's date
+per normal content-aware rules (see round-trip handling in B for the one
+exception).
+
+**B. Restore to a prior version** — checksum-safe, WRITE-NOW, ONE-SHOT:
+- UX: in DM Settings, pick a device + a dated archive version -> write NOW to the
+  inserted/bound drive (NOT deferred to next sync). One-shot override.
+- Mechanism (cockpit-validated "single valid file as sole slot wins"): write the
+  chosen archived file as the SOLE settings slot on the USB, DELETE any other
+  settings slot(s) on the USB so only one settings file is resident, and REUSE
+  that file's own original UPDATE+CHECKSUM (never bump/recompute). With only one
+  slot present, "Restore All Settings" loads it by default — no outranking, no
+  CHECKSUM fabrication. (We do NOT need both .bak and .dat present.)
+- Set a per-device PENDING-RESTORE marker (restored archive date + content_hash).
+  The marker is per-device, consumed by the next returning drive for that device,
+  and overwritten by a new restore.
+- ROUND-TRIP handling on the drive's return (the subtle part): archive what is on
+  the drive per normal content-aware rules in all cases EXCEPT the one ambiguous
+  case. Reasoning (user): what is on the drive IS the current settings, so
+  re-dating it is correct whether (1) the EFIS re-saved after restore [its
+  higher-UPDATE file is there -> archive it], or (2) the restored config was
+  loaded and not re-saved [that old config is now genuinely current -> re-archive
+  with today's date is correct]. The ONLY wrong case is (4) restored but NEVER
+  loaded into the EFIS -> re-dating would wrongly record a never-used config as
+  current. We cannot auto-detect "was it loaded." So:
+    * On return, if a pending-restore marker exists for the device AND the
+      drive's settings content STILL MATCHES the restored content (ambiguous:
+      case 2 vs 4) -> PROMPT: "Current settings were restored from the archive
+      dated <date>. Were these loaded into the EFIS? [Yes -> re-archive with
+      today's date] [No -> do not re-archive]."
+    * If the content DIFFERS from what we restored -> unambiguous (EFIS saved a
+      new config) -> archive it, no prompt.
+    * No pending marker -> normal archive, no prompt.
+  So the prompt is the ONLY interactive touchpoint and fires ONLY in the
+  restored-and-unchanged-on-return case; normal operation never shows it.
+
+**C. Settings explorer — READ-ONLY (view + compare); NO editing**:
+- View: parse a settings file and show SID->value with human-readable labels
+  (reuse the existing Settings_Mapper).
+- Compare: diff two settings files (two dated archives for a device, or an
+  archive vs. what is on a drive) — which SIDs changed, old->new, labeled.
+  Useful for flight-test iteration ("what changed between these two configs?").
+- EDITING IS EXPLICITLY BLOCKED on this firmware: a hand-edited file has a stale
+  CHECKSUM and is silently ignored (above). Do NOT build edit unless the GRT
+  CHECKSUM algorithm becomes known — shipping it would create a silent
+  "my change didn't take" hazard on flight-critical limits.
+
+**Settings-population-to-drive (moved here from #1):** placing the correct
+device's LATEST settings on a drive during Prepare/sync is the SAME writer as
+restore, just sourcing "latest archive for device N" instead of "chosen version."
+Restore is the override variant of this one mechanism. Also folds in the
+"latest software + settings on prepare" population policy (dated entry below) —
+including staging the EFIS/AHRS software uploaders, whose "latest" source is an
+OPEN QUESTION (GRT site? local folder? which files?). Consumes #1's device
+identity/binding (which device a drive is for).
+
+OPEN QUESTIONS for the spec: (a) does "Restore All Settings" load cleanly from a
+SINGLE slot file (we believe yes; user: one file is best) — final cockpit
+confirm; (b) source + versioning of "latest EFIS/AHRS software" for population;
+(c) exact DM Settings UX for browsing per-device dated versions + triggering a
+restore.
+
+### 3. Sudo retirement (signed privileged helper)
+= chart-sync-stall-fix Phase 2 tasks 14-19 (currently the only open tasks in that
+spec): adopt Developer ID code signing + notarization, build a signed
+SMAppService/launchd privileged helper, swap the run_privileged backend from the
+interim sudoers grant to the helper, retire the sudoers.d file, re-release.
+Gated on a paid Apple Developer ID (~$99/yr). The privilege model for
+image-based-drive-write (raw dd/readback need root) SHOULD be designed together
+with this — same privileged-device-op foundation; do once, not twice.
+(TO FLESH OUT.)
+
+### 4. Windows version
+LOE analysis done (dated entry below): ~2.5-4 wk full / ~1 wk dashboard-MVP;
+shared-core refactor recommended. Parked behind dialing in the Mac version.
+(TO FLESH OUT.)
+
+### 5. Natural-language query capability
+= efis-data-manager spec tasks 7.1-7.6 (the only open tasks there): ask questions
+of the flight-data SQLite DB in natural language (e.g. EGT spread, oil
+consumption, fuel-flow trends, leaning events) -> SQL -> formatted result, surfaced
+in the menu-bar UI. Open design question: local LLM vs API vs structured NLQ.
+(TO FLESH OUT.)
+
+## SOMEDAY / UNPRIORITIZED (await "customer demand" — so far ~nobody has used a release)
+
+### Multi-aircraft support
+Extend multi-device identity beyond the single-aircraft assumption: key devices
+on the FULL Source_Key (Mode_S:Link_ID) so one install can manage drives/settings
+for more than one aircraft. Parked until there is demand; the single-aircraft
+model (item #1) is built so Mode_S is already carried and can become a real axis
+later without a rewrite.
+
+### (Windows version is item #4 above but is similarly demand-gated.)
+
+---
+
+# DETAILED ENTRIES / EVIDENCE (dated, chat-derived; see Roadmap above for the index)
+
 ## efis-settings-import: real-HXr validation findings (2026-09-12)
 
 First real data from the primary HXr (two flights + a genuine settings save with
