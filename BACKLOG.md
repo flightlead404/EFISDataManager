@@ -188,6 +188,20 @@ for more than one aircraft. Parked until there is demand; the single-aircraft
 model (item #1) is built so Mode_S is already carried and can become a real axis
 later without a rewrite.
 
+### EFIS/AHRS software auto-staging for the composer  [DEFERRED 2026-10-03]
+The image-based-drive-write composer stages ChartData, nav DB, and settings from
+current local sources, but NOT the EFIS/AHRS software uploaders
+(HHXRUp-*/MiniUp-*/MiniAHRSUp-*). Reason: the DM's software check
+(check_and_download_efis_software) only DETECTS a new version and notifies a URL
+for MANUAL download — GRT's site bot/Sucuri protection makes headless download
+unreliable, so there is no auto-staged current software to pull. For now the
+composer either omits software or carries forward whatever local copy exists;
+software currency is the user's manual responsibility (prompted by the DM's
+detect+notify). REVISIT options when prioritized: (1) a user-maintained local
+software folder the composer stages from; (2) investigate reusing the nav-DB
+Playwright/Sucuri-bypass download path for software; (3) carry-forward
+last-known. Deferred per user 2026-10-03; not blocking image-based-drive-write.
+
 ### (Windows version is item #4 above but is similarly demand-gated.)
 
 ---

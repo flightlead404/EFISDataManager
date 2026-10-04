@@ -177,6 +177,70 @@ Scope/fit: (9) full-rewrite acceptable at ~68% churn (confirm no important tiny-
 top-up case needs a secondary path); (10) is the mount-swap fully retired or kept
 as a rollout fallback.
 
+## Validation result (2026-10-03) — GO
+
+Real-EFIS read test PASSED: a GRT EFIS read a dd'd drive normally. Combined with
+the Mac-side validation (compose + dd to raw slice + raw-readback hash match),
+Strategy D is confirmed viable end to end. Proceed to requirements/tasks.
+
+Finding from the test — COMPOSITION SOURCING (new requirement): the test image
+carried a STALE nav.db because it was hand-composed by copying EFIS_3's existing
+on-drive files (its nav.db was the Sep-6 cycle). The dd/read was perfect; the
+input was wrong. The real composer MUST source each component from its CURRENT
+authoritative source, not from whatever happened to be on a drive:
+  - ChartData  <- current chart source (~/EFIS/USB/ChartData)
+  - nav.db / NAV-proc.DB  <- current nav source the DM maintains (NOT an old drive)
+  - settings (Settings/WP/Plan)  <- per-device latest archive (or restore choice) [item #2]
+  - EFIS/AHRS software uploaders  <- current software source [open question: where]
+  - identity (EFIS_DRIVE_ID.json)  <- the drive's own, or newly minted on prepare
+A per-component "current source" manifest should be an explicit part of the
+composer design so no component is ever stale.
+
+## Composer auto-refresh, notification, and component staging (2026-10-03)
+
+### Auto-refresh trigger + frequency
+The composer rebuilds the local image when NEW data lands. DECISION: event-driven
+off the DM's EXISTING data checks, NOT a separate polling timer. When the DM's
+chart check (every 12h), nav-DB check (24h), or software check (24h) completes
+AND reports new data downloaded, it fires a composer refresh. This is naturally
+bounded by the shortest DM cadence (12h charts) — satisfying "composer frequency
+<= smallest DM check frequency" — with no redundant timer to drift. (If an
+explicit floor is ever wanted: config composer_check_interval_hours capped at the
+min DM interval; start event-driven.)
+
+### "New image available" notification — DECISION: persistent menu item + menu-bar badge
+Today the only mechanism is rumps.notification() = a TRANSIENT banner (easy to
+miss). The user wants visible + permanent. Chosen (both are existing app idioms,
+fully app-controlled, persist until acted on):
+- **Persistent menu item** (primary): a menu line reflecting image state, e.g.
+  "USB image current" -> "New image ready (nav 10/1 + plates 2610)" when a fresh
+  image is composed; stays until the user acts. Mirrors the existing
+  "Download Charts" menu-item pattern. Make it ACTIONABLE ("New image ready ->
+  prepare a drive").
+- **Menu-bar icon/title badge** (glanceable): badge the menu-bar glyph when a new
+  image is ready (the app already swaps self.title for drive state).
+Rejected: C) sticky native UNUserNotificationCenter (more work, macOS controls
+dwell anyway); D) dashboard banner is a nice-to-have complement, later.
+Notification should name what's new, specifically nav (NAV.DB + NAV-proc.DB) and
+chart cycle.
+
+### Component staging sources (refines the composition manifest)
+- ChartData: current chart source (~/EFIS/USB/ChartData). STAGED locally today.
+- nav.db / NAV-proc.DB: current nav source — check_and_download_nav_db() DOES
+  download the current nav DB locally, so a current source EXISTS. (The test
+  image's stale nav was a hand-compose mistake, not a gap.)
+- settings (Settings/WP/Plan): per-device LATEST archive, or the restore choice
+  (item #2). Clear source.
+- EFIS/AHRS software uploaders (HHXRUp-*/MiniUp-*/MiniAHRSUp-*): DEFERRED
+  (user 2026-10-03) — OUT of immediate composer scope. The DM cannot auto-stage
+  current software (check only DETECTS + notifies a URL; GRT bot protection
+  blocks headless download). For v1 the composer omits software or carries
+  forward whatever local copy exists; software currency stays the user's manual
+  responsibility. Revisit later — see BACKLOG "EFIS/AHRS software auto-staging
+  for the composer".
+- identity (EFIS_DRIVE_ID.json): the drive's own, or newly minted on prepare;
+  extended with device_link_id for the multi-device binding (roadmap #1).
+
 ## Non-goals
 
 - Not changing what chart data is sourced/downloaded.
