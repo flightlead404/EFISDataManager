@@ -101,8 +101,9 @@ def archive_efis_drive(
         elif result == "skipped":
             results["skipped"] += 1
             # Already archived (matching size), but it may not have been
-            # imported to the DB — queue it. import_fdl_file dedups by
-            # (filename, start_time), so re-importing is a no-op if present.
+            # imported to the DB — queue it. Import is record-level idempotent
+            # (dedup by (timestamp, content_hash)), so re-importing records
+            # already present is a no-op.
             fdl_archived_paths.append(fdl_dest / os.path.basename(f))
         else:
             results["errors"].append(result)
@@ -474,28 +475,40 @@ def _archive_settings_family(
 
 
 def _import_fdl_to_database(fdl_paths: list[Path], results: dict):
-    """Parse archived FDL files and import into the analysis database.
+    """Parse the archived FDL candidate set and import with cross-file pooling.
+
+    Parses every candidate file, then hands the whole set to
+    ``database.import_fdl_files``, which concatenates and timestamp-orders the
+    records (never by filename), segments them at gaps > 3 minutes, and imports
+    each contiguous run as one operation. This both SPLITS multi-session files
+    and MERGES a flight the EFIS rotated across numbered files. Record-level
+    dedup makes re-runs and boundary overlap idempotent.
 
     Non-fatal: errors here don't affect the archive results, just logged.
     """
     from efis_data_manager.fdl_parser import parse_fdl_file
-    from efis_data_manager.database import import_fdl_file
+    from efis_data_manager.database import import_fdl_files
 
-    imported = 0
+    fdl_files = []
     for path in fdl_paths:
         try:
-            fdl = parse_fdl_file(str(path))
-            op_id = import_fdl_file(fdl)
-            if op_id is not None:
-                imported += 1
-                logger.info(f"Imported to DB: {path.name} (op_id={op_id}, "
-                           f"flight={fdl.has_flight})")
+            fdl_files.append(parse_fdl_file(str(path)))
         except Exception as e:
-            logger.error(f"FDL database import failed for {path.name}: {e}")
+            logger.error(f"FDL parse failed for {path.name}: {e}")
+
+    imported = 0
+    try:
+        op_ids = import_fdl_files(fdl_files)
+        imported = len(op_ids)
+    except Exception as e:
+        logger.error(f"FDL database import failed: {e}")
 
     results["fdl_imported"] = imported
     if imported:
-        logger.info(f"Imported {imported} FDL file(s) to analysis database.")
+        logger.info(
+            f"Imported {imported} operation(s) to analysis database "
+            f"from {len(fdl_files)} FDL file(s)."
+        )
 
 
 def _import_logbook_to_database(logbook_paths: list[Path], results: dict) -> bool:

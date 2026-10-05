@@ -132,6 +132,15 @@ AIRBORNE_IAS_THRESHOLD = 40.0
 # Minimum RPM to consider engine running
 ENGINE_RUNNING_RPM = 400
 
+# Gap-based operation segmentation (see spec fdl-operation-segmentation).
+# An operation is a maximal contiguous run of records whose consecutive
+# timestamp gaps are all AT MOST this threshold. A gap strictly greater than
+# this starts a new operation. 3 minutes (user-confirmed): sampling is nominally
+# 1 Hz and there are no legitimate multi-minute gaps within a single engine
+# cycle, so 3 minutes cleanly separates distinct sessions while leaving
+# contiguous short ground operations intact.
+GAP_THRESHOLD_SECONDS = 180
+
 
 @dataclass
 class FDLRecord:
@@ -247,6 +256,87 @@ class FDLFile:
     @property
     def date(self) -> Optional[date]:
         return self.start_time.date() if self.start_time else None
+
+
+@dataclass
+class Operation:
+    """One maximal contiguous run of FDL records (one engine start/stop cycle).
+
+    Unlike ``FDLFile`` (which is one CSV file), an ``Operation`` is defined by
+    gap-based segmentation across the timestamp-ordered candidate record set:
+    its records are a contiguous run whose consecutive gaps are all at most
+    ``GAP_THRESHOLD_SECONDS``. It may span multiple files (rotated flight) or be
+    one of several runs cut out of a single multi-session file.
+
+    ``source_label`` is a purely informational provenance label of the
+    contributing filename(s); it is NOT part of any identity/dedup key.
+    """
+    records: list[FDLRecord] = field(default_factory=list)
+    source_label: Optional[str] = None
+
+    @property
+    def record_count(self) -> int:
+        return len(self.records)
+
+    @property
+    def start_time(self) -> Optional[datetime]:
+        return self.records[0].timestamp if self.records else None
+
+    @property
+    def end_time(self) -> Optional[datetime]:
+        return self.records[-1].timestamp if self.records else None
+
+    @property
+    def duration_seconds(self) -> int:
+        if self.start_time and self.end_time:
+            return int((self.end_time - self.start_time).total_seconds())
+        return 0
+
+    @property
+    def has_flight(self) -> bool:
+        """True if any records show airborne (IAS above threshold)."""
+        return any(r.airborne for r in self.records)
+
+    @property
+    def date(self) -> Optional[date]:
+        return self.start_time.date() if self.start_time else None
+
+
+def segment_records(
+    records: list[FDLRecord],
+    gap_threshold_seconds: int = GAP_THRESHOLD_SECONDS,
+) -> list[list[FDLRecord]]:
+    """Segment a timestamp-ordered record list into contiguous runs.
+
+    Cuts the stream at every point where the gap between two consecutive
+    records exceeds ``gap_threshold_seconds``. A gap of exactly the threshold
+    stays in one run (strict ``>`` comparison); a gap one second larger splits.
+
+    Pure function: assumes ``records`` is already sorted ascending by timestamp
+    and does not reorder or mutate it.
+
+    Args:
+        records: FDL records sorted ascending by timestamp.
+        gap_threshold_seconds: Maximum allowed gap within one operation.
+
+    Returns:
+        A list of runs; each run is a non-empty list of ``FDLRecord``.
+        An empty input yields ``[]``; a single record yields one run.
+    """
+    if not records:
+        return []
+
+    runs: list[list[FDLRecord]] = []
+    current: list[FDLRecord] = [records[0]]
+    for i in range(1, len(records)):
+        gap = (records[i].timestamp - records[i - 1].timestamp).total_seconds()
+        if gap > gap_threshold_seconds:
+            runs.append(current)
+            current = [records[i]]
+        else:
+            current.append(records[i])
+    runs.append(current)
+    return runs
 
 
 def parse_fdl_file(filepath: str) -> FDLFile:
