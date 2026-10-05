@@ -54,15 +54,31 @@ PRIVATE_MOUNT_BASE = "/private/tmp/efis-datamanager"
 # nothing else, and so run_privileged never resolves a binary off $PATH.
 MOUNT_MSDOS_BIN = "/sbin/mount_msdos"
 DISKUTIL_BIN = "/usr/sbin/diskutil"
+# Raw-write AND raw-read binary for the image-based-drive-write feature. The
+# composed FAT32 image is dd'd onto the drive's RAW partition slice
+# (/dev/rdiskNsN) and the written region is read straight back for the readback
+# hash — both through this one binary. Pinned so the sudoers backend can grant
+# NOPASSWD for exactly this path and run_privileged never resolves it off $PATH.
+DD_BIN = "/bin/dd"
 
 # Whitelist of privileged commands this shim will run. A call is refused unless
 # its first element is one of these exact absolute paths.
-_ALLOWED_BINS = frozenset({MOUNT_MSDOS_BIN, DISKUTIL_BIN})
+_ALLOWED_BINS = frozenset({MOUNT_MSDOS_BIN, DISKUTIL_BIN, DD_BIN})
 
 # A removable-drive BSD *slice* node, e.g. /dev/disk4s1. The mitigation only
 # ever operates on a partition slice (diskNsN), never a whole-disk node
 # (diskN), so the pattern requires the trailing sNN.
 _DEVICE_NODE_RE = re.compile(r"^/dev/disk\d+s\d+$")
+
+# A RAW BSD *slice* node, e.g. /dev/rdisk4s1 (note the leading 'r' and the
+# trailing sNN). The image-based-drive-write dd path operates ONLY on the raw
+# partition slice: the 'r' selects the unbuffered character device dd writes/
+# reads, and the trailing sNN keeps it a PARTITION slice, never a whole-disk raw
+# node (/dev/rdiskN) which would clobber the partition scheme. This is the
+# matcher for the dd of=/if= operand; it is deliberately separate from
+# _DEVICE_NODE_RE, which matches the non-raw /dev/diskNsN nodes the diskutil-
+# backed validate_device_node understands.
+_RAW_DEVICE_NODE_RE = re.compile(r"^/dev/rdisk\d+s\d+$")
 
 
 class PrivilegeError(RuntimeError):
@@ -102,6 +118,17 @@ class MountSwapError(RuntimeError):
 def _looks_like_device_node(value: str) -> bool:
     """True iff ``value`` is a /dev/diskNsN removable-slice node string."""
     return bool(_DEVICE_NODE_RE.match(value))
+
+
+def _looks_like_raw_device_node(value: str) -> bool:
+    """True iff ``value`` is a /dev/rdiskNsN RAW partition-slice node string.
+
+    The dd write/read path targets the raw slice (/dev/rdiskNsN); this is the
+    syntactic matcher for the dd ``of=``/``if=`` operand. A whole-disk raw node
+    (/dev/rdiskN, no sNN) and any non-raw node (/dev/diskNsN) both fail here, so
+    the dd path can never be pointed at a whole disk or a buffered node.
+    """
+    return isinstance(value, str) and bool(_RAW_DEVICE_NODE_RE.match(value))
 
 
 def _device_info(device_node: str) -> Optional[dict]:
@@ -197,6 +224,60 @@ def validate_mountpoint(mountpoint: str) -> None:
         )
 
 
+def _validate_dd_argv(argv: list) -> None:
+    """Validate a ``/bin/dd`` raw-write / raw-read argv before execution.
+
+    The image-based-drive-write feature uses ``/bin/dd`` for BOTH the write
+    (``of=/dev/rdiskNsN``) and the readback (``if=/dev/rdiskNsN``). A dd call is
+    accepted ONLY when it carries exactly one device operand and that operand is
+    a RAW partition slice ``/dev/rdiskNsN`` (:func:`_looks_like_raw_device_node`):
+
+      * a whole-disk raw node (``/dev/rdiskN``, no slice) is refused — it would
+        clobber the partition scheme;
+      * a non-raw node (``/dev/diskNsN``) is refused — the dd path operates only
+        on the unbuffered raw character device;
+      * any other ``of=``/``if=`` target (a regular file, a bogus path) is
+        refused — dd may only read from / write to the raw slice here.
+
+    The raw device is deliberately validated syntactically (NOT via the
+    diskutil-backed :func:`validate_device_node`): the destructive diskutil
+    checks (removable + FAT32 + size + label + confirmation) are performed by
+    the device guard against the NON-raw ``/dev/diskNsN`` node BEFORE the write
+    is ever built, so re-querying diskutil on the ``r`` node here would be both
+    wrong (diskutil keys off the non-raw node) and redundant.
+    """
+    # Pull the of=/if= operands out of the dd argv. dd's syntax is
+    # ``dd if=SRC of=DST bs=... ...`` with operands in any order; the device is
+    # whichever of of=/if= names a /dev/ path.
+    operands = {}
+    for token in argv[1:]:
+        if token.startswith("of="):
+            operands["of"] = token[len("of=") :]
+        elif token.startswith("if="):
+            operands["if"] = token[len("if=") :]
+
+    # Exactly one side (of= for a write, if= for a read) must name a device; the
+    # other side is a local file (the composed image / the readback sink) and is
+    # not a privileged target.
+    device_targets = [
+        value
+        for value in operands.values()
+        if value.startswith("/dev/")
+    ]
+    if len(device_targets) != 1:
+        raise PrivilegeError(
+            "refusing privileged call: dd must target exactly one /dev raw "
+            f"slice via of=/if=, got {device_targets!r}"
+        )
+
+    raw_node = device_targets[0]
+    if not _looks_like_raw_device_node(raw_node):
+        raise PrivilegeError(
+            f"refusing privileged call: dd target {raw_node!r} is not a "
+            "/dev/rdiskNsN raw partition slice"
+        )
+
+
 def _validate_argv(argv: list) -> None:
     """Validate a privileged argv array before execution.
 
@@ -210,6 +291,11 @@ def _validate_argv(argv: list) -> None:
       * ``/sbin/mount_msdos <device> <mountpoint>`` — last arg is the mountpoint.
       * ``/usr/sbin/diskutil unmount|mount ...`` — diskutil chooses/derives the
         mountpoint itself, so only the device/volume token is constrained.
+      * ``/bin/dd ... of=/dev/rdiskNsN`` (write) / ``if=/dev/rdiskNsN`` (read) —
+        the dd path targets a RAW partition slice, so the ``of=``/``if=`` operand
+        is validated with the raw-slice matcher (:func:`_looks_like_raw_device_node`)
+        and NOT run through the non-raw, diskutil-backed :func:`validate_device_node`
+        (which would wrongly reject the ``r`` node and try a diskutil query on it).
     """
     if not isinstance(argv, list) or not argv:
         raise PrivilegeError("refusing privileged call: argv must be a non-empty list")
@@ -221,6 +307,13 @@ def _validate_argv(argv: list) -> None:
         raise PrivilegeError(
             f"refusing privileged call: {binary!r} is not a whitelisted binary"
         )
+
+    # The dd (raw-write/raw-read) path is validated separately: its device
+    # operand is a RAW slice carried in an of=/if= token (not a bare /dev/ arg),
+    # so it must NOT go through the non-raw validate_device_node loop below.
+    if binary == DD_BIN:
+        _validate_dd_argv(argv)
+        return
 
     # Any device-node-looking token must pass the removable-FAT32 check.
     device_tokens = [a for a in argv[1:] if a.startswith("/dev/")]
@@ -243,7 +336,7 @@ def _validate_argv(argv: list) -> None:
 
 
 def run_privileged(
-    argv: list, timeout: float
+    argv: list, timeout: float, binary: bool = False
 ) -> subprocess.CompletedProcess:
     """Execute one privileged command — the SOLE privilege-injection choke point.
 
@@ -260,6 +353,18 @@ def run_privileged(
         using ``sudo -n`` so a missing grant fails fast instead of hanging on a
         password prompt for an unattended menu-bar tool.
 
+    stdout capture mode (``binary``):
+      * ``binary=False`` (default) — stdout/stderr are captured as **text**
+        (``text=True``), exactly as every mount-swap caller
+        (``mount_msdos`` / ``diskutil``) expects. This path is unchanged and
+        backward-compatible: every existing caller uses ``(argv, timeout=...)``
+        and keeps text mode.
+      * ``binary=True`` — stdout/stderr are captured as **raw bytes** (no
+        ``text=True``). This is required for the image-based-drive-write raw
+        readback (``/bin/dd if=/dev/rdiskNsN``), whose device bytes a text
+        decode would corrupt. Argument validation (:func:`_validate_argv`) runs
+        identically regardless of ``binary``.
+
     Backend swappability: Phase 2 replaces ONLY the argv-prefixing / dispatch in
     this function (sudoers -> signed helper IPC). Callers, validation, and the
     argv-array contract are unchanged.
@@ -270,7 +375,17 @@ def run_privileged(
     # --- Phase 2 without touching callers or validation above.
     full_cmd = ["/usr/bin/sudo", "-n", *argv]
 
-    logger.debug("run_privileged: %s (timeout=%ss)", full_cmd, timeout)
+    logger.debug(
+        "run_privileged: %s (timeout=%ss, binary=%s)", full_cmd, timeout, binary
+    )
+    if binary:
+        # Capture stdout/stderr as raw bytes: a text decode would corrupt the
+        # binary raw readback. capture_output=True WITHOUT text=True yields bytes.
+        return subprocess.run(
+            full_cmd,
+            capture_output=True,
+            timeout=timeout,
+        )
     return subprocess.run(
         full_cmd,
         capture_output=True,

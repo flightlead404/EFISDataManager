@@ -33,6 +33,15 @@ from efis_data_manager.notification_history import (
 
 logger = logging.getLogger(__name__)
 
+# Persistent image-state menu item (image-based-drive-write Task 9, Req 10).
+# rumps keys a MenuItem by its ORIGINAL title, so the item is created under this
+# constant key and is ALWAYS looked up by it; only the displayed ``.title`` is
+# toggled between "current" and "new image ready". The badge glyph shown on the
+# menu-bar title when a fresh image is pending is distinct from the existing
+# status glyphs (↻ active, ● connected-idle, ⚠ alert) — see ``_update_title``.
+IMAGE_STATE_CURRENT_TITLE = "USB image current"
+IMAGE_READY_BADGE_GLYPH = "\u2b07"  # ⬇ (download/box glyph = fresh image pending)
+
 # Configure logging to file (works regardless of how app is launched)
 _log_dir = os.path.expanduser("~/EFIS/DataManagerLogs")
 os.makedirs(_log_dir, exist_ok=True)
@@ -125,6 +134,17 @@ class EFISDataManagerApp(rumps.App):
         self._charts_running = False
         self._nav_running = False
         self._software_running = False
+        # Guards a composer refresh so overlapping chart/nav new-data events do
+        # not launch concurrent composes (image-based-drive-write Task 8).
+        self._compose_running = False
+        # Persistent "new image ready" state (image-based-drive-write Task 9,
+        # Req 10). `_image_ready` is True from the moment a fresh image is
+        # promoted (`_refresh_composed_image`) until the user acts on it; it
+        # drives both the persistent menu item title and the menu-bar badge.
+        # `_image_ready_label` holds the human-readable "what's new" summary
+        # (nav cycle + chart/plates cycle) shown in the menu item.
+        self._image_ready = False
+        self._image_ready_label = None
         self._charts_first_tick_skipped = False
         self._nav_first_tick_skipped = False
         self._pending_chart_downloads = None
@@ -155,6 +175,12 @@ class EFISDataManagerApp(rumps.App):
             None,
             "Archive: " + self._short_path(self.config["archive_path"]),
             "USB Image: " + self._short_path(self.config["usb_image_path"]),
+            # Persistent image-state line (image-based-drive-write Task 9,
+            # Req 10.1): always present. Its TITLE toggles between the "current"
+            # text and "New image ready (...)", and its callback is wired only
+            # in the ready state. Unlike "Download Charts" (inserted/removed),
+            # this item is never added/deleted — only its title + callback flip.
+            IMAGE_STATE_CURRENT_TITLE,
             None,
             "Check Charts Now",
             "Check Nav DB Now",
@@ -178,6 +204,9 @@ class EFISDataManagerApp(rumps.App):
         self.menu["Alerts (0)"].set_callback(None)
         self.menu["Archive: " + self._short_path(self.config["archive_path"])].set_callback(None)
         self.menu["USB Image: " + self._short_path(self.config["usb_image_path"])].set_callback(None)
+        # The image-state line starts in the "current" (non-actionable) state:
+        # no callback until a fresh image makes it "ready" (Req 10.1, 10.4).
+        self.menu[IMAGE_STATE_CURRENT_TITLE].set_callback(None)
 
         # Sanity-check configured paths at startup (logs warnings)
         self._check_paths()
@@ -765,13 +794,13 @@ class EFISDataManagerApp(rumps.App):
         caught: the sync is reported incomplete, interrupted state is left
         intact, and the drive is never declared current (Req 7).
         """
+        # update_drive / verify_drive / _terminal_status_from_jobs moved to the
+        # write branch (`_write_via_mount_swap`, Task 10); only the currency /
+        # sync-state reads are needed here now.
         from efis_data_manager.drive_updater import (
             check_drive_currency,
             pending_families,
             resolve_drive_id,
-            update_drive,
-            verify_drive,
-            _terminal_status_from_jobs,
         )
 
         def on_progress(msg):
@@ -815,105 +844,17 @@ class EFISDataManagerApp(rumps.App):
                 self._notify("Drive Current", "EFIS drive is up to date.")
                 return
 
-            # --- 3. Write work is needed: run it against the private msdos ----
-            # work mount for the whole write window (Req 5.1, 5.2). The FSKit
-            # /Volumes/ mount is swapped out for an in-kernel msdosfs mount that
-            # does not stall; the sync engine runs unchanged against work_mount.
-            # The /Volumes/ poller is quiesced across the swap via the poller
-            # hook (guard for a not-yet-initialized monitor).
-            poller = getattr(self, "_usb_monitor", None)
-            try:
-                with msdos_mount(mount_point, poller=poller) as work_mount:
-                    # --- 3a. Honor an interrupted sync: verify+repair first. --
-                    # The watchdog must monitor work_mount, NOT the original
-                    # /Volumes/ mount_point: during the swap the FSKit mount is
-                    # gone, so watching it would instantly false-abort.
-                    if pending:
-                        self._set_status("Verifying drive after interrupted sync...")
-                        self._notify(
-                            "Verifying Drive",
-                            f"Resuming interrupted sync: {', '.join(pending)}.",
-                        )
-                        repair = self._with_active_watchdog(
-                            work_mount,
-                            lambda is_aborted: verify_drive(
-                                work_mount, families=pending, repair=True,
-                                progress_callback=on_progress, is_aborted=is_aborted,
-                            ),
-                        )
-                        # verify_drive already logs its repair errors at >= WARNING.
-                        if not repair["clean"]:
-                            status = "Drive verify incomplete"
-                            logger.warning(
-                                f"Verify+repair left discrepancies on {mount_point}: "
-                                f"{repair['families']}"
-                            )
-                            self._notify(
-                                "Verify Incomplete",
-                                "Some families still differ; will retry on next mount.",
-                            )
-                            self._set_status(status)
-                            return
-
-                    # --- 3b. Sync only the stale families. --------------------
-                    if not stale:
-                        # Interrupted families were repaired clean and nothing is
-                        # stale: no update work remains. Report current.
-                        logger.info("Drive is up to date after verify+repair.")
-                        self._set_status("Drive current")
-                        self._notify("Drive Current", "EFIS drive is up to date.")
-                        return
-
-                    stale_summary = ", ".join(currency["stale_items"][:3])
-                    if len(currency["stale_items"]) > 3:
-                        stale_summary += f" +{len(currency['stale_items']) - 3} more"
-                    self._set_status("Updating drive...")
-                    self._notify(
-                        "Updating Drive",
-                        f"{len(stale)} family(ies) to update: {stale_summary}",
-                    )
-
-                    # Again, watch work_mount (the live mount during the swap).
-                    results = self._with_active_watchdog(
-                        work_mount,
-                        lambda is_aborted: update_drive(
-                            work_mount, families=stale, progress_callback=on_progress,
-                            is_aborted=is_aborted,
-                        ),
-                    )
-            except MountSwapError as e:
-                # The swap could not be established or failed partway; msdos_mount
-                # has already driven teardown toward "FSKit restored" (or logged
-                # loudly and left the device flushed). The write window did NOT
-                # run: report the sync incomplete with safe next-step guidance,
-                # leave the interrupted sync-state intact (the engine leaves it on
-                # failure — we never clear it here), and NEVER declare current
-                # (Req 7.1, 7.2, 7.4, 7.5).
-                logger.error(f"Mount swap failed for {mount_point}: {e}")
-                affected = ", ".join(pending or stale) or "chart data"
-                self._notify(
-                    "Drive Sync Incomplete",
-                    f"Could not prepare drive for sync ({affected}); reinsert and retry.",
-                )
-                self._set_status("Drive sync incomplete")
-                return
-
-            jobs = results["jobs"]
-            updated = sum(r.files_updated for r in jobs.values())
-            status = _terminal_status_from_jobs(jobs, results["aborted"])
-
-            if results["errors"] or results["aborted"]:
-                # The job driver already logged each job error at >= WARNING;
-                # log the terminal status too so it always has a matching record
-                # in Recent Errors (Req 8.1/8.3).
-                logger.warning(f"Drive update finished with issues: {status}")
-                self._notify("Drive Update Complete (errors)", f"Updated {updated} item(s), "
-                                   f"{len(results['errors'])} error(s).")
-                self._set_status(status)
-            else:
-                # Clean terminal state -> current, never a sticky error (Req 8.4).
-                self._notify("Drive Update Complete", f"Updated {updated} item(s). Drive is current.")
-                self._set_status(status)
+            # --- 3. Write work is needed: perform the chart/nav write. --------
+            # The CURRENCY decision above (steps 1-2) is unchanged — image-write
+            # replaces only HOW a needed write happens, not WHETHER (Req 12.1,
+            # 12.3). `_perform_write` dispatches to the image-write path when
+            # enabled (Req 11.1), otherwise to the msdos_mount swap (Req 11.2),
+            # and falls back to the swap if an image-write attempt fails and the
+            # fallback is enabled (Req 11.3). It owns all status/notify/watchdog
+            # /MountSwapError handling for the write window.
+            self._perform_write(
+                mount_point, pending, stale, currency, on_progress
+            )
 
         except Exception as e:
             logger.error(f"Drive update failed: {e}")
@@ -921,6 +862,335 @@ class EFISDataManagerApp(rumps.App):
             # so an interrupted family is retried on the next mount.
             self._notify("Drive Update Failed", str(e)[:100])
             self._set_status("Update failed")
+
+    # ------------------------------------------------------------------
+    # Chart/nav write dispatch (image-based-drive-write Task 10, Req 11/12)
+    # ------------------------------------------------------------------
+    #
+    # The write mechanism is factored out of `_run_drive_update` so the currency
+    # decision (steps 1-2) stays byte-for-byte unchanged and only the write
+    # itself is pluggable. `_perform_write` chooses the branch; the two branches
+    # encapsulate "do the chart/nav write and report a terminal status":
+    #
+    #   * `_write_via_image`      — compose-current-image guard->dd->verify path,
+    #                               used when `image_write_enabled` is True.
+    #   * `_write_via_mount_swap` — the EXISTING msdos_mount + update_drive /
+    #                               verify_drive block, moved VERBATIM so the
+    #                               proven path is preserved exactly.
+
+    def _perform_write(self, mount_point, pending, stale, currency, on_progress):
+        """Perform the needed chart/nav write, dispatching by config (Req 11).
+
+        Called from `_run_drive_update` once the currency decision has
+        established that a write is actually needed (interrupted families to
+        repair, or stale families to update). This method does NOT re-decide
+        whether a write is needed — that is preserved in steps 1-2 (Req 12.1,
+        12.3). It only selects HOW the write happens:
+
+          * `image_write_enabled` True  -> `_write_via_image` (Req 11.1): the
+            composed-image guard->dd->verify path; the msdos_mount swap is NOT
+            used for the write.
+          * `image_write_enabled` False -> `_write_via_mount_swap` (Req 11.2):
+            the fallback flag selects the proven swap write path.
+          * image-write attempt FAILS (returns False) AND the fallback is
+            enabled -> fall back to `_write_via_mount_swap` (Req 11.3). The
+            fallback is "enabled" exactly when the mount-swap path is retained
+            (it always is, Req 11.4); if image-write fails and fallback were
+            ever disabled, we leave interrupted state intact and never declare
+            current (handled inside `_write_via_image`).
+
+        DEFAULT is the safe existing path: `image_write_enabled` defaults to
+        False (see config.DEFAULT_CONFIG) until the Task 6 safety checkpoint and
+        Task 12 hardware harness bless the image-write path.
+        """
+        image_write_enabled = self.config.get(
+            "image_write_enabled",
+            config.DEFAULT_CONFIG["image_write_enabled"],
+        )
+        if not image_write_enabled:
+            # Fallback flag selects the proven swap path (Req 11.2).
+            self._write_via_mount_swap(
+                mount_point, pending, stale, currency, on_progress
+            )
+            return
+
+        # Image-write enabled: use the composed-image path (Req 11.1).
+        ok = self._write_via_image(
+            mount_point, pending, stale, currency, on_progress
+        )
+        if not ok:
+            # The image-write attempt failed (WriteResult.status != "complete"
+            # or an exception). The mount-swap path is always retained (Req
+            # 11.4), so the fallback is enabled: fall back to the swap write
+            # (Req 11.3). `_write_via_image` has already left interrupted state
+            # intact and declared nothing current, so re-running the swap path
+            # converges the drive via the proven mechanism.
+            logger.warning(
+                "Image-write failed for %s; falling back to the msdos_mount "
+                "swap write path (Req 11.3).",
+                mount_point,
+            )
+            self._set_status("Image write failed; using mount-swap fallback...")
+            self._write_via_mount_swap(
+                mount_point, pending, stale, currency, on_progress
+            )
+
+    def _resolve_write_target(self, mount_point):
+        """Resolve the dd device node + guard identity/label for a mount.
+
+        The image writer needs the drive's ``/dev/diskNsN`` partition-slice node
+        (it maps to the raw node internally) plus the guard expectations — the
+        OS-level ``VolumeUUID`` and ``VolumeName`` — all read from the mount via
+        the existing diskutil-backed resolvers. No mount of the raw slice is
+        performed; these are read from the live FSKit ``/Volumes/`` mount BEFORE
+        any write, consistent with the identity/currency reads above.
+
+        Returns a tuple ``(device_node, volume_uuid, volume_label)``. A None
+        ``device_node`` means the node could not be resolved (a diskutil hiccup
+        or a non-removable volume); the caller treats that as an image-write
+        failure and falls back.
+        """
+        from efis_data_manager.mount_swap import resolve_device_node
+        from efis_data_manager.drive_updater import _volume_uuid, _volume_name
+
+        device_node = resolve_device_node(mount_point)
+        volume_uuid = _volume_uuid(mount_point)
+        volume_label = _volume_name(mount_point)
+        return device_node, volume_uuid, volume_label
+
+    def _write_via_image(self, mount_point, pending, stale, currency, on_progress):
+        """Write the composed current image to the drive's raw slice (Req 11.1).
+
+        The image-write path: take the ALREADY-composed current image
+        (``config["composed_image_path"]``) and ``dd`` it to the drive's raw
+        partition slice via :func:`image_writer.write`, relying on the raw-
+        readback verify inside ``write()`` to confirm completion. No msdos_mount
+        swap is used for this write.
+
+        The whole image is the unit of work (Req 13.1): a single ``dd`` carries
+        every family, so ``pending`` / ``stale`` do not sub-select here — any
+        needed write re-lays the whole current image. The on-drive app identity
+        rides in the verified image bytes (composed in by Task 1.3), so the
+        guard matches the physical slice by OS-level ``VolumeUUID`` while the
+        verifier confirms the exact bytes landed.
+
+        Device node + guard expectations are resolved from the mount via
+        diskutil (``_resolve_write_target``): ``device_node`` = ``/dev/diskNsN``,
+        ``expected_identity_id`` = ``VolumeUUID``, ``expected_label`` =
+        ``VolumeName``, ``expected_size_bytes`` = the configured composed-image
+        size (the guard independently re-verifies size against the real slice).
+
+        ``confirmed=True`` is passed because THIS flow IS the authorization: the
+        auto-sync-on-insert path (archive -> `_run_drive_update`) is the user/
+        flow saying "this inserted managed drive is the intended sync target".
+        The device guard still independently re-verifies removable + FAT32 +
+        size + label + UUID, so ``confirmed=True`` means "this is the intended
+        target", NOT "bypass the guard".
+
+        Returns True IFF the write completed and verified (``WriteResult.status
+        == "complete"``). On any failure (resolve failure, guard refusal,
+        ``dd``/verify failure, or an exception) it reports the write incomplete,
+        leaves interrupted sync-state intact, declares nothing current, and
+        returns False so `_perform_write` can fall back (Req 11.3, 13.3).
+        """
+        from efis_data_manager import image_writer
+
+        image_path = self.config.get(
+            "composed_image_path",
+            config.DEFAULT_CONFIG["composed_image_path"],
+        )
+        expected_size_bytes = self.config.get(
+            "composed_image_size_bytes",
+            config.DEFAULT_CONFIG["composed_image_size_bytes"],
+        )
+
+        device_node, volume_uuid, volume_label = self._resolve_write_target(
+            mount_point
+        )
+        if not device_node:
+            logger.warning(
+                "Image-write: could not resolve a device node for %s; "
+                "treating as image-write failure.",
+                mount_point,
+            )
+            return False
+
+        affected = ", ".join(pending or stale) or "chart data"
+        self._set_status("Writing image to drive...")
+        self._notify(
+            "Writing Drive Image",
+            f"Writing composed image to {os.path.basename(device_node)} "
+            f"({affected}).",
+        )
+
+        try:
+            result = image_writer.write(
+                image_path,
+                device_node,
+                expected_size_bytes=expected_size_bytes,
+                expected_label=volume_label,
+                expected_identity_id=volume_uuid,
+                # The auto-sync-on-insert flow is the authorization; the guard
+                # still independently re-verifies the target (see docstring).
+                confirmed=True,
+            )
+        except Exception as e:
+            # Any unexpected error from the write path is an image-write failure;
+            # the local image/state are untouched (Req 13.2), nothing is declared
+            # current, and the caller falls back to the swap path.
+            logger.error(f"Image write raised for {mount_point}: {e}")
+            self._notify(
+                "Drive Image Write Failed",
+                f"Image write errored for {affected}; trying fallback.",
+            )
+            self._set_status("Image write failed")
+            return False
+
+        if result.status == "complete":
+            logger.info(
+                "Image write to %s complete and verified (%d bytes).",
+                device_node,
+                result.bytes_written,
+            )
+            self._notify(
+                "Drive Image Written",
+                "Composed image written and verified. Drive is current.",
+            )
+            self._set_status("Drive current")
+            return True
+
+        # status in {"incomplete", "aborted"}: the drive is NOT current. Leave
+        # interrupted state intact (we never clear sync-state here), surface the
+        # safe next step, and signal failure so the caller can fall back
+        # (Req 11.3, 13.3).
+        logger.warning(
+            "Image write to %s did not complete (status=%s): %s",
+            device_node,
+            result.status,
+            result.error,
+        )
+        self._notify(
+            "Drive Image Write Incomplete",
+            f"Image write {result.status} for {affected}; "
+            "the drive is not current.",
+        )
+        self._set_status("Drive image write incomplete")
+        return False
+
+    def _write_via_mount_swap(
+        self, mount_point, pending, stale, currency, on_progress
+    ):
+        """The EXISTING msdos_mount swap write path (Req 11.2 fallback).
+
+        Moved VERBATIM out of `_run_drive_update` step 3 so the proven path is
+        preserved byte-for-byte: run the write window against the private
+        in-kernel msdosfs ``work_mount`` for the whole span (Req 5.1, 5.2), honor
+        an interrupted sync with verify+repair first, then sync only the stale
+        families, deriving a single terminal status from the per-family jobs.
+        All status/notify/watchdog/MountSwapError handling is identical to the
+        original inline block.
+        """
+        from efis_data_manager.drive_updater import (
+            update_drive,
+            verify_drive,
+            _terminal_status_from_jobs,
+        )
+
+        # The /Volumes/ poller is quiesced across the swap via the poller hook
+        # (guard for a not-yet-initialized monitor).
+        poller = getattr(self, "_usb_monitor", None)
+        try:
+            with msdos_mount(mount_point, poller=poller) as work_mount:
+                # --- Honor an interrupted sync: verify+repair first. ----------
+                # The watchdog must monitor work_mount, NOT the original
+                # /Volumes/ mount_point: during the swap the FSKit mount is
+                # gone, so watching it would instantly false-abort.
+                if pending:
+                    self._set_status("Verifying drive after interrupted sync...")
+                    self._notify(
+                        "Verifying Drive",
+                        f"Resuming interrupted sync: {', '.join(pending)}.",
+                    )
+                    repair = self._with_active_watchdog(
+                        work_mount,
+                        lambda is_aborted: verify_drive(
+                            work_mount, families=pending, repair=True,
+                            progress_callback=on_progress, is_aborted=is_aborted,
+                        ),
+                    )
+                    # verify_drive already logs its repair errors at >= WARNING.
+                    if not repair["clean"]:
+                        status = "Drive verify incomplete"
+                        logger.warning(
+                            f"Verify+repair left discrepancies on {mount_point}: "
+                            f"{repair['families']}"
+                        )
+                        self._notify(
+                            "Verify Incomplete",
+                            "Some families still differ; will retry on next mount.",
+                        )
+                        self._set_status(status)
+                        return
+
+                # --- Sync only the stale families. ----------------------------
+                if not stale:
+                    # Interrupted families were repaired clean and nothing is
+                    # stale: no update work remains. Report current.
+                    logger.info("Drive is up to date after verify+repair.")
+                    self._set_status("Drive current")
+                    self._notify("Drive Current", "EFIS drive is up to date.")
+                    return
+
+                stale_summary = ", ".join(currency["stale_items"][:3])
+                if len(currency["stale_items"]) > 3:
+                    stale_summary += f" +{len(currency['stale_items']) - 3} more"
+                self._set_status("Updating drive...")
+                self._notify(
+                    "Updating Drive",
+                    f"{len(stale)} family(ies) to update: {stale_summary}",
+                )
+
+                # Again, watch work_mount (the live mount during the swap).
+                results = self._with_active_watchdog(
+                    work_mount,
+                    lambda is_aborted: update_drive(
+                        work_mount, families=stale, progress_callback=on_progress,
+                        is_aborted=is_aborted,
+                    ),
+                )
+        except MountSwapError as e:
+            # The swap could not be established or failed partway; msdos_mount
+            # has already driven teardown toward "FSKit restored" (or logged
+            # loudly and left the device flushed). The write window did NOT
+            # run: report the sync incomplete with safe next-step guidance,
+            # leave the interrupted sync-state intact (the engine leaves it on
+            # failure — we never clear it here), and NEVER declare current
+            # (Req 7.1, 7.2, 7.4, 7.5).
+            logger.error(f"Mount swap failed for {mount_point}: {e}")
+            affected = ", ".join(pending or stale) or "chart data"
+            self._notify(
+                "Drive Sync Incomplete",
+                f"Could not prepare drive for sync ({affected}); reinsert and retry.",
+            )
+            self._set_status("Drive sync incomplete")
+            return
+
+        jobs = results["jobs"]
+        updated = sum(r.files_updated for r in jobs.values())
+        status = _terminal_status_from_jobs(jobs, results["aborted"])
+
+        if results["errors"] or results["aborted"]:
+            # The job driver already logged each job error at >= WARNING;
+            # log the terminal status too so it always has a matching record
+            # in Recent Errors (Req 8.1/8.3).
+            logger.warning(f"Drive update finished with issues: {status}")
+            self._notify("Drive Update Complete (errors)", f"Updated {updated} item(s), "
+                               f"{len(results['errors'])} error(s).")
+            self._set_status(status)
+        else:
+            # Clean terminal state -> current, never a sticky error (Req 8.4).
+            self._notify("Drive Update Complete", f"Updated {updated} item(s). Drive is current.")
+            self._set_status(status)
 
     def _with_active_watchdog(self, mount_point: str, run):
         """Run ``run(is_aborted)`` under a fresh, registered MountWatchdog.
@@ -1109,6 +1379,10 @@ class EFISDataManagerApp(rumps.App):
             else:
                 self._notify("Chart Download Complete", f"Downloaded and extracted {results['downloaded']} update(s).")
                 self._set_status("Idle")
+                # Manual chart download success -> rebuild the local USB image
+                # (image-based-drive-write Req 9.1).
+                if results["downloaded"] > 0:
+                    self._trigger_composer_refresh("new charts")
         except Exception as e:
             logger.error(f"Chart download failed: {e}")
             self._notify("Chart Download Failed", str(e)[:100])
@@ -1134,6 +1408,9 @@ class EFISDataManagerApp(rumps.App):
             elif results["downloaded"] > 0:
                 self._notify("Charts Updated", f"Downloaded {results['downloaded']} chart update(s).")
                 self._set_status("Idle")
+                # New chart data landed -> rebuild the local USB image
+                # (image-based-drive-write Req 9.1).
+                self._trigger_composer_refresh("new charts")
             else:
                 logger.info("Charts are current.")
                 if notify_if_current:
@@ -1160,6 +1437,9 @@ class EFISDataManagerApp(rumps.App):
             result = check_and_download_nav_db()
             if result["status"] == "updated":
                 self._notify("Nav DB Updated", result["message"])
+                # New nav DB landed -> rebuild the local USB image
+                # (image-based-drive-write Req 9.2).
+                self._trigger_composer_refresh("new nav DB")
             elif result["status"] == "current":
                 self._notify("Nav DB Current", result["message"])
             elif result["status"] == "blocked":
@@ -1175,6 +1455,320 @@ class EFISDataManagerApp(rumps.App):
             self._set_status("Nav DB check failed")
         finally:
             self._nav_running = False
+
+    # ------------------------------------------------------------------
+    # Event-driven composer refresh (image-based-drive-write Task 8)
+    # ------------------------------------------------------------------
+    #
+    # The local FAT32 image is rebuilt when the EXISTING data-manager checks
+    # report NEWLY DOWNLOADED data — the chart check (`_run_chart_check_auto`
+    # / `_do_chart_download`) and the nav check (`_run_nav_db_check`). There is
+    # NO separate polling timer (Req 9.3): the refresh is driven only off those
+    # checks, so it is naturally bounded by the 12h chart / 24h nav cadence.
+
+    def _trigger_composer_refresh(self, reason: str):
+        """Launch a composer refresh on a daemon thread (never blocks main).
+
+        Called from the chart/nav new-data points. Spawns the compose on its own
+        background thread so the rumps main thread and the calling check thread
+        are never blocked by the slow newfs_msdos + hdiutil round-trip. The
+        running-flag guard inside `_refresh_composed_image` drops the request if
+        a compose is already in flight, so overlapping new-data events coalesce.
+        """
+        threading.Thread(
+            target=self._refresh_composed_image, args=(reason,), daemon=True
+        ).start()
+
+    def _refresh_composed_image(self, reason: str):
+        """Recompose the local FAT32 image; keep the previous image on failure.
+
+        Composes to a TEMP image path and atomically promotes it to the
+        configured `composed_image_path` only on success, so a failed compose
+        never clobbers the last-good image (Req 9.4). Guarded by
+        `self._compose_running` so concurrent refreshes do not overlap (mirrors
+        `_charts_running` / `_nav_running`). Runs on a background thread.
+        """
+        # Lazy import — image_composer pulls in hdiutil/newfs tooling and is
+        # only needed here, matching app.py's lazy-import convention.
+        from efis_data_manager import image_composer
+
+        if self._compose_running:
+            logger.info("Composer refresh (%s) skipped: already running.", reason)
+            return
+        self._compose_running = True
+        self._set_status("Composing USB image...")
+
+        image_path = self.config.get(
+            "composed_image_path",
+            config.DEFAULT_CONFIG["composed_image_path"],
+        )
+        byte_size = self.config.get(
+            "composed_image_size_bytes",
+            config.DEFAULT_CONFIG["composed_image_size_bytes"],
+        )
+        usb_image_path = self.config.get("usb_image_path")
+
+        # Compose to a sibling temp path, promote on success only. A failed
+        # compose leaves `image_path` (the last-good image) untouched.
+        tmp_path = f"{image_path}.new"
+        try:
+            image_composer.compose(
+                tmp_path,
+                byte_size,
+                usb_image_path=usb_image_path,
+            )
+            # Atomic promote: os.replace swaps the new image into place in one
+            # rename, so the current-image path is never a partial file.
+            os.replace(tmp_path, image_path)
+            logger.info("Composer refresh (%s) complete: %s", reason, image_path)
+            self._notify("USB Image Ready", f"New USB image composed ({reason}).")
+            self._set_status("Idle")
+            # A fresh image is now the current one: flip the persistent menu
+            # item to "new image ready (...)" and badge the menu-bar title
+            # (image-based-drive-write Task 9, Req 10.2, 10.3). This is the
+            # single point a composed image becomes user-visible as "pending".
+            self._mark_image_ready(reason)
+        except Exception as e:
+            logger.error("Composer refresh (%s) failed: %s", reason, e)
+            # Discard the partial temp image; the previous good image is kept.
+            try:
+                if os.path.exists(tmp_path):
+                    os.remove(tmp_path)
+            except OSError:
+                pass
+            self._notify("USB Image Compose Failed", str(e)[:100])
+            self._set_status("Idle")
+        finally:
+            self._compose_running = False
+
+    # ------------------------------------------------------------------
+    # Persistent "new image ready" notification + menu-bar badge
+    # (image-based-drive-write Task 9, Req 10.1-10.5)
+    # ------------------------------------------------------------------
+    #
+    # Mirrors the existing "Download Charts" dynamic-menu idiom — all menu and
+    # title mutation is marshalled onto the main thread via NSOperationQueue —
+    # but the image-state line is PERSISTENT: it is created once in `__init__`
+    # under the constant key `IMAGE_STATE_CURRENT_TITLE` and is never
+    # inserted/removed. Only its displayed `.title` and its callback flip
+    # between the "current" and "ready" states.
+
+    def _describe_image_cycles(self, reason: str) -> str:
+        """Build the "what's new" summary naming the nav + chart (plates) cycle.
+
+        Sources are the data manager's OWN current cycle metadata (no drive
+        access): the nav valid date lives in the GRT version metadata
+        (`currency._load_grt_metadata()['nav_db_valid_date']`) and the chart
+        cycle lives in `currency.load_cycle_metadata()` keyed by download URL,
+        where the Plates entry's `valid_dates` is the authoritative chart/plates
+        cycle. Returns a compact label like "nav 8/6 + plates 2610".
+
+        This names what's new at the granularity readily available from the
+        compose inputs. If a precise cycle string cannot be read (metadata
+        missing/partial), it degrades gracefully to naming the trigger reason
+        (e.g. "new nav DB"), so the user still sees *that* something is new.
+
+        TODO(image-based-drive-write): enrich with the exact plates cycle number
+        once the composer threads the precise per-family cycle through its
+        ComposeResult, rather than re-deriving it from currency metadata here.
+        """
+        from efis_data_manager import currency
+
+        nav_label = None
+        plates_label = None
+        try:
+            grt_meta = currency._load_grt_metadata()
+            nav_valid = grt_meta.get("nav_db_valid_date")
+            if nav_valid:
+                # Trim the year for a compact badge-line label (e.g. "8/6").
+                nav_label = str(nav_valid).rsplit("/", 1)[0]
+        except Exception as e:  # metadata is best-effort for labelling only
+            logger.debug("Could not read nav cycle label: %s", e)
+
+        try:
+            cycle_meta = currency.load_cycle_metadata()
+            # Prefer the Plates entry's valid_dates as the chart/plates cycle;
+            # fall back to any entry's valid_dates if no Plates entry is present.
+            plates_valid = None
+            any_valid = None
+            for entry in cycle_meta.values():
+                desc = str(entry.get("description", "")).lower()
+                valid = entry.get("valid_dates")
+                if valid:
+                    any_valid = any_valid or valid
+                    if "plate" in desc or "approach" in desc:
+                        plates_valid = valid
+                        break
+            chart_valid = plates_valid or any_valid
+            if chart_valid:
+                plates_label = str(chart_valid)
+        except Exception as e:
+            logger.debug("Could not read chart cycle label: %s", e)
+
+        parts = []
+        if nav_label:
+            parts.append(f"nav {nav_label}")
+        if plates_label:
+            parts.append(f"plates {plates_label}")
+
+        if parts:
+            return " + ".join(parts)
+        # Graceful fallback: name the trigger reason so the user still knows
+        # *something* new landed even when cycle labels are unavailable.
+        return reason
+
+    def _mark_image_ready(self, reason: str):
+        """Flip the persistent menu item + title badge into the "ready" state.
+
+        Sets `_image_ready` True, computes the "what's new" label, then (on the
+        main thread, like "Download Charts") retitles the image-state menu item
+        to "New image ready (<label>)", wires its callback to the actionable
+        prepare stub (Req 10.4), and refreshes the title so the ⬇ badge shows
+        (Req 10.2, 10.3). Called from `_refresh_composed_image` on a successful
+        promote.
+        """
+        from AppKit import NSOperationQueue
+
+        label = self._describe_image_cycles(reason)
+        self._image_ready = True
+        self._image_ready_label = label
+        ready_title = f"New image ready ({label})"
+
+        def _do_update():
+            item = self._image_state_item()
+            if item is not None:
+                item.title = ready_title
+                # Actionable: clicking begins preparing a drive (Req 10.4).
+                item.set_callback(self._on_prepare_image_drive)
+            # Re-badge the menu-bar glyph to reflect the pending image.
+            current_status = self.menu["Status: Idle"].title.replace("Status: ", "")
+            self._update_title(current_status)
+
+        NSOperationQueue.mainQueue().addOperationWithBlock_(_do_update)
+
+    def _clear_image_ready(self):
+        """Return the persistent menu item + title badge to "current" (Req 10.5).
+
+        Clears `_image_ready`, retitles the image-state line back to
+        `IMAGE_STATE_CURRENT_TITLE`, drops its callback (non-actionable in the
+        current state), and refreshes the title so the ⬇ badge is removed.
+        Marshalled onto the main thread like every other menu/title mutation.
+        """
+        from AppKit import NSOperationQueue
+
+        self._image_ready = False
+        self._image_ready_label = None
+
+        def _do_update():
+            item = self._image_state_item()
+            if item is not None:
+                item.title = IMAGE_STATE_CURRENT_TITLE
+                item.set_callback(None)
+            current_status = self.menu["Status: Idle"].title.replace("Status: ", "")
+            self._update_title(current_status)
+
+        NSOperationQueue.mainQueue().addOperationWithBlock_(_do_update)
+
+    def _image_state_item(self):
+        """Return the persistent image-state MenuItem, found by its stable key.
+
+        The item is created under `IMAGE_STATE_CURRENT_TITLE` and keyed by that
+        original title in rumps; once its `.title` changes to the "ready" text
+        it can no longer be re-indexed by the new title. So — like the Alerts
+        line — we locate it by scanning menu values and matching either the
+        constant key title or the "New image ready" prefix.
+        """
+        try:
+            return self.menu[IMAGE_STATE_CURRENT_TITLE]
+        except KeyError:
+            pass
+        for item in self.menu.values():
+            title = getattr(item, "title", None)
+            if isinstance(title, str) and (
+                title == IMAGE_STATE_CURRENT_TITLE
+                or title.startswith("New image ready")
+            ):
+                return item
+        return None
+
+    def _on_prepare_image_drive(self, _):
+        """User clicked "New image ready" — begin preparing a drive (Req 10.4).
+
+        Wired by Task 10: resolve the currently-connected managed drive (the
+        same identity-only discovery `verify_drive_menu` / `eject_drive` use)
+        and kick off the image write on a daemon thread via
+        `_run_prepare_image_write`. The ready-state UI is RESET here immediately
+        (Req 10.5) — acting on the new image returns the menu item and the
+        menu-bar badge to "current" as soon as the user acts, independent of the
+        (slow, background) write outcome.
+
+        If no managed drive is connected, we post a hint and still reset the UI
+        (the user acted on the item). The actual guard -> dd -> verify runs in
+        `_write_via_image`, which the write-on-sync path (`_perform_write`) also
+        uses, so prepare and auto-sync share one write implementation.
+        """
+        logger.info(
+            "Prepare-image-drive requested (image ready: %s).",
+            self._image_ready_label,
+        )
+
+        from efis_data_manager.usb_monitor import is_managed_drive
+
+        mount_point = None
+        for name in os.listdir("/Volumes"):
+            path = os.path.join("/Volumes", name)
+            if os.path.isdir(path) and is_managed_drive(path):
+                mount_point = path
+                break
+
+        # Acting on the new image returns BOTH the menu item and the badge to
+        # the current state (Req 10.5), regardless of whether a drive is present.
+        self._clear_image_ready()
+
+        if not mount_point:
+            self._notify(
+                "No Drive",
+                "No EFIS drive is connected to prepare. Insert a drive and retry.",
+            )
+            return
+
+        self._set_status("Preparing drive from image...")
+        self._notify(
+            "Preparing Drive",
+            "Writing the composed image to the connected drive.",
+        )
+        threading.Thread(
+            target=self._run_prepare_image_write,
+            args=(mount_point,),
+            daemon=True,
+        ).start()
+
+    def _run_prepare_image_write(self, mount_point: str):
+        """Run the image write for an explicit "prepare drive" action (Req 10.4).
+
+        Thin background wrapper around `_write_via_image`. Unlike the write-on-
+        sync path, prepare is a direct image-write action, so there is no
+        currency-driven family selection and no mount-swap fallback here — the
+        user explicitly asked to write the composed image to this drive. All
+        status/notify and the device guard live in `_write_via_image`; the
+        empty ``pending`` / ``stale`` and a minimal ``currency`` shape only feed
+        its progress/label text (the whole image is the unit of work, Req 13.1).
+        """
+        def on_progress(msg):
+            self._set_status(msg)
+
+        try:
+            self._write_via_image(
+                mount_point,
+                pending=[],
+                stale=[],
+                currency={"stale_items": []},
+                on_progress=on_progress,
+            )
+        except Exception as e:
+            logger.error(f"Prepare image write failed for {mount_point}: {e}")
+            self._notify("Prepare Drive Failed", str(e)[:100])
+            self._set_status("Prepare failed")
 
     # ------------------------------------------------------------------
     # EFIS/AHRS software check
@@ -1839,19 +2433,37 @@ class EFISDataManagerApp(rumps.App):
         NSOperationQueue.mainQueue().addOperationWithBlock_(_do_refresh)
 
     def _update_title(self, status_text: str):
-        """Set the menu bar title based on current state."""
-        drive_connected = getattr(self, '_drive_connected', False)
+        """Set the menu bar title based on current state.
 
-        # The color PFD icon carries the branding; the title is now just a
-        # compact status glyph shown next to it (empty when idle/disconnected).
+        The color PFD icon carries the branding; the title is a compact status
+        glyph shown next to it. Glyph precedence (highest wins):
+
+          1. ``↻`` active work (a check / download / compose is in progress)
+          2. ``⬇`` fresh image pending (``_image_ready`` — Task 9, Req 10.3)
+          3. ``●`` drive connected, idle
+          4. ``""`` no drive, idle — icon only
+
+        Rationale: active work is the most time-sensitive and transient, so it
+        outranks the (persistent) image badge; the image badge in turn outranks
+        the steady connected-idle dot because a pending fresh image is the thing
+        the user most needs to notice. The ⚠ alert glyph is set independently by
+        ``_refresh_alerts`` and is not part of this ordering.
+        """
+        drive_connected = getattr(self, '_drive_connected', False)
+        image_ready = getattr(self, '_image_ready', False)
+
         if "..." in status_text or "Downloading" in status_text:
-            # Active work
+            # Active work — outranks everything (precedence 1).
             self.title = "\u21BB"  # ↻
+        elif image_ready:
+            # A freshly composed image is waiting to be prepared onto a drive
+            # (precedence 2). Distinct from ↻ ● ⚠ so it reads as its own state.
+            self.title = IMAGE_READY_BADGE_GLYPH  # ⬇
         elif drive_connected:
-            # Drive connected, idle
+            # Drive connected, idle (precedence 3).
             self.title = "\u25CF"  # ● (filled circle = connected)
         else:
-            # No drive, idle — icon only
+            # No drive, idle — icon only (precedence 4).
             self.title = ""
 
 

@@ -192,3 +192,119 @@ def test_empty_argv_rejected(run_mock, device_info_removable):
     with pytest.raises(ms.PrivilegeError):
         ms.run_privileged([], timeout=60)
     run_mock.assert_not_called()
+
+
+# --- /bin/dd raw-write / raw-read allow-list (image-based-drive-write 5.1) ----
+#
+# dd is accepted ONLY when its of=/if= operand is a RAW partition slice
+# (/dev/rdiskNsN). A whole-disk raw node, a non-raw node, a disallowed binary,
+# or a bogus path must be refused BEFORE execution (PrivilegeError, nothing run).
+# The dd operand is a RAW node, so it must NOT be routed through the non-raw,
+# diskutil-backed validate_device_node — hence _device_info is NOT mocked in
+# these tests and the accept cases still reach subprocess.run.
+
+
+def test_dd_write_to_raw_slice_reaches_subprocess(run_mock):
+    argv = [ms.DD_BIN, "if=/tmp/EFIS_USB.img", "of=/dev/rdisk4s1", "bs=1m"]
+
+    ms.run_privileged(argv, timeout=60)
+
+    run_mock.assert_called_once()
+    called_args, called_kwargs = run_mock.call_args
+    assert called_args[0] == ["/usr/bin/sudo", "-n", *argv]
+    assert isinstance(called_args[0], list)
+    assert called_kwargs.get("shell") is not True
+
+
+def test_dd_read_from_raw_slice_reaches_subprocess(run_mock):
+    argv = [ms.DD_BIN, "if=/dev/rdisk4s1", "bs=1m", "count=16"]
+
+    ms.run_privileged(argv, timeout=60)
+
+    run_mock.assert_called_once()
+    called_args, _ = run_mock.call_args
+    assert called_args[0] == ["/usr/bin/sudo", "-n", *argv]
+
+
+def test_dd_to_whole_disk_raw_node_rejected(run_mock):
+    # /dev/rdisk4 has no sNN slice suffix -> would clobber the partition scheme.
+    argv = [ms.DD_BIN, "if=/tmp/EFIS_USB.img", "of=/dev/rdisk4", "bs=1m"]
+    with pytest.raises(ms.PrivilegeError):
+        ms.run_privileged(argv, timeout=60)
+    run_mock.assert_not_called()
+
+
+def test_dd_to_non_raw_slice_rejected(run_mock):
+    # /dev/disk4s1 is the buffered (non-raw) node; the dd path requires rdisk.
+    argv = [ms.DD_BIN, "if=/tmp/EFIS_USB.img", "of=/dev/disk4s1", "bs=1m"]
+    with pytest.raises(ms.PrivilegeError):
+        ms.run_privileged(argv, timeout=60)
+    run_mock.assert_not_called()
+
+
+def test_dd_to_bogus_path_rejected(run_mock):
+    # A dd whose device-looking target is not under /dev at all -> no /dev target.
+    argv = [ms.DD_BIN, "if=/tmp/EFIS_USB.img", "of=/tmp/not-a-device", "bs=1m"]
+    with pytest.raises(ms.PrivilegeError):
+        ms.run_privileged(argv, timeout=60)
+    run_mock.assert_not_called()
+
+
+def test_dd_with_no_device_operand_rejected(run_mock):
+    # Neither of=/if= names a /dev target -> refused (exactly one required).
+    argv = [ms.DD_BIN, "if=/tmp/a.img", "of=/tmp/b.img", "bs=1m"]
+    with pytest.raises(ms.PrivilegeError):
+        ms.run_privileged(argv, timeout=60)
+    run_mock.assert_not_called()
+
+
+def test_disallowed_binary_targeting_raw_slice_rejected(run_mock):
+    # Even with a valid raw-slice operand, a non-whitelisted binary is refused.
+    argv = ["/bin/cat", "if=/dev/rdisk4s1"]
+    with pytest.raises(ms.PrivilegeError):
+        ms.run_privileged(argv, timeout=60)
+    run_mock.assert_not_called()
+
+
+# --- binary stdout capture mode (image-based-drive-write task 7, Decision A) --
+#
+# run_privileged(..., binary=True) must capture stdout as RAW BYTES (no
+# text=True) so the dd raw readback is not corrupted by a text decode; the
+# default (binary=False) keeps the existing text-mode behavior unchanged. Argv
+# validation runs identically regardless of binary.
+
+
+def test_binary_true_captures_bytes_stdout(run_mock):
+    # In binary mode, subprocess.run is called WITHOUT text=True and the raw
+    # bytes stdout is returned through unchanged.
+    payload = b"\x00\x01\x02\xff\xfe"
+    run_mock.return_value = mock.Mock(returncode=0, stdout=payload, stderr=b"")
+
+    argv = [ms.DD_BIN, "if=/dev/rdisk4s1", "bs=1m", "count=4"]
+    result = ms.run_privileged(argv, timeout=60, binary=True)
+
+    assert result.stdout == payload
+    _, called_kwargs = run_mock.call_args
+    assert called_kwargs.get("capture_output") is True
+    # text=True must NOT be set in binary mode (that would decode/corrupt bytes).
+    assert called_kwargs.get("text") is not True
+    assert "text" not in called_kwargs
+
+
+def test_binary_false_default_keeps_text_mode(run_mock):
+    # The default is unchanged, backward-compatible text mode (text=True).
+    argv = [ms.DD_BIN, "if=/dev/rdisk4s1", "bs=1m", "count=4"]
+    ms.run_privileged(argv, timeout=60)
+
+    _, called_kwargs = run_mock.call_args
+    assert called_kwargs.get("capture_output") is True
+    assert called_kwargs.get("text") is True
+
+
+def test_binary_true_still_validates_argv(run_mock):
+    # Validation is independent of binary mode: a bad dd target is still refused
+    # BEFORE execution even when binary=True is requested.
+    argv = [ms.DD_BIN, "if=/tmp/EFIS_USB.img", "of=/dev/rdisk4", "bs=1m"]
+    with pytest.raises(ms.PrivilegeError):
+        ms.run_privileged(argv, timeout=60, binary=True)
+    run_mock.assert_not_called()

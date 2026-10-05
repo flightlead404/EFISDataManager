@@ -26,6 +26,27 @@ DEFAULT_CONFIG = {
     "archive_path": str(Path.home() / "Documents" / "EFIS_Archive"),
     "usb_image_path": str(Path.home() / "Documents" / "EFIS_USBImage"),
     "tail_number": "",
+    # Image-based drive write (image-based-drive-write spec). The local FAT32
+    # image (EFIS_USB.img) composed on the SSD and later dd'd to a drive's raw
+    # partition slice. Kept under the app support dir so it is out of the chart
+    # source tree and survives independently.
+    "composed_image_path": str(APP_SUPPORT_DIR / "EFIS_USB.img"),
+    # Byte size the composed image is created at. This is a CONFIGURED size for
+    # the composer; the AUTHORITATIVE slice-size match is enforced by the
+    # device guard at dd-write time (image-based-drive-write Task 7, Req 2.4),
+    # not here. Default ~30 GiB matches the target FAT32 USB drives in use.
+    # (newfs_msdos requires a minimum of ~64 MiB for FAT32.)
+    "composed_image_size_bytes": 30 * 1024 * 1024 * 1024,
+    # Opt-in switch for the image-based drive write path (image-based-drive-write
+    # Task 10, Req 11.1/11.2). When True, the chart/nav write goes through the
+    # composed-image guard->dd->verify path (image_writer.write) instead of the
+    # msdos_mount swap. DEFAULTS TO False: the image-write path is new and has not
+    # cleared the Task 6 safety checkpoint / Task 12 hardware harness, so by
+    # default the app keeps using the proven msdos_mount swap write path. The
+    # mount-swap path is also the explicit fallback — selected when this flag is
+    # False, and used automatically when an enabled image-write attempt fails
+    # (Req 11.3). Flip to True only once the hardware harness has blessed it.
+    "image_write_enabled": False,
     # Which Seattle Avionics chart products to download. Users select based on
     # their subscription and needs; e.g. VFR-only pilots turn off IFR low/high
     # and approach plates. Keys map to SA download-table description substrings

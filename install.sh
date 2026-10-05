@@ -30,6 +30,7 @@ LOG_DIR="$HOME/EFIS/DataManagerLogs"
 INSTALL_USER="${SUDO_USER:-$(id -un)}"
 
 # Phase-1 privilege backend (chart-sync-stall-fix): narrow sudoers grant.
+# Extended by image-based-drive-write (Task 5.3) with a raw dd write/read grant.
 SUDOERS_FILE="/etc/sudoers.d/efis-data-manager"
 
 # Pretty output helpers
@@ -146,8 +147,32 @@ mkdir -p "$LOG_DIR"
 #   The diskutil subcommands are scoped to exactly `unmount` and `mount`; the
 #   trailing pattern only matches the arguments of those two subcommands, not
 #   other diskutil verbs.
-step "Installing mount-swap privilege grant ($SUDOERS_FILE)"
-info "This lets chart syncs remount the drive without a password each time."
+#
+# --- image-based-drive-write (Task 5.3): raw dd write/read grant ---------
+#
+# The image-write path (image-based-drive-write) replaces the per-file mount
+# write with: compose a FAT32 image on the local SSD, then `dd` it onto the
+# drive's RAW PARTITION SLICE (/dev/rdiskNsN) in one sequential transfer, and
+# confirm the write by raw readback (another `dd` reading the same slice). Both
+# the write and the readback read/write a raw device node, which requires root.
+# This same NOPASSWD file is extended (not replaced) with a SECOND alias scoped
+# to exactly that: /bin/dd against a /dev/rdisk*s* raw SLICE node.
+#
+# INTERIM RISK — DOCUMENTED AND USER-ACCEPTED (interim privilege model):
+#   A NOPASSWD grant for `/bin/dd` writing to a raw removable slice is the
+#   INTERIM privilege model for the raw image write/read. It is scoped as
+#   tightly as sudoers allows — the exact binary (/bin/dd) and an of=/if=
+#   argument that must begin with the raw-SLICE glob /dev/rdisk*s* (the trailing
+#   `s*` requires a partition-slice node, so this never matches a whole-disk
+#   /dev/rdiskN node). sudoers glob matching cannot, however, prove the slice is
+#   removable or FAT32 — that check lives in the app's device guard
+#   (mount_swap.validate_device_node + the destructive-write guard), NOT here.
+#   Replacing this sudoers grant with a code-signed SMAppService helper that
+#   validates the device in-process is the roadmap "sudo retirement" item and is
+#   OUT OF SCOPE for this feature.
+step "Installing mount-swap + raw-image privilege grant ($SUDOERS_FILE)"
+info "This lets chart syncs remount the drive and write the drive image"
+info "without a password each time."
 info "You may be asked for your Mac password to write this system file."
 
 # Build the sudoers content for THIS install user (never hardcoded). Pin exact
@@ -162,7 +187,16 @@ SUDOERS_CONTENT="# EFIS Data Manager — chart-sync mount-swap privilege grant (
 Cmnd_Alias EFIS_MOUNTSWAP = /sbin/mount_msdos, \\
                             /usr/sbin/diskutil unmount *, \\
                             /usr/sbin/diskutil mount *
-$INSTALL_USER ALL=(root) NOPASSWD: EFIS_MOUNTSWAP"
+#
+# INTERIM RISK (user-accepted, image-based-drive-write): the raw dd write/read.
+# Pinned to /bin/dd with of=/if= constrained to the /dev/rdisk*s* raw SLICE glob
+# (trailing s* requires a partition slice, never a whole-disk /dev/rdiskN). This
+# NOPASSWD-for-dd-to-a-raw-removable-slice is the interim privilege model;
+# removability/FAT32 are enforced by the app device guard, and the signed-helper
+# replacement is the roadmap 'sudo retirement' item (out of scope here).
+Cmnd_Alias EFIS_RAWIMAGE = /bin/dd of=/dev/rdisk*s*, \\
+                           /bin/dd if=/dev/rdisk*s*
+$INSTALL_USER ALL=(root) NOPASSWD: EFIS_MOUNTSWAP, EFIS_RAWIMAGE"
 
 # Validate in a temp file with visudo BEFORE touching /etc, then install
 # atomically with the correct 0440 root:wheel perms. Never leave a broken
