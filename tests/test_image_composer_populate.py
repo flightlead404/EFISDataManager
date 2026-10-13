@@ -170,3 +170,51 @@ def test_populate_asserts_when_sidecar_survives(tmp_path, monkeypatch):
     monkeypatch.setattr(ic, "strip_sidecars", _inject_sidecar)
     with pytest.raises(ic.SidecarAssertionError):
         ic.populate(str(src), str(dst))
+
+
+# ---------------------------------------------------------------------------
+# _copy_file_into_image (nav files + commit markers)
+# ---------------------------------------------------------------------------
+
+
+def test_copy_file_into_image_copies_content_on_normal_dir(tmp_path):
+    """Positive case: content is copied byte-for-byte into a normal dir."""
+    src = tmp_path / "NAV.DB"
+    src.write_bytes(b"nav-db-bytes")
+    dst = tmp_path / "image" / "NAV.DB"
+
+    ic._copy_file_into_image(str(src), str(dst))
+
+    assert dst.is_file()
+    assert dst.read_bytes() == b"nav-db-bytes"
+
+
+def test_copy_file_into_image_survives_fat32_metadata_rejection(tmp_path, monkeypatch):
+    """Regression: a FAT32-style metadata rejection must not abort the copy.
+
+    On a real FAT32 image mount ``shutil.copy2`` -> ``copystat`` -> ``chflags``
+    raises ``OSError: [Errno 22] Invalid argument`` because FAT32 does not
+    support BSD file flags, which previously aborted compose on the first nav
+    file. The headless suite missed this because plain temp dirs DO support
+    file flags. Here we simulate the unsupported-metadata filesystem by making
+    ``shutil.copystat`` raise EINVAL, then assert the content still lands and no
+    error propagates.
+    """
+    import errno
+    import shutil
+
+    src = tmp_path / "NAV.DB"
+    src.write_bytes(b"nav-db-bytes")
+    dst = tmp_path / "image" / "NAV.DB"
+
+    def _reject_metadata(*_a, **_k):
+        raise OSError(errno.EINVAL, "Invalid argument")
+
+    monkeypatch.setattr(shutil, "copystat", _reject_metadata)
+
+    # Must NOT raise despite the metadata rejection.
+    ic._copy_file_into_image(str(src), str(dst))
+
+    # CONTENT is the hard requirement and must have landed intact.
+    assert dst.is_file()
+    assert dst.read_bytes() == b"nav-db-bytes"

@@ -595,15 +595,24 @@ def _bumped_sync_count(mount_point: str) -> int:
     return current + 1
 
 
-def _new_identity(mount_point: str) -> dict:
+def _new_identity(mount_point: str, label: Optional[str] = None) -> dict:
     """Build a fresh identity dict for a drive at ``mount_point``.
 
     Captures the OS VolumeUUID and label as cross-check fields, an app-generated
     uuid4 as the durable ``id`` key, and initialises all provenance/telemetry
-    fields (Req 10.1, 10.8). ``label`` prefers the mount's basename and falls
-    back to the diskutil VolumeName.
+    fields (Req 10.1, 10.8).
+
+    ``label`` is the human-facing volume label to record. When omitted (the
+    default, used by the prepare/adopt flows against a REAL mounted drive) it is
+    derived from the mount's basename, falling back to the diskutil VolumeName —
+    which for a real drive is its VolumeName. Callers that mount into a staging
+    directory (the image composer, which attaches at a temp mountpoint) MUST
+    pass the intended label explicitly, otherwise the temp dir name would leak
+    into the identity (observed on a composed drive as
+    ``"label": "efis_compose_mnt_..."``).
     """
-    label = os.path.basename(mount_point.rstrip(os.sep)) or _volume_name(mount_point)
+    if label is None:
+        label = os.path.basename(mount_point.rstrip(os.sep)) or _volume_name(mount_point)
     return {
         "schema_version": IDENTITY_SCHEMA_VERSION,
         "id": str(uuid.uuid4()),

@@ -300,7 +300,7 @@ def test_compose_is_drive_independent_and_correct(spec, tmp_path, monkeypatch):
     # Stub the slow FAT32 round-trip: no real image, a plain dir as mount root.
     # This exercises compose's SOURCING + ordering + drive-independence logic at
     # full example count without paying the newfs_msdos + hdiutil cost.
-    monkeypatch.setattr(ic, "create_image", lambda _p, _n: None)
+    monkeypatch.setattr(ic, "create_image", lambda _p, _n, volume_label=None: None)
 
     import contextlib
 

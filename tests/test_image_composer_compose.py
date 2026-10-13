@@ -230,6 +230,63 @@ def test_compose_mints_identity_when_none_and_is_drive_independent(tmp_path, mon
             os.remove(image_path)
 
 
+@requires_native_tools
+def test_compose_minted_identity_label_is_volume_label_not_temp_mount(
+    tmp_path, monkeypatch
+):
+    """The minted identity's ``label`` is the C/P volume label, not the temp dir.
+
+    Regression for the identity-label leak: compose with ``identity=None`` and
+    its OWN temp mountpoint (mountpoint=None -> efis_compose_mnt_XXXX) must mint
+    an identity whose ``label`` is the computed FAT volume label
+    (``C<charts>P<plates>``), never the staging mountpoint basename
+    (``efis_compose_mnt_...``) that previously leaked in.
+    """
+    source = _make_source_tree(str(tmp_path / "usb_image"))
+    image_path = str(tmp_path / "EFIS_USB.img")
+    reattach_mnt = str(tmp_path / "inspect_mnt")
+
+    # Pin the cycle metadata so the expected label is deterministic.
+    fake_meta = {
+        "charts": {
+            "description": "VFR Sectionals",
+            "valid_dates": "Thursday, September 3, 2026 through Wednesday, October 28, 2026",
+        },
+        "plates": {
+            "description": "IFR Approach Plates and Airport Diagrams",
+            "valid_dates": "Thursday, October 1, 2026 through Wednesday, October 28, 2026",
+        },
+    }
+    from efis_data_manager import currency
+
+    monkeypatch.setattr(currency, "load_cycle_metadata", lambda: fake_meta)
+    expected_label = "C2609P2610"
+
+    try:
+        # mountpoint=None so compose uses its own tempfile.mkdtemp staging dir —
+        # exactly the path that previously leaked into the identity label.
+        ic.compose(
+            image_path,
+            _TINY_FAT32_BYTES,
+            usb_image_path=source,
+            identity=None,
+        )
+
+        with ic.attach_for_population(image_path, reattach_mnt) as root:
+            minted = drive_updater.read_identity(root)
+            assert minted is not None
+            assert minted.get("label") == expected_label
+            assert not str(minted.get("label", "")).startswith("efis_compose_mnt_")
+    finally:
+        if os.path.ismount(reattach_mnt):
+            subprocess.run(
+                [ic.HDIUTIL_BIN, "detach", reattach_mnt, "-force"],
+                capture_output=True,
+            )
+        if os.path.exists(image_path):
+            os.remove(image_path)
+
+
 # ---------------------------------------------------------------------------
 # Device-free structural tests — ordering + error path (no newfs/hdiutil)
 # ---------------------------------------------------------------------------
@@ -251,7 +308,11 @@ def test_compose_writes_markers_last(tmp_path, monkeypatch):
     writes = []
 
     # Stub the lifecycle: no real image, a plain dir as the "mounted" root.
-    monkeypatch.setattr(ic, "create_image", lambda p, n: writes.append(("create", p)))
+    # Accept the volume_label kwarg compose now threads through.
+    monkeypatch.setattr(
+        ic, "create_image",
+        lambda p, n, volume_label=None: writes.append(("create", p)),
+    )
 
     import contextlib
 

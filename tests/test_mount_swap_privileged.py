@@ -226,6 +226,57 @@ def test_dd_read_from_raw_slice_reaches_subprocess(run_mock):
     assert called_args[0] == ["/usr/bin/sudo", "-n", *argv]
 
 
+def test_dd_chunked_write_segment_with_skip_seek_count_accepted(run_mock):
+    # The CHUNKED raw write (image-based-drive-write robustness fix) writes the
+    # image to the raw slice one segment at a time via dd skip=/seek=/count=.
+    # The raw-slice allow-list must still ACCEPT these extra operands: it only
+    # constrains the of=/if= device operand and ignores skip=/seek=/count=.
+    argv = [
+        ms.DD_BIN,
+        "if=/tmp/EFIS_USB.img",
+        "of=/dev/rdisk4s1",
+        "bs=1m",
+        "skip=1024",
+        "seek=1024",
+        "count=1024",
+    ]
+
+    ms.run_privileged(argv, timeout=60)
+
+    run_mock.assert_called_once()
+    called_args, _ = run_mock.call_args
+    assert called_args[0] == ["/usr/bin/sudo", "-n", *argv]
+
+
+def test_dd_chunked_read_segment_with_skip_count_accepted(run_mock):
+    # The CHUNKED raw readback reads the slice one segment at a time via dd
+    # skip=/count=; the allow-list accepts these alongside the if= raw slice.
+    argv = [ms.DD_BIN, "if=/dev/rdisk4s1", "bs=1m", "skip=2048", "count=1024"]
+
+    ms.run_privileged(argv, timeout=60)
+
+    run_mock.assert_called_once()
+    called_args, _ = run_mock.call_args
+    assert called_args[0] == ["/usr/bin/sudo", "-n", *argv]
+
+
+def test_dd_chunked_segment_to_non_raw_target_still_refused(run_mock):
+    # Even with chunk operands, a non-raw / whole-disk target is still refused:
+    # the robustness fix does not loosen the raw-slice-only device constraint.
+    argv = [
+        ms.DD_BIN,
+        "if=/tmp/EFIS_USB.img",
+        "of=/dev/disk4s1",  # non-raw node -> refused
+        "bs=1m",
+        "skip=1024",
+        "seek=1024",
+        "count=1024",
+    ]
+    with pytest.raises(ms.PrivilegeError):
+        ms.run_privileged(argv, timeout=60)
+    run_mock.assert_not_called()
+
+
 def test_dd_to_whole_disk_raw_node_rejected(run_mock):
     # /dev/rdisk4 has no sNN slice suffix -> would clobber the partition scheme.
     argv = [ms.DD_BIN, "if=/tmp/EFIS_USB.img", "of=/dev/rdisk4", "bs=1m"]

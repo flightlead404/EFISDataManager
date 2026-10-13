@@ -70,6 +70,7 @@ import datetime
 import logging
 import os
 import plistlib
+import re
 import subprocess
 from contextlib import contextmanager
 from dataclasses import dataclass, field
@@ -366,6 +367,177 @@ HDIUTIL_TIMEOUT_SECONDS = 120.0
 NEWFS_TIMEOUT_SECONDS = 600.0
 
 
+# ---------------------------------------------------------------------------
+# FAT volume label from the currency cycles (design "FAT volume label" DECISION)
+# ---------------------------------------------------------------------------
+#
+# The hardware-harness DECISION (design.md, 2026-10-09) drops the old EFIS_#
+# scheme and makes the FAT volume label carry BOTH currency cycles:
+# ``C<charts>P<plates>`` (e.g. ``C2609P2610``), because charts/nav run a 56-day
+# cycle while plates run a 28-day cycle and so differ in general. Device-type /
+# identity stays in EFIS_DRIVE_ID.json, NOT the label.
+#
+# IMPORTANT — what ``valid_dates`` actually contains. The cycle numbers are NOT
+# a 4-digit token inside ``valid_dates``; the 4-digit YYCC cycle lives only in
+# the download-URL KEY of ``currency.load_cycle_metadata()``. The ``valid_dates``
+# value is a prose date RANGE, e.g.
+#   "Thursday, September 3, 2026 through Wednesday, October 28, 2026".
+# So :func:`extract_cycle` parses the START date of the range and derives the
+# YYCC cycle from the fixed 28-day cycle anchor below (a bare 4-digit token is
+# only used as a fallback when there is no prose date, since the prose's only
+# 4-digit tokens are the years and must not be mistaken for a cycle).
+#
+# Cycle anchor. The Seattle Avionics 28-day cycles are continuous; the first
+# cycle whose start date falls in 2026 begins 2026-01-22 (verified against the
+# stored metadata: 2607=>Jul 9, 2608=>Aug 6, 2609=>Sep 3, 2610=>Oct 1, each 28
+# days apart). From any cycle start date we compute YY (the start year mod 100)
+# and CC (the 1-based ordinal of that cycle within its start year).
+_CYCLE_ANCHOR = datetime.date(2026, 1, 22)  # 2026 cycle 1 (YYCC = 2601)
+_CYCLE_DAYS = 28
+
+# Default FAT label when neither cycle is known — a compose-date stamp so the
+# volume is still identifiable and never the "NO NAME" newfs_msdos default.
+_LABEL_FALLBACK_PREFIX = "EFIS"
+
+# FAT32 volume-label rules: uppercase, A-Z / 0-9 only, at most 11 characters.
+_LABEL_MAX_LEN = 11
+_LABEL_ALLOWED_RE = re.compile(r"[^A-Z0-9]")
+
+# Month names (full) as they appear in the stored ``valid_dates`` prose.
+_MONTHS = {
+    "january": 1, "february": 2, "march": 3, "april": 4, "may": 5, "june": 6,
+    "july": 7, "august": 8, "september": 9, "october": 10, "november": 11,
+    "december": 12,
+}
+
+
+def _cycle_for_start_date(start: datetime.date) -> str:
+    """Return the YYCC cycle string for a cycle whose first day is ``start``.
+
+    YY is the two-digit start year; CC is the 1-based ordinal of the cycle
+    within its start year, counting the continuous 28-day cycles anchored at
+    :data:`_CYCLE_ANCHOR`. The date is snapped to its enclosing cycle boundary
+    first, so a mid-range date (or a one-off off-by-a-day source) still maps to
+    the right cycle.
+    """
+    n = (start - _CYCLE_ANCHOR).days // _CYCLE_DAYS
+    cycle_start = _CYCLE_ANCHOR + datetime.timedelta(days=_CYCLE_DAYS * n)
+    year = cycle_start.year
+    # Ordinal within the year: find the first cycle index landing in `year`.
+    first_in_year = n
+    while True:
+        candidate = _CYCLE_ANCHOR + datetime.timedelta(
+            days=_CYCLE_DAYS * (first_in_year - 1)
+        )
+        if candidate.year != year:
+            break
+        first_in_year -= 1
+    ordinal = n - first_in_year + 1
+    return f"{year % 100:02d}{ordinal:02d}"
+
+
+def _parse_start_date(valid_dates: str) -> Optional[datetime.date]:
+    """Parse the START date out of a ``valid_dates`` prose range, or None.
+
+    Handles the stored shape "<Weekday>, <Month> <D>, <YYYY> through ...": finds
+    the first "<Month> <day>, <year>" triple and returns it as a date. Returns
+    None when no such triple is present (so the caller degrades gracefully).
+    """
+    match = re.search(
+        r"([A-Za-z]+)\s+(\d{1,2}),\s*(\d{4})", valid_dates
+    )
+    if not match:
+        return None
+    month = _MONTHS.get(match.group(1).lower())
+    if month is None:
+        return None
+    try:
+        return datetime.date(int(match.group(3)), month, int(match.group(2)))
+    except ValueError:
+        return None
+
+
+def extract_cycle(valid_dates: str) -> Optional[str]:
+    """Extract a 4-digit YYCC cycle number from a ``valid_dates`` string.
+
+    Robust to what the field ACTUALLY contains (see the module note above). The
+    stored value is a prose date RANGE whose only 4-digit tokens are YEARS
+    ("... 2026 through ... 2026"), so a naive 4-digit grab would wrongly return
+    the year. Order of attempts:
+
+      1. Parse the START date of the prose range and derive the YYCC cycle from
+         the fixed 28-day cycle anchor. This is the real stored shape.
+      2. Otherwise, if the string carries a bare 4-digit token whose last two
+         digits are a plausible cycle ordinal (01..13), use it directly —
+         future-proofing in case the field ever carries a literal YYCC cycle.
+         The ordinal guard stops a stray YEAR (ending in e.g. "26") in
+         date-like prose from being mistaken for a cycle.
+      3. If neither works, return None so the label build degrades gracefully.
+
+    Returns the cycle as a 4-character string (e.g. ``"2610"``) or None.
+    """
+    if not valid_dates:
+        return None
+    # 1. Derive from the start date of the prose range (the real stored shape).
+    start = _parse_start_date(valid_dates)
+    if start is not None:
+        return _cycle_for_start_date(start)
+    # 2. A standalone 4-digit YYCC token. Guard against grabbing a YEAR out of
+    #    date-like prose: a real cycle's last two digits are the 1-based cycle
+    #    ordinal (01..13, at most ~13 cycles/year), whereas a year ends in digits
+    #    like "26"/"27". Only accept a token whose CC part is a plausible cycle
+    #    ordinal, so "... 2026 ..." prose never yields a bogus "2026" cycle.
+    token = re.search(r"(?<!\d)(\d{4})(?!\d)", valid_dates)
+    if token:
+        candidate = token.group(1)
+        cc = int(candidate[2:])
+        if 1 <= cc <= 13:
+            return candidate
+    # 3. Unparseable.
+    return None
+
+
+def _sanitize_label(label: str) -> str:
+    """Sanitize ``label`` to the FAT32 rules: uppercase, [A-Z0-9], <=11 chars.
+
+    Uppercases, strips every character outside A-Z / 0-9 (spaces, punctuation,
+    lowercase after upcasing is a no-op), then truncates to 11 characters. The
+    hard strip keeps ``newfs_msdos -v`` from rejecting an invalid label.
+    """
+    upper = (label or "").upper()
+    cleaned = _LABEL_ALLOWED_RE.sub("", upper)
+    return cleaned[:_LABEL_MAX_LEN]
+
+
+def build_volume_label(
+    charts_cycle: Optional[str],
+    plates_cycle: Optional[str],
+    *,
+    now: Optional[datetime.date] = None,
+) -> str:
+    """Build the sanitized FAT volume label from the two currency cycles.
+
+    Format ``C<charts>P<plates>`` (e.g. ``C2609P2610``). Degradation rules:
+
+      * Both cycles known -> ``C<charts>P<plates>``.
+      * Only one known -> just that component (``C2609`` or ``P2610``).
+      * Neither known -> a compose-date fallback ``EFIS<YYMMDD>`` so the volume
+        is still identifiable and never the ``newfs_msdos`` "NO NAME" default.
+
+    The result is always sanitized (uppercase, [A-Z0-9], <=11 chars) so it is a
+    legal FAT32 label. ``now`` is injectable for deterministic tests.
+    """
+    parts = ""
+    if charts_cycle:
+        parts += f"C{charts_cycle}"
+    if plates_cycle:
+        parts += f"P{plates_cycle}"
+    if not parts:
+        today = now or datetime.date.today()
+        parts = f"{_LABEL_FALLBACK_PREFIX}{today:%y%m%d}"
+    return _sanitize_label(parts)
+
+
 class ImageCreateError(RuntimeError):
     """Raised when creating or formatting the local FAT32 image fails.
 
@@ -531,7 +703,9 @@ def _detach(dev_node: str) -> None:
         )
 
 
-def create_image(image_path: str, byte_size: int) -> None:
+def create_image(
+    image_path: str, byte_size: int, *, volume_label: Optional[str] = None
+) -> None:
     """Create a FAT32 image file at ``image_path`` sized to ``byte_size`` bytes.
 
     Realises Req 2.1 (size the image to the target slice byte length) and Req 2.2
@@ -542,8 +716,16 @@ def create_image(image_path: str, byte_size: int) -> None:
       2. Attach it as a raw, unmounted block device
          (``hdiutil attach -nomount`` with the ``CRawDiskImage`` view) — required
          because ``newfs_msdos`` cannot format a plain file.
-      3. Lay down FAT32 on the attached device node (``newfs_msdos -F 32``).
+      3. Lay down FAT32 on the attached device node (``newfs_msdos -F 32``),
+         setting the volume label via ``-v`` when ``volume_label`` is given.
       4. Detach the device.
+
+    ``volume_label`` sets the FAT volume label (the hardware-harness DECISION's
+    ``C<charts>P<plates>`` currency label). It is sanitized hard to the FAT32
+    rules (uppercase, A-Z/0-9, <=11 chars) before being passed to
+    ``newfs_msdos -v`` so an invalid label can never make the format fail; a
+    label that sanitizes to empty is treated as "no label" (newfs_msdos default,
+    preserving the pre-label behavior). ``None`` keeps the current behavior.
 
     The backing file's size is preserved across the cycle (the raw image is a 1:1
     view), so ``os.path.getsize(image_path)`` equals ``byte_size`` afterwards. On
@@ -554,11 +736,13 @@ def create_image(image_path: str, byte_size: int) -> None:
 
     dev_node = _attach_raw(image_path, nomount=True)
     try:
-        _run_tool(
-            [NEWFS_MSDOS_BIN, "-F", _FAT_TYPE, dev_node],
-            NEWFS_TIMEOUT_SECONDS,
-            "newfs_msdos",
-        )
+        argv = [NEWFS_MSDOS_BIN, "-F", _FAT_TYPE]
+        if volume_label is not None:
+            safe_label = _sanitize_label(volume_label)
+            if safe_label:
+                argv.extend(["-v", safe_label])
+        argv.append(dev_node)
+        _run_tool(argv, NEWFS_TIMEOUT_SECONDS, "newfs_msdos")
     finally:
         _detach(dev_node)
 
@@ -676,18 +860,84 @@ class ComposeError(RuntimeError):
     """
 
 
+def _cycles_from_metadata() -> tuple:
+    """Return ``(charts_cycle, plates_cycle)`` from the current cycle metadata.
+
+    Reuses the SAME source the "new image ready" notification uses
+    (:func:`currency.load_cycle_metadata`, keyed by download URL with
+    ``description`` + ``valid_dates``), so the composer and the notification
+    agree by construction. Classification by description:
+
+      * charts/nav cycle (56-day) = the SEC / LO / Scanned-Charts entry's cycle;
+      * plates cycle (28-day)     = the Approach-Plates entry's cycle.
+
+    Each cycle is extracted via :func:`extract_cycle`. Either side degrades to
+    None when its entry is absent or its ``valid_dates`` is unparseable, so the
+    caller (:func:`build_volume_label`) can fall back. Best-effort: any failure
+    reading the metadata yields ``(None, None)``.
+    """
+    from efis_data_manager import currency
+
+    charts_cycle: Optional[str] = None
+    plates_cycle: Optional[str] = None
+    try:
+        metadata = currency.load_cycle_metadata()
+    except Exception as exc:  # metadata is best-effort for labelling only
+        logger.debug("compose: could not load cycle metadata for label: %s", exc)
+        return (None, None)
+
+    for entry in metadata.values():
+        desc = str(entry.get("description", "")).lower()
+        valid = entry.get("valid_dates")
+        if not valid:
+            continue
+        cycle = extract_cycle(valid)
+        if cycle is None:
+            continue
+        if "plate" in desc or "approach" in desc:
+            # Prefer the newest plates cycle seen (lexically largest YYCC).
+            if plates_cycle is None or cycle > plates_cycle:
+                plates_cycle = cycle
+        elif "sectional" in desc or "low altitude" in desc or "scanned" in desc:
+            if charts_cycle is None or cycle > charts_cycle:
+                charts_cycle = cycle
+
+    return (charts_cycle, plates_cycle)
+
+
 def _copy_file_into_image(src_file: str, dst_file: str) -> None:
     """Copy one file into the image, creating parent dirs; no sidecars carried.
 
     Used for the standalone nav files and the commit markers, which are copied
     individually (not through the ChartData tree rsync) so the markers can be the
-    LAST bytes written. ``shutil.copy2`` preserves mtime; the source files live
-    on the local SSD and carry no resource forks, so no AppleDouble is created.
+    LAST bytes written.
+
+    We deliberately do NOT use ``shutil.copy2`` here. ``copy2`` runs
+    ``copystat`` after copying, which on macOS calls ``chflags(dst, st_flags)``.
+    A FAT32 image mount (the real EFIS card filesystem) does not support BSD
+    file flags, so that ``chflags`` raises ``OSError: [Errno 22] Invalid
+    argument`` and aborts the whole compose — even though the file content was
+    written fine. The headless tests missed this because plain temp dirs DO
+    support file flags.
+
+    Content is the hard requirement, so we copy bytes with ``shutil.copyfile``
+    (content only, no metadata; it does not create AppleDouble sidecars, and the
+    source lives on the local SSD with no resource forks). mtime preservation is
+    only nice-to-have, so we attempt it best-effort via ``copystat`` and swallow
+    any ``OSError`` the destination filesystem raises for unsupported metadata.
     """
     import shutil
 
     os.makedirs(os.path.dirname(dst_file), exist_ok=True)
-    shutil.copy2(src_file, dst_file)
+    # CONTENT is mandatory; copyfile never touches metadata so it can't trip
+    # the FAT32 chflags/copystat failure.
+    shutil.copyfile(src_file, dst_file)
+    # mtime (and other stat) preservation is best-effort: a filesystem like
+    # FAT32 that rejects chflags/copystat must not abort the copy.
+    try:
+        shutil.copystat(src_file, dst_file)
+    except OSError:
+        pass
 
 
 def compose(
@@ -783,10 +1033,24 @@ def compose(
 
         mountpoint = tempfile.mkdtemp(prefix="efis_compose_mnt_")
 
+    # Compute the FAT volume label from the current currency cycles (the
+    # hardware-harness DECISION: C<charts>P<plates>, both cycles because plates
+    # 28-day and charts/nav 56-day differ). Sourced from the SAME currency
+    # metadata the "new image ready" notification uses. This same label is also
+    # recorded in the identity below, so the composed image's identity carries
+    # the REAL volume label — not the temp staging-mountpoint basename.
+    charts_cycle, plates_cycle = _cycles_from_metadata()
+    volume_label = build_volume_label(charts_cycle, plates_cycle)
+    logger.info(
+        "compose: volume label %s (charts=%s plates=%s)",
+        volume_label, charts_cycle, plates_cycle,
+    )
+
     families: List[str] = []
     try:
-        # Step 1: create the FAT32 image sized to the slice.
-        create_image(image_path, byte_size)
+        # Step 1: create the FAT32 image sized to the slice, labelled with the
+        # currency cycles.
+        create_image(image_path, byte_size, volume_label=volume_label)
 
         # Step 2: attach locally and populate from current sources.
         with attach_for_population(image_path, mountpoint) as root:
@@ -811,10 +1075,17 @@ def compose(
 
             # 2c. Identity: the passed-in dict, or a freshly minted one. Never
             # read from an old drive — write_identity targets the image root.
+            # When minting, pass the REAL volume label so the identity records
+            # the C<charts>P<plates> currency label, NOT the temp staging
+            # mountpoint basename (the identity-label-leak fix: without this,
+            # _new_identity derived the label from the mountpoint, which for a
+            # compose-into-temp-dir was "efis_compose_mnt_...").
             if identity is not None:
                 drive_updater.write_identity(root, identity)
             else:
-                drive_updater.write_identity(root, drive_updater._new_identity(root))
+                drive_updater.write_identity(
+                    root, drive_updater._new_identity(root, label=volume_label)
+                )
             if drive_updater.read_identity(root) is None:
                 raise ComposeError(
                     "compose: identity file was not written into the image"

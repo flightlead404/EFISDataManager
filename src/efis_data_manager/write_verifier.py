@@ -38,7 +38,7 @@ is never loaded whole into memory.
 import hashlib
 import logging
 import os
-from typing import BinaryIO, Callable, Union
+from typing import BinaryIO, Callable, Iterable, Union
 
 logger = logging.getLogger(__name__)
 
@@ -83,6 +83,32 @@ def _hash_bytes(data: bytes) -> str:
     digest = hashlib.sha256()
     for offset in range(0, len(data), HASH_BLOCK_SIZE):
         digest.update(data[offset : offset + HASH_BLOCK_SIZE])
+    return digest.hexdigest()
+
+
+def _hash_chunk_iter(chunks: Iterable[bytes]) -> str:
+    """Return the sha256 hex digest of an iterable of byte chunks, streamed.
+
+    This is the CHUNKED readback path (image-based-drive-write robustness fix):
+    the raw readback is driven segment by segment (``image_writer`` yields one
+    ``bytes`` per ~1 GiB segment so a transient USB bus reset costs one segment,
+    not the whole read), and each segment is fed straight into the running hash.
+    The composed-image side is still hashed by :func:`hash_image` in the same
+    fixed-size blocks, so the two digests are directly comparable; the whole
+    (tens-of-GB) region is never held in memory — only one segment at a time,
+    and each segment is itself consumed in :data:`HASH_BLOCK_SIZE` sub-blocks so
+    even a large segment does not add an unbounded copy.
+    """
+    digest = hashlib.sha256()
+    for chunk in chunks:
+        if not isinstance(chunk, (bytes, bytearray)):
+            raise TypeError(
+                "chunked readback source must yield bytes, got "
+                f"{type(chunk).__name__}"
+            )
+        view = memoryview(chunk)
+        for offset in range(0, len(view), HASH_BLOCK_SIZE):
+            digest.update(view[offset : offset + HASH_BLOCK_SIZE])
     return digest.hexdigest()
 
 
@@ -170,6 +196,79 @@ def verify(
     else:
         logger.warning(
             "verify: raw readback does NOT match composed image "
+            "(image sha256=%s, readback sha256=%s); write incomplete — re-write "
+            "and re-verify the whole image",
+            image_hash,
+            readback_hash,
+        )
+    return complete
+
+
+# A CHUNKED readback source is a zero-arg callable returning an ITERATOR (or any
+# iterable) of byte segments covering the whole region in order — the shape the
+# image-based-drive-write robustness fix uses so a flaky USB bridge's reset
+# costs one ~1 GiB segment, not the whole raw read. It is kept DISTINCT from
+# ReadbackSource (which yields the whole region as one blob / stream / path) so
+# the existing verify(...) signature and its three source shapes are untouched;
+# the chunked capability is added ALONGSIDE via verify_chunked(...).
+ChunkedReadbackSource = Callable[[], Iterable[bytes]]
+
+
+def hash_readback_chunks(chunk_source: ChunkedReadbackSource) -> str:
+    """Return the sha256 of a chunked readback source, streamed segment by segment.
+
+    Calls ``chunk_source()`` to obtain the iterator of segment byte-chunks (the
+    image_writer segmented raw read) and feeds every segment into one running
+    sha256 via :func:`_hash_chunk_iter`. The digest is computed over the
+    concatenation of all segments in order, so it equals the digest
+    :func:`hash_image` computes over the composed image when the drive bytes
+    match — without ever holding the whole region in memory.
+    """
+    if not callable(chunk_source):
+        raise TypeError(
+            "chunked readback source must be a zero-arg callable returning an "
+            f"iterable of bytes, got {type(chunk_source).__name__}"
+        )
+    chunks = chunk_source()
+    return _hash_chunk_iter(chunks)
+
+
+def verify_chunked(
+    image_path: Union[str, os.PathLike], chunk_source: ChunkedReadbackSource
+) -> bool:
+    """Return True iff the CHUNKED raw readback matches the composed image.
+
+    The chunked analogue of :func:`verify`. The composed image at ``image_path``
+    is hashed exactly as in :func:`verify` (:func:`hash_image`, fixed-size
+    blocks), and the raw readback is hashed by streaming its ordered segments
+    through one sha256 (:func:`hash_readback_chunks`), so the two digests are
+    directly comparable:
+
+      * **match** -> the drive's bytes equal the image -> write complete -> True;
+      * **mismatch / short read** -> the digests differ -> incomplete -> False.
+
+    Semantics are identical to :func:`verify`; only the readback SOURCE shape
+    differs (a segment iterator rather than a whole-region blob/stream/path), so
+    a mid-stream bus reset that the segmented source recovers from is invisible
+    here — it still produces one hash over the whole region. A reset the source
+    cannot recover from propagates as its own exception (e.g.
+    ``image_writer.ChunkedTransferError``) for the caller to map to incomplete.
+
+    Pure read with no mount and no ``/dev/`` access of its own (design
+    Properties 1 and 3).
+    """
+    image_hash = hash_image(image_path)
+    readback_hash = hash_readback_chunks(chunk_source)
+    complete = readback_hash == image_hash
+    if complete:
+        logger.info(
+            "verify_chunked: chunked raw readback matches composed image "
+            "(sha256=%s); write complete",
+            image_hash,
+        )
+    else:
+        logger.warning(
+            "verify_chunked: chunked raw readback does NOT match composed image "
             "(image sha256=%s, readback sha256=%s); write incomplete — re-write "
             "and re-verify the whole image",
             image_hash,

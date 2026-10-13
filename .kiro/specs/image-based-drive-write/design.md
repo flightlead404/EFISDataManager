@@ -246,3 +246,92 @@ chart cycle.
 - Not changing what chart data is sourced/downloaded.
 - Not resolving Phase-2 signed-helper distribution beyond noting the privilege
   model depends on it.
+
+## Hardware harness findings (2026-10-09) — Task 12 in progress
+
+End-to-end run on real hardware (SanDisk 3.2Gen1 FAT32 USB, 30.8 GB, through a
+Henge dock). Target was a disposable drive the user explicitly authorized to
+erase.
+
+### What PASSED
+- **Compose**: image built sized to the ACTUAL slice (30,783,045,632 bytes),
+  sidecar-free, from current sources (~/EFIS/USB). ~25 min for ~9.1 GB / ~101k
+  files through the local FAT image mount.
+- **Full dd write** (`bs=1m`, machine UNDISTURBED): all 30,783,045,632 bytes
+  written, no drop, ~37 min @ ~13.8 MB/s.
+- **Structural verification** (read-only mount of the written drive):
+  101,694 files / 9.8 GB ChartData (SEC 39,901 + LO 39,866 + Plates 21,923),
+  **zero `._*`/`.DS_Store` sidecars**, NAV.DB on-drive sha256 == source sha256
+  (bit-for-bit), valid EFIS_DRIVE_ID.json + both commit markers present. The
+  core thesis (dd a composed FAT32 image to the raw slice, no mount of the
+  drive, sidecar-free) is CONFIRMED on real hardware.
+
+### Open issue — USB device drops off the bus under sustained raw I/O
+- Symptoms (kernel log): `IOUSBMassStorageDriver fConsecutiveResetCount=1`,
+  `AppleUSBHostPort::terminateDevice: SanDisk 3.2Gen1: hardware connection
+  lost`; device re-enumerates at a NEW /dev/diskN each time (disk4 -> disk20).
+- Pattern: the UNDISTURBED write (14 MB/s) ran 37 min to completion; a later
+  raw READBACK (104 MB/s) reset at ~3 GB in ~30 s. Earlier writes that failed
+  at 2-9 GB coincided with likely physical disturbance (laptop undock).
+- Root cause NOT our software (a full 30 GB write completed). Leading
+  hypotheses: (1) drive/bridge thermal or power under sustained HIGH-rate I/O
+  (read is 7x faster -> reset far sooner); (2) power/link through the dock's
+  cascaded hubs (confirmed topology: Mac -> Intel hub -> VIA Labs hub ->
+  GenesysLogic hub -> SanDisk). Experiment planned: sustained raw read on a
+  DIRECT MacBook port (dock bypassed) to isolate dock/hub/power vs thermal.
+- **Software consequence (build regardless):** the raw readback-verify (and the
+  raw write) must be CHUNKED with resume/retry so a transient bus reset costs
+  one segment, not the whole operation. A single long raw `/dev/rdiskN`
+  transfer is fragile on flaky bridges. Fold chunked read + chunked
+  write-with-resume into write_verifier / image_writer.
+
+### Decisions / fixes from this run
+- **FAT volume label** (DECISION): drop the old EFIS_# manual-sync scheme. Label
+  carries BOTH currency cycles, format `C<charts>P<plates>` (e.g. `C2609P2610`)
+  — charts/nav 56-day cycle + plates 28-day cycle. FAT-safe (<=11 chars,
+  uppercase). The two cycles differ in general (plates 28-day vs charts/nav
+  56-day), so a single number would be misleading; device-type/identity stays
+  in EFIS_DRIVE_ID.json, NOT the label. Source the cycles from the same
+  currency metadata the "new image ready" notification already uses. Set via
+  `newfs_msdos -v` at image-create time (or write the FAT label during compose).
+- **Bug fixed (FAT32 chflags)**: `_copy_file_into_image` used `shutil.copy2`,
+  whose `copystat`->`chflags` raises OSError(EINVAL) on a FAT32 mount, aborting
+  compose on the first nav file. Fixed to `copyfile` + best-effort `copystat`
+  swallowing OSError. Regression test added; the real-FAT32 round-trip test now
+  exercises nav/marker copies. (This bug escaped headless tests because plain
+  temp dirs support chflags.)
+- **Bug to fix (identity label leak)**: compose with identity=None mints an
+  identity whose `label` picked up the TEMP mountpoint basename
+  (`efis_compose_mnt_...`). Should be the real volume label (the C/P cycle
+  string above) or omitted — never the staging dir name.
+- **Polish**: `newfs_msdos` currently leaves the volume label unset ("NO NAME");
+  setting the C/P label fixes both the cosmetic label and gives the human a
+  currency-at-a-glance cue.
+
+### GO — real GRT EFIS read PASSED (2026-10-09)
+The dd-written drive (full 30.8 GB composed image, written to the raw slice with
+NO mount of the drive) was read in the actual GRT EFIS and read fine. Combined
+with the structural verification above (101,694 files, zero sidecars, bit-for-
+bit NAV.DB match), this is the definitive Task 12 acceptance: the image-based
+drive-write path works end to end on real hardware. The write mechanism is
+validated; remaining items are robustness (chunked read/write-resume for flaky
+USB bridges), the volume-label + identity-label fixes, and the release (Task 13).
+
+### Direct-port experiment SKIPPED; chunking is the deliverable (2026-10-09)
+The EFIS drive is USB-A; the MacBook is USB-C-only, so the drive can ONLY attach
+via the Henge dock (USB-A ports) absent a USB-C->USB-A dongle. The dock is
+therefore the REAL target environment, and the fix must work through it
+regardless of dock-vs-drive root cause. Decision: skip the direct-port
+isolation test (not cleanly runnable, and would not change the implementation)
+and build the robustness fix for the dock bus:
+  - **Chunked raw write with resume/retry**: write the image in fixed segments
+    (e.g. 1-2 GiB) via dd `seek`/`skip`; on a bus reset (`Device not
+    configured` / device re-enumeration), re-resolve the raw node and re-drive
+    the failed segment, up to a bounded retry count. The whole-image unit of
+    work is preserved (verified or not); segments just make progress durable
+    against transient resets.
+  - **Chunked raw readback-verify**: hash the slice in the same segments,
+    re-driving a segment that resets, so verify completes on a flaky bridge.
+    (A single long raw read reset at ~3 GB in testing.)
+These land in image_writer (write) and write_verifier (readback), behind the
+existing WriteResult/verify contracts, so the app wiring is unchanged.

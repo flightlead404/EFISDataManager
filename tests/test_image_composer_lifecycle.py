@@ -204,6 +204,92 @@ def test_create_image_rejects_bad_size(tmp_path):
         ic.create_image(str(tmp_path / "img.raw"), 0)
 
 
+def test_create_image_passes_sanitized_label_to_newfs(tmp_path, monkeypatch):
+    """create_image threads a sanitized ``-v LABEL`` into the newfs_msdos argv.
+
+    Device-free: the attach/detach and the tool run are stubbed so we only
+    assert the argv the format step would receive. A lowercase/dirty label is
+    sanitized (upper, [A-Z0-9], <=11) before ``-v``.
+    """
+    monkeypatch.setattr(ic, "_allocate_backing_file", lambda p, n: None)
+    monkeypatch.setattr(ic, "_attach_raw", lambda p, **k: "/dev/diskX")
+    monkeypatch.setattr(ic, "_detach", lambda d: None)
+    monkeypatch.setattr(os.path, "getsize", lambda p: 64 * 1024 * 1024)
+
+    seen = {}
+
+    def fake_run(argv, timeout, what):
+        seen["argv"] = argv
+        return subprocess.CompletedProcess(args=argv, returncode=0, stdout="", stderr="")
+
+    monkeypatch.setattr(ic, "_run_tool", fake_run)
+
+    ic.create_image(str(tmp_path / "img.img"), 64 * 1024 * 1024, volume_label="c2609p2610")
+
+    argv = seen["argv"]
+    assert "-v" in argv
+    assert argv[argv.index("-v") + 1] == "C2609P2610"
+    # The device node is still the final argument.
+    assert argv[-1] == "/dev/diskX"
+
+
+def test_create_image_omits_label_when_none_or_empty(tmp_path, monkeypatch):
+    """No ``-v`` is passed when the label is None or sanitizes to empty."""
+    monkeypatch.setattr(ic, "_allocate_backing_file", lambda p, n: None)
+    monkeypatch.setattr(ic, "_attach_raw", lambda p, **k: "/dev/diskX")
+    monkeypatch.setattr(ic, "_detach", lambda d: None)
+    monkeypatch.setattr(os.path, "getsize", lambda p: 64 * 1024 * 1024)
+
+    seen = {}
+
+    def fake_run(argv, timeout, what):
+        seen.setdefault("argvs", []).append(argv)
+        return subprocess.CompletedProcess(args=argv, returncode=0, stdout="", stderr="")
+
+    monkeypatch.setattr(ic, "_run_tool", fake_run)
+
+    # None -> no -v (unchanged pre-label behavior).
+    ic.create_image(str(tmp_path / "a.img"), 64 * 1024 * 1024)
+    # All-special label sanitizes to empty -> also no -v.
+    ic.create_image(str(tmp_path / "b.img"), 64 * 1024 * 1024, volume_label="!!!")
+
+    for argv in seen["argvs"]:
+        assert "-v" not in argv
+
+
+def _fat_volume_label_from_boot_sector(image_path: str) -> str:
+    """Read the FAT32 volume label out of the boot sector of ``image_path``.
+
+    For FAT32 the 11-byte volume label lives at offset 0x47 of sector 0. Trailing
+    pad spaces are stripped. Used by the round-trip test to confirm the label we
+    set is what newfs_msdos actually wrote.
+    """
+    with open(image_path, "rb") as fh:
+        boot = fh.read(512)
+    return boot[0x47:0x47 + 11].rstrip(b" \x00").decode("ascii", "replace")
+
+
+@requires_native_tools
+def test_create_image_sets_fat_volume_label_roundtrip(tmp_path):
+    """A real newfs_msdos round-trip writes the C<charts>P<plates> label.
+
+    create_image(..., volume_label="C2609P2610") must produce a FAT32 image
+    whose on-disk volume label reads back as exactly C2609P2610 (uppercase,
+    <=11), proving the ``-v`` wiring survives the format.
+    """
+    image_path = str(tmp_path / "EFIS_USB.img")
+    try:
+        ic.create_image(image_path, _TINY_FAT32_BYTES, volume_label="C2609P2610")
+        assert os.path.getsize(image_path) == _TINY_FAT32_BYTES
+        label = _fat_volume_label_from_boot_sector(image_path)
+        assert label == "C2609P2610"
+        assert len(label) <= 11
+        assert label == label.upper()
+    finally:
+        if os.path.exists(image_path):
+            os.remove(image_path)
+
+
 def test_run_tool_maps_nonzero_exit_to_imagecreateerror(monkeypatch):
     """A non-zero tool exit becomes ImageCreateError carrying the stderr."""
 

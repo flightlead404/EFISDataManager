@@ -5,21 +5,25 @@
 
 """Unit tests for the end-to-end image writer (image-based-drive-write task 7).
 
-Covers image_writer.write wiring the guard -> dd -> verify flow and returning a
-WriteResult (design Data Models):
+Covers image_writer.write wiring the guard -> CHUNKED dd -> CHUNKED verify flow
+and returning a WriteResult (design Data Models):
 
-  - happy path: guard passes -> dd runs -> readback verifies -> status
-    "complete", verified True, bytes_written set to the slice size;
+  - happy path: guard passes -> chunked dd runs -> chunked readback verifies ->
+    status "complete", verified True, bytes_written set to the slice size;
   - guard refusal (PrivilegeError/DeviceGuardError): status "incomplete", NO dd
     issued, local image file untouched, bytes_written 0;
   - verify failure (readback hash mismatch): status "incomplete", verified
     False, error surfaced; the local image file is untouched;
-  - dd interrupted / fails to run: status "aborted", local image untouched;
+  - dd interrupted / fails to run / does not converge: status "aborted", local
+    image untouched;
   - whole-image unit of work: a single WriteResult, no per-family state.
 
-Nothing real runs: device_guard / dd_write_image / raw_read_source /
-write_verifier.verify are mocked (and the one subprocess-level path is reached
-only through those mocks). No drive is touched, no real dd.
+Nothing real runs: device_guard / chunked_dd_write / chunked_raw_read_source /
+write_verifier.verify_chunked are mocked (and the one subprocess-level path is
+reached only through those mocks). No drive is touched, no real dd. The chunked
+write/read were wired behind the WriteResult/verify contracts by the robustness
+fix (design "Hardware harness findings (2026-10-09)"), so these tests mock the
+chunked helpers rather than the old whole-image dd_write_image/raw_read_source.
 
 Requirements: 2.3, 4.2, 5.1, 5.3, 6.1, 7.1, 13.1, 13.2, 13.3
 """
@@ -69,17 +73,17 @@ def _guard_info(size):
 
 
 def test_write_happy_path_complete_and_verified(image_file, image_size):
-    """Guard passes -> dd -> readback matches -> status complete."""
-    # The raw readback returns the exact image bytes, so verify() matches for
-    # real (no mocking of the hash — the readback callable yields image bytes).
-    readback = lambda: IMAGE_CONTENT
+    """Guard passes -> chunked dd -> chunked readback matches -> status complete."""
+    # The chunked raw readback yields the exact image bytes (one segment), so the
+    # real verify_chunked matches (no mocking of the hash).
+    chunk_source = lambda: iter([IMAGE_CONTENT])
 
     with mock.patch.object(
         iw, "device_guard", return_value=_guard_info(image_size)
     ) as guard, mock.patch.object(
-        iw, "dd_write_image"
+        iw, "chunked_dd_write", return_value=image_size
     ) as dd, mock.patch.object(
-        iw, "raw_read_source", return_value=readback
+        iw, "chunked_raw_read_source", return_value=chunk_source
     ) as rrs:
         result = iw.write(
             image_file,
@@ -109,11 +113,13 @@ def test_write_happy_path_complete_and_verified(image_file, image_size):
 
 def test_write_defaults_expected_size_to_image_file_size(image_file, image_size):
     """expected_size_bytes defaults to the image file's own size."""
-    readback = lambda: IMAGE_CONTENT
+    chunk_source = lambda: iter([IMAGE_CONTENT])
     with mock.patch.object(
         iw, "device_guard", return_value=_guard_info(image_size)
-    ) as guard, mock.patch.object(iw, "dd_write_image"), mock.patch.object(
-        iw, "raw_read_source", return_value=readback
+    ) as guard, mock.patch.object(
+        iw, "chunked_dd_write", return_value=image_size
+    ), mock.patch.object(
+        iw, "chunked_raw_read_source", return_value=chunk_source
     ):
         result = iw.write(image_file, DEVICE, confirmed=True)
 
@@ -133,8 +139,8 @@ def test_write_guard_refusal_does_not_dd_and_leaves_image_untouched(
 
     with mock.patch.object(
         iw, "device_guard", side_effect=iw.DeviceGuardError("unconfirmed target")
-    ), mock.patch.object(iw, "dd_write_image") as dd, mock.patch.object(
-        iw, "raw_read_source"
+    ), mock.patch.object(iw, "chunked_dd_write") as dd, mock.patch.object(
+        iw, "chunked_raw_read_source"
     ) as rrs:
         result = iw.write(
             image_file, DEVICE, expected_size_bytes=image_size, confirmed=False
@@ -155,7 +161,7 @@ def test_write_guard_privilege_error_also_refused(image_file, image_size):
     """A base PrivilegeError (not just DeviceGuardError) is handled as refusal."""
     with mock.patch.object(
         iw, "device_guard", side_effect=ms.PrivilegeError("not a removable slice")
-    ), mock.patch.object(iw, "dd_write_image") as dd:
+    ), mock.patch.object(iw, "chunked_dd_write") as dd:
         result = iw.write(
             image_file, DEVICE, expected_size_bytes=image_size, confirmed=True
         )
@@ -174,12 +180,14 @@ def test_write_verify_mismatch_reports_incomplete(image_file, image_size):
     # for real (no verify mock — exercises the actual hash comparison).
     corrupt = bytearray(IMAGE_CONTENT)
     corrupt[0] ^= 0xFF
-    readback = lambda: bytes(corrupt)
+    chunk_source = lambda: iter([bytes(corrupt)])
 
     with mock.patch.object(
         iw, "device_guard", return_value=_guard_info(image_size)
-    ), mock.patch.object(iw, "dd_write_image") as dd, mock.patch.object(
-        iw, "raw_read_source", return_value=readback
+    ), mock.patch.object(
+        iw, "chunked_dd_write", return_value=image_size
+    ) as dd, mock.patch.object(
+        iw, "chunked_raw_read_source", return_value=chunk_source
     ):
         result = iw.write(
             image_file, DEVICE, expected_size_bytes=image_size, confirmed=True
@@ -196,11 +204,13 @@ def test_write_verify_mismatch_reports_incomplete(image_file, image_size):
 
 def test_write_verify_short_read_reports_incomplete(image_file, image_size):
     """A truncated readback (short read) can never match -> incomplete."""
-    readback = lambda: IMAGE_CONTENT[: image_size // 2]
+    chunk_source = lambda: iter([IMAGE_CONTENT[: image_size // 2]])
     with mock.patch.object(
         iw, "device_guard", return_value=_guard_info(image_size)
-    ), mock.patch.object(iw, "dd_write_image"), mock.patch.object(
-        iw, "raw_read_source", return_value=readback
+    ), mock.patch.object(
+        iw, "chunked_dd_write", return_value=image_size
+    ), mock.patch.object(
+        iw, "chunked_raw_read_source", return_value=chunk_source
     ):
         result = iw.write(
             image_file, DEVICE, expected_size_bytes=image_size, confirmed=True
@@ -218,8 +228,10 @@ def test_write_dd_interrupted_reports_aborted(image_file, image_size):
     with mock.patch.object(
         iw, "device_guard", return_value=_guard_info(image_size)
     ), mock.patch.object(
-        iw, "dd_write_image", side_effect=RuntimeError("dd: /dev/rdisk4s1: I/O error")
-    ), mock.patch.object(iw, "raw_read_source") as rrs:
+        iw,
+        "chunked_dd_write",
+        side_effect=RuntimeError("dd: /dev/rdisk4s1: I/O error"),
+    ), mock.patch.object(iw, "chunked_raw_read_source") as rrs:
         result = iw.write(
             image_file, DEVICE, expected_size_bytes=image_size, confirmed=True
         )
@@ -238,8 +250,8 @@ def test_write_dd_privilege_refusal_reports_incomplete(image_file, image_size):
     with mock.patch.object(
         iw, "device_guard", return_value=_guard_info(image_size)
     ), mock.patch.object(
-        iw, "dd_write_image", side_effect=ms.PrivilegeError("not a raw slice")
-    ), mock.patch.object(iw, "raw_read_source") as rrs:
+        iw, "chunked_dd_write", side_effect=ms.PrivilegeError("not a raw slice")
+    ), mock.patch.object(iw, "chunked_raw_read_source") as rrs:
         result = iw.write(
             image_file, DEVICE, expected_size_bytes=image_size, confirmed=True
         )
@@ -253,11 +265,13 @@ def test_write_dd_privilege_refusal_reports_incomplete(image_file, image_size):
 
 def test_write_returns_single_whole_image_result(image_file, image_size):
     """The result is one WriteResult for the whole image — no per-family state."""
-    readback = lambda: IMAGE_CONTENT
+    chunk_source = lambda: iter([IMAGE_CONTENT])
     with mock.patch.object(
         iw, "device_guard", return_value=_guard_info(image_size)
-    ), mock.patch.object(iw, "dd_write_image"), mock.patch.object(
-        iw, "raw_read_source", return_value=readback
+    ), mock.patch.object(
+        iw, "chunked_dd_write", return_value=image_size
+    ), mock.patch.object(
+        iw, "chunked_raw_read_source", return_value=chunk_source
     ):
         result = iw.write(
             image_file, DEVICE, expected_size_bytes=image_size, confirmed=True
@@ -279,11 +293,13 @@ def test_write_uses_binary_readback_bytes_for_verify(image_file, image_size):
     expected_hash = hashlib.sha256(IMAGE_CONTENT).hexdigest()
     assert write_verifier.hash_image(image_file) == expected_hash
 
-    readback = lambda: IMAGE_CONTENT
+    chunk_source = lambda: iter([IMAGE_CONTENT])
     with mock.patch.object(
         iw, "device_guard", return_value=_guard_info(image_size)
-    ), mock.patch.object(iw, "dd_write_image"), mock.patch.object(
-        iw, "raw_read_source", return_value=readback
+    ), mock.patch.object(
+        iw, "chunked_dd_write", return_value=image_size
+    ), mock.patch.object(
+        iw, "chunked_raw_read_source", return_value=chunk_source
     ):
         result = iw.write(
             image_file, DEVICE, expected_size_bytes=image_size, confirmed=True
