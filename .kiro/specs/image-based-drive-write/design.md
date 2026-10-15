@@ -335,3 +335,42 @@ and build the robustness fix for the dock bus:
     (A single long raw read reset at ~3 GB in testing.)
 These land in image_writer (write) and write_verifier (readback), behind the
 existing WriteResult/verify contracts, so the app wiring is unchanged.
+
+### Chunked readback VALIDATED on real hardware; dock was the cause (2026-10-15)
+Ran the production chunked readback path (iter_chunked_readback +
+write_verifier.hash_readback_chunks) against the written test drive, full
+30,783,045,632 bytes, TWICE, comparing hashes.
+
+- **Through the Henge dock**: reset ("Device not configured") every time at
+  ~0.3-0.9 GB into a segment, with the reset threshold DROPPING on each retry
+  (920 -> 544 -> 434 -> 350 -> 327 MB) — classic thermal/power-sag under
+  sustained high-rate (~140 MB/s) raw reads through the dock's three cascaded
+  hubs (Intel -> VIA Labs -> GenesysLogic). The resume logic recovered each
+  reset correctly (re-enumerated at a new node, re-ran the guard, re-drove) but
+  the resets came faster than ~1 GiB segments complete, so it could not
+  converge. NOT a software fault.
+- **Direct to the MacBook via a USB-C->USB-A converter** (root controller
+  AppleT8112USBXHCI, Location 0x022..., full 900 mA): **ZERO resets**, both
+  passes read all 29 segments cleanly, and the two independent full-slice
+  hashes MATCHED (bfd22ebf...3708). Pass times ~337s / ~443s (~70-90 MB/s).
+
+Conclusion: the USB bus-drop was caused by the DOCK (cascaded hubs + shared/
+limited power), not the drive, the cable, or our code. On a direct port the raw
+read is reliable end to end. Guidance: big raw writes/reads should use a direct
+Mac port, not the dock. The chunked write/read resume logic remains a correct,
+test-proven safeguard for any transient reset, but is not a substitute for
+adequate power/topology on a persistently-resetting bus.
+
+### Resume-timing fix (2026-10-15)
+The first on-hardware readback exposed a real bug in _run_segment_with_resume:
+it counted "drive not re-enumerated yet" against the DD_MAX_RETRIES dd-retry
+budget, burning all 5 in ~15s while a real USB re-enumeration (~10s, at a NEW
+/dev/diskN) was still in progress. Fixed by adding _wait_for_reenumeration: a
+bounded POLLED wait (DD_REENUM_WAIT_SECONDS=90, DD_REENUM_POLL_SECONDS=3) that
+is SEPARATE from the dd-retry budget — "not back yet" (resolver None / guard
+PrivilegeError) keeps polling; only an actual dd failure after the drive is
+confirmed back consumes a recovery. The on-hardware log then showed correct
+recovery (re-appear at new node, guard pass, re-drive). 4 new tests simulate a
+drive absent for several polls (past the old budget) recovering, plus the
+timeout and poll-past-not-yet-valid-guard cases; clock monkeypatched so tests
+don't really wait. 696 tests pass.

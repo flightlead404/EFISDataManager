@@ -93,6 +93,19 @@ DD_MAX_RETRIES = 5
 # shape (mount_swap.SETTLE_WAIT_SECONDS).
 DD_RETRY_BACKOFF_SECONDS = 2.0
 
+# After a USB bus reset the device DISAPPEARS from the bus and re-enumerates a
+# few-to-many seconds later, at a NEW /dev/diskN node. Re-enumeration is slow
+# (observed on the real SanDisk-through-Henge-dock hardware: a reset mid-read
+# left the drive absent for well over the old 2-8s backoff window), so waiting
+# for the device to come back is a SEPARATE, longer, polled wait — NOT one of
+# the DD_MAX_RETRIES dd attempts. DD_MAX_RETRIES counts only attempts where the
+# drive was present and the dd itself still failed; "drive not back yet" is
+# never charged against it. _wait_for_reenumeration polls up to
+# DD_REENUM_WAIT_SECONDS (total) every DD_REENUM_POLL_SECONDS for the drive to
+# re-appear and pass the guard; a timeout aborts the segment.
+DD_REENUM_WAIT_SECONDS = 90.0
+DD_REENUM_POLL_SECONDS = 3.0
+
 
 class ChunkedTransferError(RuntimeError):
     """Raised when a chunked raw write/read cannot complete within the budget.
@@ -474,6 +487,71 @@ def _scan_node_by_identity(
     return None
 
 
+def _wait_for_reenumeration(
+    resolve_node: NodeResolver,
+    verify_guard: GuardRecheck,
+    *,
+    what: str,
+) -> str:
+    """Poll for the drive to re-appear after a reset; return its (new) node.
+
+    After a USB bus reset the device drops off the bus and re-enumerates several
+    seconds later at a NEW ``/dev/diskN``. This polls ``resolve_node()`` +
+    ``verify_guard(node)`` every :data:`DD_REENUM_POLL_SECONDS` until a confirmed
+    SAME-drive node is found, or raises :class:`ChunkedTransferError` once the
+    total :data:`DD_REENUM_WAIT_SECONDS` window elapses.
+
+    Crucially, "the drive is not back YET" is NOT a failure here: a
+    ``resolve_node()`` returning None/empty, or a ``verify_guard`` that raises
+    :class:`PrivilegeError` (diskutil cannot see the node while it is still
+    re-enumerating), simply means "keep polling within the window". Only the
+    window timing out is a hard failure. This wait is deliberately SEPARATE from
+    the dd-retry budget (:data:`DD_MAX_RETRIES`) so a slow re-enumeration never
+    burns the retries — the real-hardware bug this fixes was the old loop giving
+    up in ~15s while the drive was simply still coming back.
+
+    ``time.monotonic`` / ``time.sleep`` are used so tests monkeypatch the module
+    clock/sleeper to avoid real waiting (as the chunked tests already do with
+    the backoff constant).
+    """
+    deadline = time.monotonic() + DD_REENUM_WAIT_SECONDS
+    attempt = 0
+    last_reason = "device did not re-appear"
+    while True:
+        attempt += 1
+        try:
+            node = resolve_node()
+            if node:
+                verify_guard(node)
+                logger.info(
+                    "%s: drive re-appeared as %s after reset (poll %s)",
+                    what,
+                    node,
+                    attempt,
+                )
+                return node
+            last_reason = "resolver returned no node (drive not back yet)"
+        except PrivilegeError as e:
+            # diskutil cannot describe the node yet / a transient node failed the
+            # guard mid-reset. Not back yet — keep polling.
+            last_reason = f"re-resolved node not yet guard-valid: {e}"
+        except Exception as e:  # noqa: BLE001 - any resolver hiccup -> keep polling
+            last_reason = f"re-resolve raised: {e}"
+
+        if time.monotonic() >= deadline:
+            raise ChunkedTransferError(
+                f"{what}: drive did not re-enumerate within "
+                f"{DD_REENUM_WAIT_SECONDS:.0f}s after reset ({last_reason})"
+            )
+        logger.info(
+            "%s: waiting for drive to re-enumerate (poll %s): %s",
+            what,
+            attempt,
+            last_reason,
+        )
+        time.sleep(DD_REENUM_POLL_SECONDS)
+
+
 def _run_segment_with_resume(
     build_argv: Callable[[str], list],
     initial_node: str,
@@ -487,22 +565,35 @@ def _run_segment_with_resume(
     """Drive ONE segment's dd through run_privileged with resume-on-reset.
 
     ``build_argv(node)`` builds the segment's dd argv for a given raw/slice node.
-    The segment is attempted up to :data:`DD_MAX_RETRIES` times. On the first
-    try the ``initial_node`` is used; on any failure (raised exception OR
-    non-zero dd exit — both treated as a possible bus reset) the drive is
-    RE-RESOLVED via ``resolve_node`` (the device re-enumerates at a new
-    /dev/diskN after a reset, so the old node is never reused) and
-    ``verify_guard(node)`` is re-run to confirm it is the SAME drive before the
-    segment is re-driven. A short growing backoff separates tries.
+    The segment is driven on ``initial_node``; on a reset-like failure the drive
+    is given time to re-enumerate (:func:`_wait_for_reenumeration`, a polled wait
+    that is NOT charged against the dd-retry budget) and the segment is re-driven
+    on the recovered (new) node. The device re-enumerates at a new ``/dev/diskN``
+    after a reset, so the old node is never reused; ``verify_guard`` confirms the
+    recovered node is the SAME drive before any re-drive.
+
+    Two separate bounds terminate the loop:
+
+      * :data:`DD_MAX_RETRIES` caps the number of RESET RECOVERIES handled for
+        this segment (a drive that resets forever still aborts); and
+      * :func:`_wait_for_reenumeration`'s :data:`DD_REENUM_WAIT_SECONDS` window
+        bounds how long we wait for each individual re-appearance.
+
+    "Drive not back yet" is handled inside the wait and does NOT consume a
+    recovery — only an actual dd failure (the drive was present and dd still
+    failed) consumes one. A :class:`PrivilegeError` from building/running the dd
+    argv itself (a bad/refused target, NOT a reset) propagates immediately.
 
     Returns the successful :class:`CompletedProcess`. Raises
     :class:`ChunkedTransferError` if the segment cannot be driven within the
-    budget OR the drive cannot be re-found / re-guarded after a reset — the
+    recovery budget OR the drive cannot be re-found within the wait window — the
     caller then aborts the whole transfer (whole-image unit of work, Req 13).
     """
     node = initial_node
     last_error: Optional[str] = None
-    for attempt in range(1, DD_MAX_RETRIES + 1):
+    # Count RESET RECOVERIES, not polls. The first dd attempt is "free"; each
+    # subsequent re-drive after a recovered reset consumes one recovery.
+    for recovery in range(DD_MAX_RETRIES + 1):
         exc: Optional[BaseException] = None
         result: Optional[subprocess.CompletedProcess] = None
         try:
@@ -512,16 +603,16 @@ def _run_segment_with_resume(
             # A refused argv is NOT a transient reset — the target is wrong.
             # Do not retry; let it propagate so the write reports the refusal.
             raise
-        except Exception as e:  # noqa: BLE001 - any dd failure is a retry candidate
+        except Exception as e:  # noqa: BLE001 - any dd failure is a reset candidate
             exc = e
 
         returncode = None if result is None else result.returncode
         if result is not None and returncode == 0:
-            if attempt > 1:
+            if recovery > 0:
                 logger.info(
-                    "%s: segment succeeded on attempt %s via node %s",
+                    "%s: segment succeeded after %s reset recover(y/ies) via %s",
                     what,
-                    attempt,
+                    recovery,
                     node,
                 )
             return result
@@ -533,51 +624,26 @@ def _run_segment_with_resume(
             else f"dd exit {returncode}: {getattr(result, 'stderr', b'')!r}"
         )
         logger.warning(
-            "%s: segment attempt %s/%s on %s failed (%s%s); will re-resolve and "
-            "retry",
+            "%s: segment dd on %s failed (%s%s); recovery %s/%s",
             what,
-            attempt,
-            DD_MAX_RETRIES,
             node,
             "bus-reset-like, " if reset_like else "",
             last_error,
+            recovery + 1,
+            DD_MAX_RETRIES,
         )
 
-        if attempt == DD_MAX_RETRIES:
+        if recovery == DD_MAX_RETRIES:
             break
 
-        # Back off, then re-resolve the (re-enumerated) node and re-guard it
-        # before the next try. The resolver returning None / raising, or the
-        # guard raising, means we could not confirm the same drive — keep
-        # retrying within the remaining budget rather than touch a stale node.
-        time.sleep(DD_RETRY_BACKOFF_SECONDS * attempt)
-        try:
-            new_node = resolve_node()
-            if not new_node:
-                raise ChunkedTransferError(
-                    "drive could not be re-found after reset (resolver returned "
-                    "no node)"
-                )
-            verify_guard(new_node)
-        except ChunkedTransferError as e:
-            logger.warning("%s: re-resolve/guard failed: %s", what, e)
-            continue
-        except PrivilegeError as e:
-            # The re-enumerated node did NOT pass the guard — it is not the same
-            # drive. Keep retrying within budget; never write to it.
-            logger.warning(
-                "%s: re-resolved node did not pass the device guard: %s", what, e
-            )
-            continue
-        except Exception as e:  # noqa: BLE001
-            logger.warning("%s: re-resolve raised: %s", what, e)
-            continue
-        logger.info("%s: re-resolved drive to %s after reset", what, new_node)
-        node = new_node
+        # Wait (polled) for the drive to re-enumerate at its new node, then
+        # re-drive there. This wait is NOT charged against DD_MAX_RETRIES; a
+        # timeout raises ChunkedTransferError straight out.
+        node = _wait_for_reenumeration(resolve_node, verify_guard, what=what)
 
     raise ChunkedTransferError(
-        f"{what}: segment did not converge after {DD_MAX_RETRIES} attempts; last "
-        f"error: {last_error}"
+        f"{what}: segment did not converge after {DD_MAX_RETRIES} reset "
+        f"recover(y/ies); last error: {last_error}"
     )
 
 

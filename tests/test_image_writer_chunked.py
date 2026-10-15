@@ -101,10 +101,18 @@ class FakeBus:
         # unrecoverable drive, exhausting the budget).
         self.permanent_resets = set()
         self.write_log = []  # (offset, length) actually written, for exactly-once
+        # Models slow USB re-enumeration: after a reset the drive is ABSENT
+        # from the bus for this many resolve_node() polls (returns None) before
+        # it re-appears at the new node. 0 = re-appears immediately (legacy).
+        self.absent_polls_after_reset = 0
+        self._absent_remaining = 0
 
     # -- resolver / guard injected into write() / chunked helpers --------------
     def resolve_node(self):
-        """Return the drive's current (possibly re-enumerated) node."""
+        """Return the drive's current node, or None while still re-enumerating."""
+        if self._absent_remaining > 0:
+            self._absent_remaining -= 1
+            return None
         return self.current_node
 
     def verify_guard(self, node):
@@ -117,6 +125,8 @@ class FakeBus:
     def _reenumerate(self):
         self._node_seq += 2
         self.current_node = f"/dev/disk{self._node_seq}s1"
+        # Arm the absent window: the drive is gone for this many polls.
+        self._absent_remaining = self.absent_polls_after_reset
 
     # -- the fake privileged dd backend ---------------------------------------
     def fake_run_privileged(self, argv, timeout, binary=False):
@@ -181,11 +191,15 @@ def small_chunks(monkeypatch):
     monkeypatch.setattr(iw, "DD_BLOCK_SIZE", str(SMALL_BLOCK))
     # Zero backoff so retry tests do not sleep.
     monkeypatch.setattr(iw, "DD_RETRY_BACKOFF_SECONDS", 0)
+    monkeypatch.setattr(iw, "DD_REENUM_POLL_SECONDS", 0)
+    monkeypatch.setattr(iw, "DD_REENUM_WAIT_SECONDS", 5)
 
 
 @pytest.fixture
 def no_backoff(monkeypatch):
     monkeypatch.setattr(iw, "DD_RETRY_BACKOFF_SECONDS", 0)
+    monkeypatch.setattr(iw, "DD_REENUM_POLL_SECONDS", 0)
+    monkeypatch.setattr(iw, "DD_REENUM_WAIT_SECONDS", 5)
 
 
 def _make_image(tmp_path, length):
@@ -324,6 +338,114 @@ def test_chunked_read_recovers_from_single_reset(tmp_path, small_chunks):
 # ---------------------------------------------------------------------------
 # A segment resets every time past the budget -> aborted, no success claimed
 # ---------------------------------------------------------------------------
+
+
+# ---------------------------------------------------------------------------
+# SLOW re-enumeration: the drive is ABSENT for several polls after a reset.
+# This is the real-hardware bug the resume-timing fix addresses — the old loop
+# counted "drive not back yet" against the retry budget and gave up in ~15s
+# while the drive was simply still coming back. _wait_for_reenumeration must
+# poll through the absent window WITHOUT consuming the dd-retry (recovery)
+# budget, so a reset whose device returns after N polls still succeeds.
+# ---------------------------------------------------------------------------
+
+
+def test_chunked_write_recovers_when_drive_absent_for_several_polls(
+    tmp_path, small_chunks
+):
+    """A reset whose drive stays absent for many polls still recovers.
+
+    The drive is absent for 10 resolve() polls after the reset — far more than
+    the DD_MAX_RETRIES (5) recovery budget. Under the OLD logic this would have
+    exhausted the budget and raised; under the fix the polled wait is separate
+    from the recovery budget, so the single reset is recovered once the drive
+    re-appears and the write completes.
+    """
+    size = SMALL_CHUNK * 3
+    image_path, content = _make_image(tmp_path, size)
+    bus = FakeBus(content, size)
+    bus.absent_polls_after_reset = 10  # >> DD_MAX_RETRIES
+    bus.resets.add(("write", SMALL_CHUNK))  # one transient reset on segment 2
+
+    with mock.patch.object(
+        iw.mount_swap, "run_privileged", side_effect=bus.fake_run_privileged
+    ):
+        written = iw.chunked_dd_write(
+            image_path,
+            bus.current_node,
+            size,
+            resolve_node=bus.resolve_node,
+            verify_guard=bus.verify_guard,
+            timeout=5,
+        )
+
+    assert written == size
+    assert bytes(bus.device) == content  # the slow-recovered segment landed
+
+
+def test_chunked_read_recovers_when_drive_absent_for_several_polls(
+    tmp_path, small_chunks
+):
+    """A readback reset with a slow (multi-poll) re-enumeration still verifies."""
+    size = SMALL_CHUNK * 3
+    image_path, content = _make_image(tmp_path, size)
+    bus = FakeBus(content, size)
+    bus.device[:] = content
+    bus.absent_polls_after_reset = 8
+    bus.resets.add(("read", SMALL_CHUNK * 2))
+
+    with mock.patch.object(
+        iw.mount_swap, "run_privileged", side_effect=bus.fake_run_privileged
+    ):
+        source = iw.chunked_raw_read_source(
+            bus.current_node,
+            size,
+            resolve_node=bus.resolve_node,
+            verify_guard=bus.verify_guard,
+            timeout=5,
+        )
+        assert wv.verify_chunked(image_path, source) is True
+
+
+def test_wait_for_reenumeration_times_out_when_drive_never_returns(monkeypatch):
+    """_wait_for_reenumeration raises ChunkedTransferError if the drive never comes back."""
+    # Zero the poll and give a tiny window so the loop exits fast.
+    monkeypatch.setattr(iw, "DD_REENUM_POLL_SECONDS", 0)
+    monkeypatch.setattr(iw, "DD_REENUM_WAIT_SECONDS", 0)
+
+    def never_resolves():
+        return None
+
+    def guard(_node):  # never reached (resolver returns None)
+        raise AssertionError("guard should not be called when resolver returns None")
+
+    with pytest.raises(iw.ChunkedTransferError):
+        iw._wait_for_reenumeration(never_resolves, guard, what="test")
+
+
+def test_wait_for_reenumeration_polls_past_not_yet_valid_guard(monkeypatch):
+    """A node that fails the guard a few times (mid-reset) then passes -> returns it.
+
+    PrivilegeError from the guard means "not back yet" and must NOT abort the
+    wait — it keeps polling until the node passes the guard within the window.
+    """
+    monkeypatch.setattr(iw, "DD_REENUM_POLL_SECONDS", 0)
+    monkeypatch.setattr(iw, "DD_REENUM_WAIT_SECONDS", 5)
+
+    calls = {"n": 0}
+
+    def resolver():
+        calls["n"] += 1
+        return "/dev/disk22s1"
+
+    def guard(node):
+        # Fail the first 3 guard checks (diskutil can't see it yet), then pass.
+        if calls["n"] <= 3:
+            raise iw.mount_swap.PrivilegeError("diskutil info unavailable")
+
+    node = iw._wait_for_reenumeration(resolver, guard, what="test")
+    assert node == "/dev/disk22s1"
+    assert calls["n"] >= 4  # polled past the not-yet-valid guard failures
 
 
 def test_chunked_write_aborts_when_segment_never_recovers(tmp_path, small_chunks):
