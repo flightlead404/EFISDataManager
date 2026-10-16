@@ -12,20 +12,46 @@ entries below it are the detailed evidence/record (cockpit tests, investigations
 that these roadmap items draw on; titles down there are chat-derived and may not
 match the job name — use THIS section as the index.
 
+## SHIPPED
+
+### Image-based drive write (dd an image instead of rsync-to-mount)  [SHIPPED v1.6.0, 2026-10]
+STATUS: DONE. Full spec at `.kiro/specs/image-based-drive-write/`
+(requirements + design + tasks, all 13 tasks complete). Released as **v1.6.0**
+(MENUBAR_VERSION 0.12.0); opt-in behind config `image_write_enabled` (DEFAULT
+OFF). Architecture: compose a FAT32 image locally -> `dd` to the drive's raw
+partition slice (`/dev/rdiskNsN`), never mounting the drive -> confirm by
+raw-readback hash. This eliminates the FSKit write stall, the ~86% AppleDouble
+sidecar tax, AND the screen-lock teardown bug in one architecture (no mount of
+the drive = none of the three failure modes exist).
+
+HARDWARE-VALIDATED end to end:
+- The GRT EFIS reads a dd'd drive normally (the GO/NO-GO gate: PASS).
+- Structural verify of a written drive: 101,694 files / 9.8 GB ChartData, ZERO
+  `._*`/`.DS_Store` sidecars, NAV.DB bit-for-bit == source, identity + commit
+  markers present.
+- Full ~30 GB CHUNKED raw readback-verify ran twice with ZERO resets and
+  MATCHING hashes — on a DIRECT Mac USB port.
+
+KEY HARDWARE FINDING: USB bus-drops during sustained raw I/O were caused by the
+HENGE DOCK (three cascaded hubs + shared/limited power), NOT the drive or the
+code — through the dock the reset threshold fell on each retry (thermal/power
+sag). Direct to the MacBook (root controller, full 900 mA) is flawless.
+GUIDANCE: use a direct port for large transfers. The chunked write/read
+resume-on-reset logic (re-enumerate at the new /dev node, re-guard, re-drive;
+_wait_for_reenumeration separate from the dd-retry budget) remains a correct
+safeguard for transient resets but is not a substitute for adequate
+power/topology. image_write_enabled stays OFF by default until the verify path
+is proven on whatever bus a given user has.
+
+Cycle facts measured: ~68% chart content churns per cycle (Plates 79.7%, SEC
+74.6%, LO 55.7%), and nav+plates share the FAA 28-day cycle while SEC/LO are
+56-day — so most updates are near-full chart writes anyway, which is why the
+whole-image dd beats rsync delta-sync here (a genuine delta would still rewrite
+most of the tree AND pay the slow sidecar-doubled walk).
+
 ## ACTIVE NOW
 
-### Image-based drive write (dd an image instead of rsync-to-mount)
-STATUS: investigation; design-first spec at `.kiro/specs/image-based-drive-write/`
-(design.md only, no requirements/tasks yet by design). Mac side VALIDATED
-2026-10-02 (compose FAT32 image locally -> dd to raw slice -> raw-readback hash
-matched exactly). BLOCKED on the single GO/NO-GO gate: does the GRT EFIS read a
-dd'd drive (airport test). If GO: eliminates the FSKit stall, the ~86% AppleDouble
-sidecar tax, AND the screen-lock teardown bug in one architecture; graduate to
-requirements/tasks. If NO-GO: fall back to Strategy C (mtools mcopy to raw device).
-Subsumes the open bug "FSKit remount fails when device drops off bus during
-teardown" (that bug disappears with no mount-swap). Detailed findings: this
-session's cycle-delta measurement (~68% churn) + the FSKit/mount_msdos entries
-below.
+(Nothing in active development. See PRIORITIZED items below for what's next.)
 
 ## PRIORITIZED BIG-PICTURE ITEMS (parked; flesh out next)
 
@@ -805,7 +831,17 @@ with growing backoff), but deliberately does NOT escalate to `unmount force`
 and leave the user on the working mount). Field-validated: swap started clean on
 EFIS_1 reinsert, no abort.
 
-## BUG: FSKit remount fails when device drops off USB bus during teardown (2026-09-30)
+## BUG: FSKit remount fails when device drops off USB bus during teardown (2026-09-30)  [RESOLVED]
+
+RESOLVED by the image-based-drive-write architecture (SHIPPED v1.6.0): that
+write path never mounts the drive (compose local image -> dd to raw slice ->
+raw-readback verify), so there is no FSKit mount to tear down and no
+loginwindow-dissented unmount/remount to fail — this failure mode cannot occur
+on the image-write path by construction. NOTE: the legacy mount-swap write path
+(image_write_enabled=False, the current default) still has this teardown
+exposure; the candidate fixes below (device-gone detection, a caffeinate/
+power-assertion during long syncs) remain valid for that path until image-write
+is the default. Original report retained below for reference.
 
 SEVERITY: medium — leaves the drive needing a physical reinsert after an
 otherwise-successful sync; data is intact (sync completed + marker written
