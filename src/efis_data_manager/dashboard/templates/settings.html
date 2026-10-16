@@ -154,6 +154,13 @@
         <label>Dashboard Port<span class="help" tabindex="-1">?<span class="tip">The local network port this dashboard runs on (default 5050); the address is http://localhost:&lt;port&gt;. Only change it if another program already uses 5050. After changing, restart the dashboard from the Data Manager menu.</span></span></label>
         <input type="number" id="dashboard_port">
     </div>
+    <div class="form-row">
+        <label>Drive Write Method<span class="help" tabindex="-1">?<span class="tip">How the Data Manager writes charts/nav to a USB drive. "Image (dd)" composes a full FAT32 image locally and writes it to the drive's raw partition in one pass — fast and avoids the macOS mount stall, but the whole image is written each time and a flaky USB link (e.g. some docks/hubs) can reset mid-write (it then falls back to Rsync automatically). "Rsync (per-file)" mounts the drive and copies only changed files. Use a direct USB port (not a dock/hub) for large Image writes. Takes effect on the next Data Manager restart.</span></span></label>
+        <select id="image_write_enabled">
+            <option value="true">Image (dd) — whole-image raw write</option>
+            <option value="false">Rsync (per-file) — mount and copy changed files</option>
+        </select>
+    </div>
 </div>
 
 <div style="margin-top: 1rem;">
@@ -256,6 +263,7 @@ fetch('/api/config')
         document.getElementById('trend_window_hours').value = config.trend_window_hours || 25;
         document.getElementById('oil_age_warning_hours').value = config.oil_age_warning_hours ?? 0;
         document.getElementById('dashboard_port').value = config.dashboard_port || 5050;
+        document.getElementById('image_write_enabled').value = (config.image_write_enabled ? 'true' : 'false');
 
         // Build threshold form
         fetch('/api/thresholds').then(r => r.json()).then(thresholds => {
@@ -381,6 +389,7 @@ function saveSettings() {
         trend_window_hours: parseInt(document.getElementById('trend_window_hours').value),
         oil_age_warning_hours: Math.max(0, parseFloat(document.getElementById('oil_age_warning_hours').value) || 0),
         dashboard_port: parseInt(document.getElementById('dashboard_port').value),
+        image_write_enabled: document.getElementById('image_write_enabled').value === 'true',
         aux_mapping: collectAuxMapping(),
     };
 
