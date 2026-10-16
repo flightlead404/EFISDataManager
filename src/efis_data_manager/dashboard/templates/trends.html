@@ -18,10 +18,15 @@ const layout = {
     margin: { l: 50, r: 20, t: 30, b: 40 },
     legend: { orientation: 'h', y: -0.2 },
     dragmode: 'pan',   // drag to pan (matches the flight-detail panels)
+    hovermode: 'x unified',   // one hover box per x, values for all traces
     xaxis: {
         gridcolor: '#0f3460',
         title: 'Date',
         type: 'date',
+        // Vertical spike line with trace values at the cursor, matching
+        // the flight-detail and GAMI plots.
+        showspikes: true, spikemode: 'across', spikesnap: 'cursor',
+        spikecolor: '#4fc3f7', spikethickness: 1, spikedash: 'solid',
         // Quick timeframe presets
         rangeselector: {
             bgcolor: '#0f3460',
@@ -36,8 +41,6 @@ const layout = {
                 { step: 'all', label: 'All' },
             ],
         },
-        // Range slider for free-form timeframe selection
-        rangeslider: { bgcolor: '#1a2744', bordercolor: '#0f3460', thickness: 0.08 },
     },
     yaxis: { gridcolor: '#0f3460' },
 };
