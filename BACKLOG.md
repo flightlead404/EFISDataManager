@@ -14,6 +14,18 @@ match the job name — use THIS section as the index.
 
 ## SHIPPED
 
+### Image-based drive write (dd an image instead of rsync-to-mount)  [SHIPPED v1.6.0, 2026-10] — SUPERSEDED/RETIRED 2026-10-27
+> **RETIRED by `.kiro/specs/chart-manifest-sync/`.** The dd/image write path
+> (and the `chart-sync-stall-fix` mount-swap) are being removed. Field
+> investigation (`.kiro/specs/chart-manifest-sync/INVESTIGATION-2026-10-24.md`)
+> showed plain `rsync --delete` to the FSKit `/Volumes` mount completes a full
+> chart write reliably (no hang) on direct USB-C AND the dock, so neither the
+> mount-swap nor image-dd is needed. The replacement is a correctness-first
+> checksum-manifest + cycle-gated rsync→FSKit sync. The content below is kept
+> for historical record only; `image_write_enabled`, `image_writer.py`,
+> `image_composer` compose/write, and `mount_swap.py` are slated for deletion
+> per the chart-manifest-sync retirement plan.
+
 ### Image-based drive write (dd an image instead of rsync-to-mount)  [SHIPPED v1.6.0, 2026-10]
 STATUS: DONE. Full spec at `.kiro/specs/image-based-drive-write/`
 (requirements + design + tasks, all 13 tasks complete). Released as **v1.6.0**
@@ -237,7 +249,17 @@ of "latest EFIS/AHRS software" for population; (c) exact dashboard UX for
 browsing per-device dated versions + the select->DM-write restoration handoff;
 (d) how the divergence warning surfaces (DM notification + dashboard badge?).
 
-### Chart-sync stall — reopened investigation  [2026-10-24]
+### Chart-sync stall — reopened investigation  [2026-10-24] — CONCLUDED 2026-10-27
+> **CONCLUDED → `.kiro/specs/chart-manifest-sync/`.** The investigation
+> resolved to: keep rsync→FSKit (reliable, no hang), retire mount-swap +
+> image-dd, and fix the real correctness gap (`--size-only` skips same-size
+> content changes) with a SHA-256 checksum manifest + per-family cycle gate
+> (charts 56-day, plates 28-day, nav always). Measured churn 2609→2611: ~74%
+> of files change (~26% unchanged). Also surfaced: DM should disable Spotlight
+> on the card via `.metadata_never_index` (validated), and a latent IFR-High
+> extraction bug (`_extract_multidisk` only routes LO/SEC, not HI). See the
+> spec + INVESTIGATION note.
+
 Field session isolated the chart-sync stall further. CONFIRMED: the
 mount-swap really mounts the card via in-kernel `mount_msdos` (NOT FSKit) on
 macOS 15.7.9 — the ~1s swap produces a `(msdos, local, noowners)` mount with
@@ -284,54 +306,49 @@ for more than one aircraft. Parked until there is demand; the single-aircraft
 model (item #1) is built so Mode_S is already carried and can become a real axis
 later without a rewrite.
 
-### EFIS/AHRS software auto-staging for the composer  [DEFERRED 2026-10-03]
-The image-based-drive-write composer stages ChartData, nav DB, and settings from
-current local sources, but NOT the EFIS/AHRS software uploaders
-(HHXRUp-*/MiniUp-*/MiniAHRSUp-*). Reason: the DM's software check
-(check_and_download_efis_software) only DETECTS a new version and notifies a URL
-for MANUAL download — GRT's site bot/Sucuri protection makes headless download
-unreliable, so there is no auto-staged current software to pull. For now the
-composer either omits software or carries forward whatever local copy exists;
-software currency is the user's manual responsibility (prompted by the DM's
-detect+notify). REVISIT options when prioritized: (1) a user-maintained local
-software folder the composer stages from; (2) investigate reusing the nav-DB
-Playwright/Sucuri-bypass download path for software; (3) carry-forward
-last-known. Deferred per user 2026-10-03; not blocking image-based-drive-write.
+### EFIS/AHRS software staging onto drives  [REFRAMED 2026-10-27]
+REFRAMED to be composer-agnostic (the image-dd composer is retiring — see
+chart-manifest-sync). The NEED stands: stage the EFIS/AHRS software uploaders
+(HHXRUp-*/MiniUp-*/MiniAHRSUp-*) onto prepped drives so displays can be updated.
+Under the new rsync→FSKit sync, this is just another family of files to place
+on the card (not an image-compose concern). BLOCKER unchanged: the DM software
+check (check_and_download_efis_software) only DETECTS a new version and notifies
+a URL for MANUAL download — GRT bot/Sucuri protection makes headless download
+unreliable, so there is no auto-staged current software to copy. REVISIT options:
+(1) a user-maintained local software folder the sync stages from; (2) reuse the
+nav-DB Playwright/Sucuri-bypass download path for software; (3) carry-forward
+last-known. Deferred; not blocking chart-manifest-sync.
+
 
 ### (Windows version is item #4 above but is similarly demand-gated.)
 
-### Menu-bar "new image ready" cycle-label fixes  [LOGGED 2026-10-24]
-Two related issues with the ⬇ "New image ready (...)" label built by
-`_describe_image_cycles` in `app.py` (menu-bar/UI only — NO effect on which
-charts are current, what gets downloaded, or what is written to a drive).
+### Menu-bar "new data available" indicator + cycle-number labels  [REFRAMED 2026-10-27]
+REFRAMED from the old "new image ready" badge (the image-dd compose flow is
+retiring — see chart-manifest-sync). The menu-bar indicator STAYS, but its
+meaning changes: it now signals **new DATA is available to sync**, triggered by
+ANY new data event — nav, charts (SEC/LO/HI), or plates — not by a composed
+image. Decouple the icon/trigger from `_refresh_composed_image`/`_mark_image_ready`;
+drive it from the currency-check/download points that detect new nav or chart
+cycles.
 
-1. **BUG — wrong plates cycle shown (first-match instead of current).**
-   `_describe_image_cycles` iterates `currency.load_cycle_metadata()` and does
-   `if "plate" in desc or "approach" in desc: plates_valid = valid; break`. The
-   metadata holds MULTIPLE plates cycles (e.g. 2608, 2609, 2610, 2611); the
-   `break` grabs the FIRST (oldest) entry, so the badge showed a stale cycle
-   (observed: showed 2608 "Aug 6–Sep 2" while the image was actually composed
-   from the 2611 cycle). Fix: select the CURRENT/most-recent cycle — the entry
-   whose `valid_dates` range contains "today" in cycle terms, or equivalently
-   the entry with the latest start date — not the first match. "Current" should
-   equal what Seattle Avionics is serving = what was just downloaded = what the
-   composed image contains. (Confirmed 2026-10-24: SA served 2611 plates
-   Oct 29–Nov 25, matching the downloaded cycle; the badge mis-labeled it.)
+- **BUG (now moot):** the old `_describe_image_cycles` first-match-wrong-plates-
+  cycle bug dies with the image-ready badge; no separate fix needed.
+- **ENHANCEMENT (carried forward, user 2026-10-24):** the indicator / its menu
+  line should show THREE cycle dates WITH cycle numbers — **nav**, **plates**,
+  **charts** — since plates (28-day) and charts (56-day) diverge. Target form
+  e.g. `nav 10/1 + plates 10/29 (2611) + charts 10/29 (2611)`. This dovetails
+  with chart-manifest-sync's `C<charts>P<plates>` label + authoritative cycle
+  numbers; surface them in the menu-bar indicator too.
 
-2. **ENHANCEMENT (user request 2026-10-24) — show THREE dates with cycle
-   numbers.** The badge currently shows at most `nav <date> + plates <date>`.
-   The user wants the DM to display three distinct cycle dates — **nav**,
-   **plates**, and **charts** (sectionals/IFR-low) — each WITH its cycle number.
-   This matters because plates and charts are on DIFFERENT cycle lengths:
-   observed 2026-10-24, plates 2611 = Oct 29–Nov 25 (28-day) while LO/SEC 2611 =
-   Oct 29–Dec 23 (56-day), so a single combined "plates/charts" date is wrong.
-   Target label shape (illustrative): `nav 10/1 (NNNN) + plates 10/29 (2611) +
-   charts 10/29 (2611)`. Needs: the cycle NUMBER surfaced from the SA
-   download-table metadata (the `2611` in the URL/path) alongside each
-   `valid_dates`, and the nav cycle number if available. Pair this with the
-   fix in #1 (both touch `_describe_image_cycles`), to be addressed shortly.
 
-### Composed-image size vs. drive slice: fit any "32 GB" card  [LOGGED 2026-10-24]
+### Composed-image size vs. drive slice: fit any "32 GB" card  [LOGGED 2026-10-24] — OBSOLETE 2026-10-27
+> **OBSOLETE.** This item only mattered for the image-dd write path, which is
+> being RETIRED (see chart-manifest-sync). rsync→FSKit writes files directly;
+> there is no composed whole-slice image, so slice-size matching no longer
+> applies. The 25 GiB `composed_image_size_bytes` default set during this
+> investigation becomes dead config, removed with the image-dd retirement.
+> Kept for record.
+
 The image-based-drive-write path dd's the WHOLE composed FAT32 image onto the
 drive's raw partition slice (`/dev/rdiskNsN`). The device guard in
 `image_writer.py` (`device_guard`, design Property 4) REQUIRES an EXACT match:
