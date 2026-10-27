@@ -1,0 +1,421 @@
+{
+  "pbtResults": {
+    "4.2 Write property test for validation reject-and-retain": {
+      "status": "passed",
+      "lastRunTimestamp": 1792692887326
+    }
+  },
+  "executionHistory": {
+    "1.1 Add the aircraft default, sentinel, accessors, and label helper": [
+      {
+        "executionId": "cca99f95-a741-454f-aa68-32d23026fab8",
+        "chatSessionId": "sess_fe59a3b1-3a1b-4a1f-8d2d-744533b0b06b",
+        "timestamp": 1792691705843
+      },
+      {
+        "executionId": "cca99f95-a741-454f-aa68-32d23026fab8",
+        "chatSessionId": "sess_fe59a3b1-3a1b-4a1f-8d2d-744533b0b06b",
+        "timestamp": 1792691717203
+      },
+      {
+        "executionId": "cca99f95-a741-454f-aa68-32d23026fab8",
+        "chatSessionId": "sess_fe59a3b1-3a1b-4a1f-8d2d-744533b0b06b",
+        "timestamp": 1792691812698
+      }
+    ],
+    "1.2 Add `migrate_aircraft_config` and chain it into `load_config`": [
+      {
+        "executionId": "cca99f95-a741-454f-aa68-32d23026fab8",
+        "chatSessionId": "sess_fe59a3b1-3a1b-4a1f-8d2d-744533b0b06b",
+        "timestamp": 1792691707064
+      },
+      {
+        "executionId": "cca99f95-a741-454f-aa68-32d23026fab8",
+        "chatSessionId": "sess_fe59a3b1-3a1b-4a1f-8d2d-744533b0b06b",
+        "timestamp": 1792691821258
+      },
+      {
+        "executionId": "cca99f95-a741-454f-aa68-32d23026fab8",
+        "chatSessionId": "sess_fe59a3b1-3a1b-4a1f-8d2d-744533b0b06b",
+        "timestamp": 1792691878937
+      }
+    ],
+    "2.1 Add `device_link_id` to `_new_identity` and bump the schema version": [
+      {
+        "executionId": "cca99f95-a741-454f-aa68-32d23026fab8",
+        "chatSessionId": "sess_fe59a3b1-3a1b-4a1f-8d2d-744533b0b06b",
+        "timestamp": 1792691708976
+      },
+      {
+        "executionId": "cca99f95-a741-454f-aa68-32d23026fab8",
+        "chatSessionId": "sess_fe59a3b1-3a1b-4a1f-8d2d-744533b0b06b",
+        "timestamp": 1792691717816
+      },
+      {
+        "executionId": "cca99f95-a741-454f-aa68-32d23026fab8",
+        "chatSessionId": "sess_fe59a3b1-3a1b-4a1f-8d2d-744533b0b06b",
+        "timestamp": 1792691813397
+      }
+    ],
+    "3.1 Implement `ResolutionStatus`, `ResolutionOutcome`, and `resolve_drive`": [
+      {
+        "executionId": "cca99f95-a741-454f-aa68-32d23026fab8",
+        "chatSessionId": "sess_fe59a3b1-3a1b-4a1f-8d2d-744533b0b06b",
+        "timestamp": 1792691709407
+      },
+      {
+        "executionId": "cca99f95-a741-454f-aa68-32d23026fab8",
+        "chatSessionId": "sess_fe59a3b1-3a1b-4a1f-8d2d-744533b0b06b",
+        "timestamp": 1792692918004
+      },
+      {
+        "executionId": "cca99f95-a741-454f-aa68-32d23026fab8",
+        "chatSessionId": "sess_fe59a3b1-3a1b-4a1f-8d2d-744533b0b06b",
+        "timestamp": 1792693067719
+      }
+    ],
+    "4.1 Implement `validate_device_config` (reject-and-retain)": [
+      {
+        "executionId": "cca99f95-a741-454f-aa68-32d23026fab8",
+        "chatSessionId": "sess_fe59a3b1-3a1b-4a1f-8d2d-744533b0b06b",
+        "timestamp": 1792691709521
+      },
+      {
+        "executionId": "cca99f95-a741-454f-aa68-32d23026fab8",
+        "chatSessionId": "sess_fe59a3b1-3a1b-4a1f-8d2d-744533b0b06b",
+        "timestamp": 1792691883504
+      },
+      {
+        "executionId": "cca99f95-a741-454f-aa68-32d23026fab8",
+        "chatSessionId": "sess_fe59a3b1-3a1b-4a1f-8d2d-744533b0b06b",
+        "timestamp": 1792692731887
+      }
+    ],
+    "5.1 Add the device-config UI section and save wiring": [
+      {
+        "executionId": "cca99f95-a741-454f-aa68-32d23026fab8",
+        "chatSessionId": "sess_fe59a3b1-3a1b-4a1f-8d2d-744533b0b06b",
+        "timestamp": 1792691709630
+      },
+      {
+        "executionId": "cca99f95-a741-454f-aa68-32d23026fab8",
+        "chatSessionId": "sess_fe59a3b1-3a1b-4a1f-8d2d-744533b0b06b",
+        "timestamp": 1792693072624
+      },
+      {
+        "executionId": "cca99f95-a741-454f-aa68-32d23026fab8",
+        "chatSessionId": "sess_fe59a3b1-3a1b-4a1f-8d2d-744533b0b06b",
+        "timestamp": 1792693280529
+      }
+    ],
+    "6. Checkpoint - pure core + Settings UI": [
+      {
+        "executionId": "cca99f95-a741-454f-aa68-32d23026fab8",
+        "chatSessionId": "sess_fe59a3b1-3a1b-4a1f-8d2d-744533b0b06b",
+        "timestamp": 1792691709798
+      },
+      {
+        "executionId": "cca99f95-a741-454f-aa68-32d23026fab8",
+        "chatSessionId": "sess_fe59a3b1-3a1b-4a1f-8d2d-744533b0b06b",
+        "timestamp": 1792693285395
+      },
+      {
+        "executionId": "cca99f95-a741-454f-aa68-32d23026fab8",
+        "chatSessionId": "sess_fe59a3b1-3a1b-4a1f-8d2d-744533b0b06b",
+        "timestamp": 1792693297182
+      }
+    ],
+    "7.1 Call `resolve_drive` and map outcomes to side effects": [
+      {
+        "executionId": "cca99f95-a741-454f-aa68-32d23026fab8",
+        "chatSessionId": "sess_fe59a3b1-3a1b-4a1f-8d2d-744533b0b06b",
+        "timestamp": 1792691709890
+      },
+      {
+        "executionId": "cca99f95-a741-454f-aa68-32d23026fab8",
+        "chatSessionId": "sess_fe59a3b1-3a1b-4a1f-8d2d-744533b0b06b",
+        "timestamp": 1792693301661
+      },
+      {
+        "executionId": "cca99f95-a741-454f-aa68-32d23026fab8",
+        "chatSessionId": "sess_fe59a3b1-3a1b-4a1f-8d2d-744533b0b06b",
+        "timestamp": 1792693519915
+      }
+    ],
+    "8.1 Bind blank drives to a device at Prepare time": [
+      {
+        "executionId": "cca99f95-a741-454f-aa68-32d23026fab8",
+        "chatSessionId": "sess_fe59a3b1-3a1b-4a1f-8d2d-744533b0b06b",
+        "timestamp": 1792691710061
+      },
+      {
+        "executionId": "cca99f95-a741-454f-aa68-32d23026fab8",
+        "chatSessionId": "sess_fe59a3b1-3a1b-4a1f-8d2d-744533b0b06b",
+        "timestamp": 1792693524085
+      },
+      {
+        "executionId": "cca99f95-a741-454f-aa68-32d23026fab8",
+        "chatSessionId": "sess_fe59a3b1-3a1b-4a1f-8d2d-744533b0b06b",
+        "timestamp": 1792693679945
+      }
+    ],
+    "9. Final checkpoint - full suite": [
+      {
+        "executionId": "cca99f95-a741-454f-aa68-32d23026fab8",
+        "chatSessionId": "sess_fe59a3b1-3a1b-4a1f-8d2d-744533b0b06b",
+        "timestamp": 1792691710107
+      },
+      {
+        "executionId": "cca99f95-a741-454f-aa68-32d23026fab8",
+        "chatSessionId": "sess_fe59a3b1-3a1b-4a1f-8d2d-744533b0b06b",
+        "timestamp": 1792693863223
+      },
+      {
+        "executionId": "cca99f95-a741-454f-aa68-32d23026fab8",
+        "chatSessionId": "sess_fe59a3b1-3a1b-4a1f-8d2d-744533b0b06b",
+        "timestamp": 1792694239981
+      }
+    ],
+    "2. Extend the per-drive identity file with `device_link_id`": [
+      {
+        "executionId": "cca99f95-a741-454f-aa68-32d23026fab8",
+        "chatSessionId": "sess_fe59a3b1-3a1b-4a1f-8d2d-744533b0b06b",
+        "timestamp": 1792691813625
+      }
+    ],
+    "1. Extend `config.py` with the aircraft-keyed model, accessors, label helper, and migration": [
+      {
+        "executionId": "cca99f95-a741-454f-aa68-32d23026fab8",
+        "chatSessionId": "sess_fe59a3b1-3a1b-4a1f-8d2d-744533b0b06b",
+        "timestamp": 1792691879007
+      }
+    ],
+    "4. Extract the Settings-save validation as a pure function": [
+      {
+        "executionId": "cca99f95-a741-454f-aa68-32d23026fab8",
+        "chatSessionId": "sess_fe59a3b1-3a1b-4a1f-8d2d-744533b0b06b",
+        "timestamp": 1792692732012
+      }
+    ],
+    "1.3 Write property test for migration idempotency": [
+      {
+        "executionId": "cca99f95-a741-454f-aa68-32d23026fab8",
+        "chatSessionId": "sess_fe59a3b1-3a1b-4a1f-8d2d-744533b0b06b",
+        "timestamp": 1792692758102
+      },
+      {
+        "executionId": "cca99f95-a741-454f-aa68-32d23026fab8",
+        "chatSessionId": "sess_fe59a3b1-3a1b-4a1f-8d2d-744533b0b06b",
+        "timestamp": 1792692905493
+      }
+    ],
+    "1.4 Write property test for migration key preservation": [
+      {
+        "executionId": "cca99f95-a741-454f-aa68-32d23026fab8",
+        "chatSessionId": "sess_fe59a3b1-3a1b-4a1f-8d2d-744533b0b06b",
+        "timestamp": 1792692759120
+      },
+      {
+        "executionId": "cca99f95-a741-454f-aa68-32d23026fab8",
+        "chatSessionId": "sess_fe59a3b1-3a1b-4a1f-8d2d-744533b0b06b",
+        "timestamp": 1792692906347
+      }
+    ],
+    "1.5 Write property test for label composition": [
+      {
+        "executionId": "cca99f95-a741-454f-aa68-32d23026fab8",
+        "chatSessionId": "sess_fe59a3b1-3a1b-4a1f-8d2d-744533b0b06b",
+        "timestamp": 1792692760372
+      },
+      {
+        "executionId": "cca99f95-a741-454f-aa68-32d23026fab8",
+        "chatSessionId": "sess_fe59a3b1-3a1b-4a1f-8d2d-744533b0b06b",
+        "timestamp": 1792692907653
+      }
+    ],
+    "1.6 Write example tests for accessors and the migration chain": [
+      {
+        "executionId": "cca99f95-a741-454f-aa68-32d23026fab8",
+        "chatSessionId": "sess_fe59a3b1-3a1b-4a1f-8d2d-744533b0b06b",
+        "timestamp": 1792692761434
+      },
+      {
+        "executionId": "cca99f95-a741-454f-aa68-32d23026fab8",
+        "chatSessionId": "sess_fe59a3b1-3a1b-4a1f-8d2d-744533b0b06b",
+        "timestamp": 1792692908632
+      }
+    ],
+    "2.2 Write example tests for identity-file v1 backward-read compat": [
+      {
+        "executionId": "cca99f95-a741-454f-aa68-32d23026fab8",
+        "chatSessionId": "sess_fe59a3b1-3a1b-4a1f-8d2d-744533b0b06b",
+        "timestamp": 1792692762750
+      },
+      {
+        "executionId": "cca99f95-a741-454f-aa68-32d23026fab8",
+        "chatSessionId": "sess_fe59a3b1-3a1b-4a1f-8d2d-744533b0b06b",
+        "timestamp": 1792692909998
+      }
+    ],
+    "4.2 Write property test for validation reject-and-retain": [
+      {
+        "executionId": "cca99f95-a741-454f-aa68-32d23026fab8",
+        "chatSessionId": "sess_fe59a3b1-3a1b-4a1f-8d2d-744533b0b06b",
+        "timestamp": 1792692763683
+      },
+      {
+        "executionId": "cca99f95-a741-454f-aa68-32d23026fab8",
+        "chatSessionId": "sess_fe59a3b1-3a1b-4a1f-8d2d-744533b0b06b",
+        "timestamp": 1792692910974
+      }
+    ],
+    "4.3 Write example tests for validation edge cases": [
+      {
+        "executionId": "cca99f95-a741-454f-aa68-32d23026fab8",
+        "chatSessionId": "sess_fe59a3b1-3a1b-4a1f-8d2d-744533b0b06b",
+        "timestamp": 1792692764578
+      },
+      {
+        "executionId": "cca99f95-a741-454f-aa68-32d23026fab8",
+        "chatSessionId": "sess_fe59a3b1-3a1b-4a1f-8d2d-744533b0b06b",
+        "timestamp": 1792692912912
+      }
+    ],
+    "3. Create `device_resolution.py` — the resolve/classify state machine": [
+      {
+        "executionId": "cca99f95-a741-454f-aa68-32d23026fab8",
+        "chatSessionId": "sess_fe59a3b1-3a1b-4a1f-8d2d-744533b0b06b",
+        "timestamp": 1792693068092
+      }
+    ],
+    "3.2 Write property test for authoritative settings-file Link_ID": [
+      {
+        "executionId": "cca99f95-a741-454f-aa68-32d23026fab8",
+        "chatSessionId": "sess_fe59a3b1-3a1b-4a1f-8d2d-744533b0b06b",
+        "timestamp": 1792693074021
+      },
+      {
+        "executionId": "cca99f95-a741-454f-aa68-32d23026fab8",
+        "chatSessionId": "sess_fe59a3b1-3a1b-4a1f-8d2d-744533b0b06b",
+        "timestamp": 1792693274315
+      }
+    ],
+    "3.3 Write property test for the recorded-binding fallback": [
+      {
+        "executionId": "cca99f95-a741-454f-aa68-32d23026fab8",
+        "chatSessionId": "sess_fe59a3b1-3a1b-4a1f-8d2d-744533b0b06b",
+        "timestamp": 1792693075037
+      },
+      {
+        "executionId": "cca99f95-a741-454f-aa68-32d23026fab8",
+        "chatSessionId": "sess_fe59a3b1-3a1b-4a1f-8d2d-744533b0b06b",
+        "timestamp": 1792693275231
+      }
+    ],
+    "3.4 Write property test for aircraft-gated device resolution": [
+      {
+        "executionId": "cca99f95-a741-454f-aa68-32d23026fab8",
+        "chatSessionId": "sess_fe59a3b1-3a1b-4a1f-8d2d-744533b0b06b",
+        "timestamp": 1792693077074
+      },
+      {
+        "executionId": "cca99f95-a741-454f-aa68-32d23026fab8",
+        "chatSessionId": "sess_fe59a3b1-3a1b-4a1f-8d2d-744533b0b06b",
+        "timestamp": 1792693276167
+      }
+    ],
+    "3.5 Write property test for unconfigured Link_ID": [
+      {
+        "executionId": "cca99f95-a741-454f-aa68-32d23026fab8",
+        "chatSessionId": "sess_fe59a3b1-3a1b-4a1f-8d2d-744533b0b06b",
+        "timestamp": 1792693077362
+      },
+      {
+        "executionId": "cca99f95-a741-454f-aa68-32d23026fab8",
+        "chatSessionId": "sess_fe59a3b1-3a1b-4a1f-8d2d-744533b0b06b",
+        "timestamp": 1792693277593
+      }
+    ],
+    "3.6 Write property test for resolution determinism": [
+      {
+        "executionId": "cca99f95-a741-454f-aa68-32d23026fab8",
+        "chatSessionId": "sess_fe59a3b1-3a1b-4a1f-8d2d-744533b0b06b",
+        "timestamp": 1792693078658
+      },
+      {
+        "executionId": "cca99f95-a741-454f-aa68-32d23026fab8",
+        "chatSessionId": "sess_fe59a3b1-3a1b-4a1f-8d2d-744533b0b06b",
+        "timestamp": 1792693278480
+      }
+    ],
+    "3.7 Write example tests for the resolution matrix": [
+      {
+        "executionId": "cca99f95-a741-454f-aa68-32d23026fab8",
+        "chatSessionId": "sess_fe59a3b1-3a1b-4a1f-8d2d-744533b0b06b",
+        "timestamp": 1792693079313
+      },
+      {
+        "executionId": "cca99f95-a741-454f-aa68-32d23026fab8",
+        "chatSessionId": "sess_fe59a3b1-3a1b-4a1f-8d2d-744533b0b06b",
+        "timestamp": 1792693279935
+      }
+    ],
+    "5. Wire the device-config controls into `settings_window.py`": [
+      {
+        "executionId": "cca99f95-a741-454f-aa68-32d23026fab8",
+        "chatSessionId": "sess_fe59a3b1-3a1b-4a1f-8d2d-744533b0b06b",
+        "timestamp": 1792693280559
+      }
+    ],
+    "7. Insert the resolution hook into `app.py` `_on_efis_drive_mounted`": [
+      {
+        "executionId": "cca99f95-a741-454f-aa68-32d23026fab8",
+        "chatSessionId": "sess_fe59a3b1-3a1b-4a1f-8d2d-744533b0b06b",
+        "timestamp": 1792693519984
+      }
+    ],
+    "8. Add the Prepare-Drive device binding in `app.py`": [
+      {
+        "executionId": "cca99f95-a741-454f-aa68-32d23026fab8",
+        "chatSessionId": "sess_fe59a3b1-3a1b-4a1f-8d2d-744533b0b06b",
+        "timestamp": 1792693679989
+      }
+    ],
+    "7.2 Write property test for learn-only-on-confirmation (pure side)": [
+      {
+        "executionId": "cca99f95-a741-454f-aa68-32d23026fab8",
+        "chatSessionId": "sess_fe59a3b1-3a1b-4a1f-8d2d-744533b0b06b",
+        "timestamp": 1792693681339
+      },
+      {
+        "executionId": "cca99f95-a741-454f-aa68-32d23026fab8",
+        "chatSessionId": "sess_fe59a3b1-3a1b-4a1f-8d2d-744533b0b06b",
+        "timestamp": 1792693857507
+      }
+    ],
+    "7.3 Write example/integration test for the learn-prompt persist side": [
+      {
+        "executionId": "cca99f95-a741-454f-aa68-32d23026fab8",
+        "chatSessionId": "sess_fe59a3b1-3a1b-4a1f-8d2d-744533b0b06b",
+        "timestamp": 1792693682735
+      },
+      {
+        "executionId": "cca99f95-a741-454f-aa68-32d23026fab8",
+        "chatSessionId": "sess_fe59a3b1-3a1b-4a1f-8d2d-744533b0b06b",
+        "timestamp": 1792693858863
+      }
+    ],
+    "8.2 Write example tests for Prepare binding (mocked prompt)": [
+      {
+        "executionId": "cca99f95-a741-454f-aa68-32d23026fab8",
+        "chatSessionId": "sess_fe59a3b1-3a1b-4a1f-8d2d-744533b0b06b",
+        "timestamp": 1792693683385
+      },
+      {
+        "executionId": "cca99f95-a741-454f-aa68-32d23026fab8",
+        "chatSessionId": "sess_fe59a3b1-3a1b-4a1f-8d2d-744533b0b06b",
+        "timestamp": 1792693859572
+      }
+    ]
+  }
+}

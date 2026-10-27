@@ -390,7 +390,7 @@ def pending_families(drive_id: str) -> list:
 
 IDENTITY_FILENAME = "EFIS_DRIVE_ID.json"
 IDENTITY_KIND = "efis-chart-drive"
-IDENTITY_SCHEMA_VERSION = 1
+IDENTITY_SCHEMA_VERSION = 2
 
 
 def _identity_path(mount_point: str) -> str:
@@ -621,6 +621,7 @@ def _new_identity(mount_point: str, label: Optional[str] = None) -> dict:
         "label": label,
         "created": _now_iso(),
         "prepared_by": f"EFISDataManager {__version__} on {socket.gethostname()}",
+        "device_link_id": None,
         "last_sync_started": None,
         "last_sync_completed": None,
         "last_sync_result": None,

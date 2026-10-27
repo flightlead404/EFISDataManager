@@ -24,7 +24,18 @@ import threading
 import rumps
 
 from efis_data_manager import config
-from efis_data_manager.config import load_config, save_config
+from efis_data_manager.config import (
+    load_config,
+    save_config,
+    managed_mode_s,
+    managed_aircraft,
+    configured_device,
+    device_count,
+    device_label,
+    PENDING_AIRCRAFT_KEY,
+)
+from efis_data_manager import device_resolution
+from efis_data_manager.device_resolution import ResolutionStatus
 from efis_data_manager.mount_swap import msdos_mount, MountSwapError
 from efis_data_manager.notification_history import (
     NotificationHistory,
@@ -41,6 +52,12 @@ logger = logging.getLogger(__name__)
 # status glyphs (↻ active, ● connected-idle, ⚠ alert) — see ``_update_title``.
 IMAGE_STATE_CURRENT_TITLE = "USB image current"
 IMAGE_READY_BADGE_GLYPH = "\u2b07"  # ⬇ (download/box glyph = fresh image pending)
+
+# Chart/plate sync families (drive_updater.build_jobs family names). A device
+# the user declared not chart-capable (multi-device-settings) must never receive
+# these; only "nav" is synced to it. "nav" is deliberately excluded from this
+# set so it always syncs regardless of chart capability.
+CHART_FAMILIES = frozenset({"scanned", "plates"})
 
 # Configure logging to file (works regardless of how app is launched)
 _log_dir = os.path.expanduser("~/EFIS/DataManagerLogs")
@@ -499,6 +516,215 @@ class EFISDataManagerApp(rumps.App):
                     return True
             return False
 
+    # ------------------------------------------------------------------
+    # multi-device-settings: drive-insert resolution hook (Task 7.1)
+    # ------------------------------------------------------------------
+
+    def _find_drive_settings(self, mount_point: str):
+        """Find and parse the drive's Settings backup for identity resolution.
+
+        Mirrors the archiver's slot selection (``_current_settings_slot``): a
+        GRT settings backup at the mount root is ``Settings.bak`` / ``Settings
+        .dat``. Each present file is parsed via ``Settings_Parser.parse``;
+        ``SettingsParseError`` is caught and treated as absent. Either slot
+        carries the same Link_ID / Mode_S identity, so the first file that
+        parses is sufficient to resolve identity.
+
+        Returns the parsed ``ParsedBackup``, or ``None`` when no settings file
+        is present or none parses.
+        """
+        from efis_data_manager.efis_settings import (
+            Settings_Parser,
+            SettingsParseError,
+        )
+
+        for ext in (".bak", ".dat"):
+            path = os.path.join(mount_point, f"Settings{ext}")
+            if not os.path.isfile(path):
+                continue
+            try:
+                return Settings_Parser.parse(path)
+            except SettingsParseError as e:
+                logger.debug(
+                    f"Settings{ext} on {mount_point} did not parse, ignoring: {e}"
+                )
+        return None
+
+    def _run_alert_on_main_thread(self, title: str, message: str) -> int:
+        """Show a modal rumps alert on the main thread and return its result.
+
+        The USB monitor invokes ``_on_efis_drive_mounted`` from its background
+        polling thread (``USBMonitor._poll_loop``), but rumps/AppKit alerts are
+        modal and MUST run on the main thread. This marshals the alert onto the
+        main queue (the same ``NSOperationQueue.mainQueue()`` idiom used
+        throughout this module for UI mutation) and blocks the caller until the
+        user responds, returning the rumps alert result (1 = OK, 0 = Cancel).
+        """
+        from AppKit import NSOperationQueue
+
+        result: dict = {}
+        done = threading.Event()
+
+        def _do_alert():
+            try:
+                result["value"] = rumps.alert(
+                    title=title, message=message, ok="OK", cancel="Cancel"
+                )
+            except Exception as e:  # pragma: no cover - UI failure fallback
+                logger.error(f"Learn-aircraft prompt failed: {e}")
+                result["value"] = 0
+            finally:
+                done.set()
+
+        NSOperationQueue.mainQueue().addOperationWithBlock_(_do_alert)
+        done.wait()
+        return result.get("value", 0)
+
+    def _handle_terminal_outcome(self, outcome, mount_point: str) -> None:
+        """Log + notify for a non-confident resolution outcome (leave mounted).
+
+        Reuses the ``_on_adoption_candidate`` pattern: log the reason, post a
+        best-effort notification, take NO archive/sync/push/eject action, and
+        leave the drive mounted for the user (R2.4, R2.6, R3.5, R3.6).
+        """
+        titles = {
+            ResolutionStatus.AIRCRAFT_UNRECOGNIZED: "Unrecognized aircraft",
+            ResolutionStatus.AIRCRAFT_UNDETERMINED: "Aircraft undetermined",
+            ResolutionStatus.DEVICE_NOT_CONFIGURED: "Device not configured",
+            ResolutionStatus.DEVICE_UNDETERMINED: "Device undetermined",
+        }
+        title = titles.get(outcome.status, "Drive not processed")
+        logger.info(
+            f"Drive at {mount_point} not processed ({outcome.status.value}): "
+            f"{outcome.message}"
+        )
+        self._set_drive_status(f"Connected (not processed): {mount_point}")
+        self._set_status("EFIS drive detected — not processed")
+        try:
+            self._notify(title, outcome.message)
+        except Exception as e:
+            # Notifications are best-effort; never let a failed toast disrupt
+            # monitoring.
+            logger.debug(f"Resolution notification failed: {e}")
+
+    def _establish_managed_aircraft(self, config: dict, mode_s: str) -> None:
+        """Bind the managed aircraft to ``mode_s`` after a confirmed learn.
+
+        If a pending pre-learn record exists under ``PENDING_AIRCRAFT_KEY`` (the
+        user configured devices in Settings before any drive was inserted),
+        re-key it to the real Mode_S; otherwise create a minimal single-device
+        record (device_count 1, one device at Link_ID "1"). Mutates ``config``
+        in place; the caller persists via ``save_config``.
+        """
+        aircraft = config.get("aircraft")
+        if not isinstance(aircraft, dict):
+            aircraft = {}
+            config["aircraft"] = aircraft
+        pending = aircraft.pop(PENDING_AIRCRAFT_KEY, None)
+        if isinstance(pending, dict):
+            aircraft[mode_s] = pending
+        else:
+            aircraft[mode_s] = {
+                "device_count": 1,
+                "devices": {
+                    "1": {
+                        "link_id": "1",
+                        "friendly_name": "",
+                        "chart_capable": True,
+                    }
+                },
+                "analysis_data_source": "1",
+            }
+
+    def _resolve_and_gate_drive(self, mount_point: str) -> bool:
+        """Resolve the inserted drive and decide whether to proceed to archive.
+
+        Returns True to proceed to the existing archive/sync path, or False to
+        leave the drive mounted untouched (terminal/declined outcome). On a
+        RESOLVED binding mismatch, posts a best-effort mismatch notification but
+        still proceeds (the settings-file Link_ID is authoritative, R4.6).
+        """
+        from efis_data_manager.drive_updater import read_identity
+
+        current_config = load_config()
+        parsed = self._find_drive_settings(mount_point)
+        recorded_identity = read_identity(mount_point)
+        outcome = device_resolution.resolve_drive(
+            parsed, recorded_identity, current_config
+        )
+
+        if outcome.status == ResolutionStatus.RESOLVED:
+            return self._proceed_resolved(outcome)
+
+        if outcome.status == ResolutionStatus.LEARN_PROMPT:
+            return self._handle_learn_prompt(
+                outcome, parsed, recorded_identity, current_config, mount_point
+            )
+
+        # Terminal non-confident outcomes: notify + leave mounted, no action.
+        self._handle_terminal_outcome(outcome, mount_point)
+        return False
+
+    def _proceed_resolved(self, outcome) -> bool:
+        """Handle a RESOLVED outcome: optionally warn on mismatch, then proceed."""
+        if outcome.binding_mismatch:
+            try:
+                self._notify("Drive binding mismatch", outcome.message)
+            except Exception as e:
+                logger.debug(f"Binding-mismatch notification failed: {e}")
+        logger.info(
+            f"Drive resolved to {outcome.display_label or outcome.link_id}; "
+            "proceeding to archive."
+        )
+        return True
+
+    def _handle_learn_prompt(
+        self, outcome, parsed, recorded_identity, current_config, mount_point: str
+    ) -> bool:
+        """Prompt to adopt the derived Mode_S, then persist and re-resolve.
+
+        On confirm: establish the managed aircraft, ``save_config``, and
+        re-run resolution; proceed only if the re-resolve is RESOLVED, else
+        notify + leave mounted per the new outcome. On decline: bind nothing,
+        notify, and leave the drive mounted (no archive/sync action).
+        """
+        response = self._run_alert_on_main_thread(
+            "Adopt managed aircraft?", outcome.message
+        )
+        if not response:
+            logger.info(
+                f"Learn-aircraft prompt declined for {mount_point} "
+                f"(Mode_S {outcome.mode_s}); leaving drive mounted."
+            )
+            try:
+                self._notify(
+                    "No aircraft adopted",
+                    "No managed aircraft was adopted. The drive was left "
+                    "mounted and no action was taken.",
+                )
+            except Exception as e:
+                logger.debug(f"Decline notification failed: {e}")
+            return False
+
+        # Confirmed: establish the managed aircraft and persist.
+        self._establish_managed_aircraft(current_config, outcome.mode_s)
+        save_config(current_config)
+        logger.info(
+            f"Adopted managed aircraft Mode_S {outcome.mode_s}; re-resolving "
+            f"drive at {mount_point}."
+        )
+
+        # Re-resolve against the updated config.
+        new_outcome = device_resolution.resolve_drive(
+            parsed, recorded_identity, current_config
+        )
+        if new_outcome.status == ResolutionStatus.RESOLVED:
+            return self._proceed_resolved(new_outcome)
+
+        # Any other re-resolve outcome: notify + leave mounted, no action.
+        self._handle_terminal_outcome(new_outcome, mount_point)
+        return False
+
     def _on_efis_drive_mounted(self, mount_point: str):
         """Called when an EFIS drive is detected."""
         logger.info(f"EFIS drive mounted: {mount_point}")
@@ -513,8 +739,21 @@ class EFISDataManagerApp(rumps.App):
                 "skipping auto-archive/sync"
             )
             return
+
         self._set_drive_status(f"Connected: {mount_point}")
         self._set_status("EFIS drive detected")
+
+        # multi-device-settings Task 7.1: resolve which device (and which
+        # aircraft) this drive belongs to BEFORE archiving. A non-confident
+        # outcome leaves the drive mounted and takes no archive/sync action
+        # (mirrors _on_adoption_candidate). RESOLVED falls through to the
+        # existing archive path; LEARN_PROMPT prompts (modal, on the main
+        # thread) and re-resolves. See design.md "Where this inserts into
+        # _on_efis_drive_mounted" (R2.4, R2.6, R3.2, R3.3, R3.5, R3.6, R4.6,
+        # R5.5, R5.6).
+        if not self._resolve_and_gate_drive(mount_point):
+            return
+
         self._notify("EFIS Drive Detected", f"Drive mounted at {mount_point}. Starting archive...")
 
         # An interrupted prior sync is detected durably by drive_updater's
@@ -751,6 +990,44 @@ class EFISDataManagerApp(rumps.App):
             self._notify("Archive Failed", str(e)[:100])
             self._set_status("Archive failed")
 
+    def _device_chart_capable(self, mount_point: str) -> bool:
+        """Return whether the drive at ``mount_point`` belongs to a chart-capable
+        device (multi-device-settings).
+
+        Resolves the inserted drive to a configured device the same way the
+        mount hook does (settings-file Link_ID authoritative, else recorded
+        binding) and returns that device's user-declared ``chart_capable`` flag.
+
+        FAIL-SAFE: returns ``True`` whenever the device cannot be confidently
+        resolved to a configured, non-chart-capable device — a missing settings
+        file, an unresolved/undetermined device, or any read error. Charts are
+        withheld ONLY when a device is positively resolved AND explicitly
+        declared not chart-capable, so a resolution hiccup can never silently
+        strip charts from a chart-capable display.
+        """
+        from efis_data_manager.drive_updater import read_identity
+
+        try:
+            current_config = load_config()
+            parsed = self._find_drive_settings(mount_point)
+            recorded_identity = read_identity(mount_point)
+            outcome = device_resolution.resolve_drive(
+                parsed, recorded_identity, current_config
+            )
+            if outcome.status != ResolutionStatus.RESOLVED:
+                return True  # not positively resolved -> allow charts (fail-safe)
+            device = outcome.device or {}
+            # Only a device explicitly declared chart_capable=False withholds
+            # charts; anything else (missing key, True) allows them.
+            return bool(device.get("chart_capable", True))
+        except Exception as e:
+            logger.debug(
+                "chart-capability check for %s failed (allowing charts): %s",
+                mount_point,
+                e,
+            )
+            return True
+
     def _run_drive_update(self, mount_point: str):
         """Check drive currency and sync updates if needed.
 
@@ -834,11 +1111,37 @@ class EFISDataManagerApp(rumps.App):
                 if not detail["current"]
             ]
 
+            # --- 1b. Device-capability gate (multi-device-settings). ---------
+            # A device the user declared NOT chart-capable (e.g. a Mini A/P)
+            # must never receive chart/plate payloads — only nav (and settings,
+            # which are archived in _run_archive, not synced here). Drop the
+            # chart families from both the stale set and the interrupted-
+            # families set so the write below syncs nav only. Fail-safe: if the
+            # device cannot be resolved, _device_chart_capable returns True and
+            # behavior is unchanged (charts allowed), so a resolution hiccup can
+            # never silently withhold charts from a chart-capable display.
+            if not self._device_chart_capable(mount_point):
+                dropped = [f for f in (set(stale) | set(pending)) if f in CHART_FAMILIES]
+                if dropped:
+                    logger.info(
+                        "Device at %s is not chart-capable; skipping chart "
+                        "families %s (syncing nav only).",
+                        mount_point,
+                        ", ".join(sorted(dropped)),
+                    )
+                stale = [f for f in stale if f not in CHART_FAMILIES]
+                pending = [f for f in pending if f not in CHART_FAMILIES]
+
             # --- 2. Idempotent no-op path (Req 5.4 / 6.3). --------------------
             # If nothing was interrupted AND nothing is stale, there is NO write
             # work to do. Report current and return WITHOUT entering the swap —
             # the swap only wraps the write window.
-            if not pending and currency["is_current"]:
+            # No-op when nothing is interrupted AND nothing stale REMAINS after
+            # the capability gate. (For a chart-capable device this is exactly
+            # the original `currency["is_current"]` test, since no families were
+            # dropped; for a non-chart-capable device it correctly ignores stale
+            # chart families we are deliberately not writing.)
+            if not pending and not stale:
                 logger.info("Drive is up to date, no sync needed.")
                 self._set_status("Drive current")
                 self._notify("Drive Current", "EFIS drive is up to date.")
@@ -2071,13 +2374,133 @@ class EFISDataManagerApp(rumps.App):
         if confirm != 1:
             return
 
+        # Device binding (multi-device-settings R4.2–R4.4, R6.4, R6.5). A blank
+        # Start-clean drive is bound to one configured device by recording its
+        # Link_ID in the drive's identity file. The device-selection prompt MUST
+        # run here on the MAIN thread (this @rumps.clicked handler), NOT in the
+        # background _do_prepare_drive thread. We resolve the Link_ID now and
+        # pass it into the worker; the worker writes it after a successful
+        # prepare.
+        #   - device_count <= 1  (single-device, the common case): bind to the
+        #     single configured device without prompting (R4.4, R6.5). Use that
+        #     device's link_id when one is configured, else the "1" default.
+        #   - device_count  > 1: prompt the user to choose which configured
+        #     device the drive is for, labelled via device_label (R4.2, R4.3).
+        #     Cancelling the device prompt aborts the prepare.
+        chosen_link_id = self._choose_prepare_device_link_id()
+        if chosen_link_id is None:
+            # User cancelled the multi-device selection prompt — abort the
+            # prepare (binding is part of preparing a multi-device drive).
+            return
+
         # Run in background.
         threading.Thread(
             target=self._do_prepare_drive,
             args=(volume_path, label),
-            kwargs={"archive_first": archive_first},
+            kwargs={
+                "archive_first": archive_first,
+                "device_link_id": chosen_link_id,
+            },
             daemon=True,
         ).start()
+
+    def _choose_prepare_device_link_id(self):
+        """Pick the Link_ID to bind a freshly-prepared blank drive to.
+
+        Runs on the MAIN thread as part of ``prepare_drive`` (rumps prompts must
+        not be raised from the background worker). Returns the Link_ID string to
+        record as ``device_link_id`` on the drive, or ``None`` ONLY when the user
+        cancels the multi-device selection prompt (the caller then aborts the
+        prepare).
+
+        - ``device_count(config) <= 1`` (single-device, common case): bind to
+          the single configured device WITHOUT prompting (R4.4, R6.5). Uses that
+          device's ``link_id`` when an aircraft/device is configured, otherwise
+          the single-device default ``"1"``.
+        - ``device_count(config) > 1``: prompt the user to choose which
+          configured device, each labelled via ``device_label(...)`` and showing
+          its Link_ID (R4.2, R4.3). Returns the chosen device's Link_ID, or
+          ``None`` if the user cancels.
+        """
+        config = load_config()
+        count = device_count(config)
+
+        if count <= 1:
+            # Single device: no prompt. Prefer the one configured device's
+            # link_id; fall back to the "1" default when nothing is learned yet.
+            device = configured_device(config, "1")
+            if isinstance(device, dict) and device.get("link_id"):
+                return str(device["link_id"])
+            aircraft = managed_aircraft(config)
+            if isinstance(aircraft, dict):
+                devices = aircraft.get("devices")
+                if isinstance(devices, dict) and devices:
+                    # Single configured device under some other Link_ID.
+                    only = next(iter(devices.values()))
+                    if isinstance(only, dict) and only.get("link_id"):
+                        return str(only["link_id"])
+            return "1"
+
+        # Multi-device: build the ordered list of configured devices and prompt.
+        aircraft = managed_aircraft(config)
+        devices_map = {}
+        if isinstance(aircraft, dict) and isinstance(aircraft.get("devices"), dict):
+            devices_map = aircraft["devices"]
+        # Order by Link_ID so the prompt is stable.
+        ordered = sorted(
+            (d for d in devices_map.values() if isinstance(d, dict) and d.get("link_id")),
+            key=lambda d: str(d.get("link_id")),
+        )
+        if not ordered:
+            # device_count says >1 but no devices are actually configured; treat
+            # as the single-device default rather than blocking the prepare.
+            return "1"
+        if len(ordered) == 1:
+            return str(ordered[0]["link_id"])
+
+        # Present labelled choices. Up to 3 devices (R1.3), so alert buttons work
+        # well for 2 and a typed exact-match Window covers 3+ consistently with
+        # the other prepare_drive prompts.
+        labels = [f"{device_label(d)} — Link {d['link_id']}" for d in ordered]
+        if len(ordered) == 2:
+            # ok = first device, other = second device, cancel = abort.
+            choice = rumps.alert(
+                title="Prepare Drive — Choose Device",
+                message="Which display is this drive for? The drive will be "
+                "bound to that device.\n\n"
+                f"• {labels[0]}\n• {labels[1]}",
+                ok=labels[0], other=labels[1], cancel="Cancel",
+            )
+            # rumps.alert: ok=1, other=-1, cancel=0.
+            if choice == 1:
+                return str(ordered[0]["link_id"])
+            if choice == -1:
+                return str(ordered[1]["link_id"])
+            return None
+
+        # 3+ devices: typed exact-match Window (same idiom as drive selection).
+        by_link = {str(d["link_id"]): d for d in ordered}
+        choice_list = "\n".join(f"• Link {d['link_id']}: {device_label(d)}" for d in ordered)
+        window = rumps.Window(
+            message="Which display is this drive for? Type the EXACT Link ID "
+            "from the list below; the drive will be bound to that device:\n\n"
+            f"{choice_list}",
+            title="Prepare Drive — Choose Device",
+            default_text="",
+            ok="Next", cancel="Cancel", dimensions=(120, 24),
+        )
+        response = window.run()
+        if not response.clicked:
+            return None
+        picked = response.text.strip()
+        device = by_link.get(picked)
+        if device is None:
+            rumps.alert(
+                title="Prepare Drive",
+                message=f"'{picked}' is not one of the configured Link IDs.",
+            )
+            return None
+        return str(device["link_id"])
 
     def _archive_before_provision(self, volume_path: str) -> bool:
         """Archive flight data off ``volume_path`` before provisioning.
@@ -2105,10 +2528,24 @@ class EFISDataManagerApp(rumps.App):
             return False
 
     def _do_prepare_drive(
-        self, volume_path: str, label: str = "EFIS", archive_first: bool = False
+        self,
+        volume_path: str,
+        label: str = "EFIS",
+        archive_first: bool = False,
+        device_link_id: str = None,
     ):
-        """Background thread for the Start-clean (reformat + populate) path."""
-        from efis_data_manager.drive_updater import prepare_drive
+        """Background thread for the Start-clean (reformat + populate) path.
+
+        ``device_link_id`` is the Link_ID this blank drive is bound to (resolved
+        on the main thread in ``prepare_drive``). After a successful prepare the
+        identity file exists on the drive and we record ``device_link_id`` into
+        it (multi-device-settings R4.2–R4.4, R6.4, R6.5). No rumps prompts run
+        here — the device choice was already made on the main thread.
+        """
+        from efis_data_manager.drive_updater import (
+            prepare_drive,
+            update_identity_provenance,
+        )
 
         # Preserve flight data first if the user chose Import. Abort on failure
         # rather than erasing un-archived data.
@@ -2136,6 +2573,33 @@ class EFISDataManagerApp(rumps.App):
                 poller=self._usb_monitor,
             )
             if result["success"]:
+                # Record the device binding into the drive's identity file. The
+                # identity file was written by prepare_drive, so it exists at
+                # post_format_mount now. update_identity_provenance merges
+                # device_link_id without clobbering id/kind (and is a no-op if no
+                # identity exists). A failed binding is RECOVERABLE — resolution
+                # falls back and the next populated insert re-derives the Link_ID
+                # from settings — so surface it but do not undo the prepare.
+                if device_link_id is not None:
+                    try:
+                        update_identity_provenance(
+                            post_format_mount, device_link_id=device_link_id
+                        )
+                        logger.info(
+                            f"Bound prepared drive '{label}' to device Link_ID "
+                            f"{device_link_id}"
+                        )
+                    except Exception as bind_err:
+                        logger.error(
+                            f"Device binding write failed for '{label}' "
+                            f"(Link_ID {device_link_id}): {bind_err}"
+                        )
+                        self._notify(
+                            "Prepare Drive Failed",
+                            "Drive was prepared but the device binding could "
+                            "not be recorded; it will be re-derived on the next "
+                            "insert.",
+                        )
                 self._notify("Drive Prepared", result["message"])
                 self._set_status("Idle")
                 # See _do_adopt_drive: reconcile the connected-status UI against

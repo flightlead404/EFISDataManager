@@ -19,9 +19,17 @@ from AppKit import (
     NSWindow, NSTextField, NSButton, NSOpenPanel, NSApp,
     NSBackingStoreBuffered, NSWindowStyleMaskTitled, NSWindowStyleMaskClosable,
     NSMakeRect, NSFont, NSBezelStyleRounded, NSButtonTypeSwitch, NSControlStateValueOn,
-    NSControlStateValueOff,
+    NSControlStateValueOff, NSButtonTypeRadio,
 )
 from Foundation import NSObject, NSURL
+
+from efis_data_manager.config import (
+    PENDING_AIRCRAFT_KEY,
+    device_label,
+    managed_aircraft,
+    managed_mode_s,
+    validate_device_config,
+)
 
 
 class SettingsDelegate(NSObject):
@@ -42,6 +50,13 @@ class SettingsDelegate(NSObject):
         self.software_freq_field = None
         # Chart-type checkboxes, keyed by config chart_types key.
         self.chart_type_checkboxes = {}
+        # Device-configuration controls (R1, R5). device_count_field is a small
+        # editable text field; device_rows is one dict per device slot holding
+        # the name field, chart-capable checkbox, and Link_ID field; the
+        # analysis-source radio buttons share a single NSButtonCell group.
+        self.device_count_field = None
+        self.device_rows = []
+        self.analysis_source_buttons = []
         return self
 
     # Display order and labels for the selectable chart types.
@@ -61,7 +76,10 @@ class SettingsDelegate(NSObject):
 
     def buildAndShow(self):
         """Build and display the settings window."""
-        width, height = 600, 540
+        # Height grew from 540 to 980 to fit the Device Configuration section
+        # (device count, up to 3 per-device rows, and the analysis-source
+        # selector). Save/Cancel stay anchored at the bottom (y=20).
+        width, height = 600, 980
         self.window = NSWindow.alloc().initWithContentRect_styleMask_backing_defer_(
             NSMakeRect(300, 160, width, height),
             NSWindowStyleMaskTitled | NSWindowStyleMaskClosable,
@@ -146,7 +164,10 @@ class SettingsDelegate(NSObject):
             cb = self._add_checkbox(content, label, 40, y, enabled)
             self.chart_type_checkboxes[key] = cb
             y -= 26
-        y -= 24
+        y -= 18
+
+        # Device Configuration (R1, R5) -----------------------------------
+        y = self._build_device_section(content, y)
 
         # Save / Cancel buttons
         cancel_btn = NSButton.alloc().initWithFrame_(NSMakeRect(380, 20, 90, 32))
@@ -165,6 +186,133 @@ class SettingsDelegate(NSObject):
 
         self.window.makeKeyAndOrderFront_(None)
         NSApp.activateIgnoringOtherApps_(True)
+
+    def _current_aircraft_record(self):
+        """Return the current managed-or-pending aircraft record (or None).
+
+        Prefer the learned managed aircraft; fall back to the pending record
+        under PENDING_AIRCRAFT_KEY for an aircraft that has not been learned
+        yet. Returns None when nothing is configured (treated as single device).
+        """
+        record = managed_aircraft(self.config)
+        if record is not None:
+            return record
+        aircraft = self.config.get("aircraft")
+        if isinstance(aircraft, dict):
+            pending = aircraft.get(PENDING_AIRCRAFT_KEY)
+            if isinstance(pending, dict):
+                return pending
+        return None
+
+    def _build_device_section(self, content, y):
+        """Render the Device Configuration section; returns the new y cursor.
+
+        Uses the existing _add_label / _make_label / _add_text_field /
+        _add_checkbox idiom and the running y cursor. Pre-fills from the current
+        managed-or-pending aircraft record, defaulting to a single device when
+        nothing is configured yet. The section is sized for the maximum of 3
+        devices so the window height is stable regardless of the current count.
+        """
+        record = self._current_aircraft_record()
+        devices = {}
+        if isinstance(record, dict) and isinstance(record.get("devices"), dict):
+            devices = record["devices"]
+        count = 1
+        if isinstance(record, dict) and isinstance(record.get("device_count"), int):
+            count = record["device_count"]
+        if count < 1:
+            count = 1
+        if count > 3:
+            count = 3
+        analysis_source = None
+        if isinstance(record, dict):
+            analysis_source = record.get("analysis_data_source")
+
+        y = self._add_label(content, "Device Configuration:", 20, y)
+
+        # Device count (1-3), a small editable field matching the frequency
+        # fields' idiom (R1.3, R1.4).
+        count_lbl = self._make_label("Number of displays (1-3):", 40, y)
+        content.addSubview_(count_lbl)
+        self.device_count_field = self._add_text_field(
+            content, str(count), 240, y + 2, 50
+        )
+        y -= 34
+
+        # Per-device rows, one per device slot 1..3. Rows beyond the current
+        # count are still rendered (so the layout is stable) but pre-filled from
+        # whatever is configured; saveClicked_ only reads up to the saved count.
+        self.device_rows = []
+        for link_id in ("1", "2", "3"):
+            device = devices.get(link_id) if isinstance(devices, dict) else None
+            device = device if isinstance(device, dict) else {}
+            friendly = device.get("friendly_name") or ""
+            chart_capable = bool(device.get("chart_capable", True))
+            dev_link = device.get("link_id") or link_id
+
+            hdr = self._make_label(f"Device {link_id}:", 40, y)
+            hdr.setFont_(NSFont.boldSystemFontOfSize_(12))
+            content.addSubview_(hdr)
+            y -= 28
+
+            name_lbl = self._make_label(f"Device {link_id} name:", 40, y)
+            content.addSubview_(name_lbl)
+            name_field = self._add_text_field(content, friendly, 200, y + 2, 240)
+            y -= 30
+
+            link_lbl = self._make_label("Link ID:", 40, y)
+            content.addSubview_(link_lbl)
+            link_field = self._add_text_field(
+                content, str(dev_link), 200, y + 2, 50
+            )
+            chart_cb = self._add_checkbox(
+                content, "Chart-capable", 270, y, chart_capable
+            )
+            y -= 32
+
+            self.device_rows.append(
+                {
+                    "slot": link_id,
+                    "name_field": name_field,
+                    "link_field": link_field,
+                    "chart_checkbox": chart_cb,
+                }
+            )
+
+        # Analysis-data-source: single-select over the three device slots. A
+        # radio group is clearly single-select; labels come from device_label.
+        # No capability gating -- any device is selectable (R1.11, R1.12, R5.3).
+        y -= 4
+        src_lbl = self._make_label("Analysis data source:", 40, y)
+        src_lbl.setFrame_(NSMakeRect(40, y, 300, 20))
+        content.addSubview_(src_lbl)
+        y -= 26
+
+        self.analysis_source_buttons = []
+        for link_id in ("1", "2", "3"):
+            device = devices.get(link_id) if isinstance(devices, dict) else None
+            if isinstance(device, dict):
+                label = device_label(device)
+            else:
+                label = f"Link {link_id}"
+            radio = NSButton.alloc().initWithFrame_(NSMakeRect(60, y, 480, 20))
+            radio.setButtonType_(NSButtonTypeRadio)
+            radio.setTitle_(label)
+            radio.setFont_(NSFont.systemFontOfSize_(12))
+            radio.setTarget_(self)
+            radio.setAction_("analysisSourceClicked:")
+            is_on = (analysis_source == link_id) or (
+                analysis_source is None and link_id == "1"
+            )
+            radio.setState_(
+                NSControlStateValueOn if is_on else NSControlStateValueOff
+            )
+            content.addSubview_(radio)
+            self.analysis_source_buttons.append((link_id, radio))
+            y -= 24
+
+        y -= 10
+        return y
 
     def _add_label(self, view, text, x, y):
         """Add a bold label, returns new y position."""
@@ -220,6 +368,26 @@ class SettingsDelegate(NSObject):
             self.usb_image_field.setStringValue_(path)
 
     @objc.IBAction
+    def analysisSourceClicked_(self, sender):
+        """Enforce single-select across the standalone analysis-source radios.
+
+        These radio buttons are separate NSButtons (not an NSMatrix), so Cocoa
+        does not auto-deselect siblings; clear the others here to keep exactly
+        one selected (R1.11).
+        """
+        for _link_id, radio in self.analysis_source_buttons:
+            if radio is not sender:
+                radio.setState_(NSControlStateValueOff)
+        sender.setState_(NSControlStateValueOn)
+
+    def _selected_analysis_source(self):
+        """Return the Link_ID of the currently selected analysis-source radio."""
+        for link_id, radio in self.analysis_source_buttons:
+            if radio.state() == NSControlStateValueOn:
+                return link_id
+        return None
+
+    @objc.IBAction
     def saveClicked_(self, sender):
         self.config["tail_number"] = str(self.tail_field.stringValue()).strip().upper()
         self.config["archive_path"] = str(self.archive_field.stringValue())
@@ -240,8 +408,99 @@ class SettingsDelegate(NSObject):
             self.config["check_software_interval_hours"] = int(self.software_freq_field.stringValue())
         except (ValueError, TypeError):
             pass
+        self._save_device_config()
         self.on_save(self.config)
         self._dismiss()
+
+    def _save_device_config(self):
+        """Read the device-config controls, validate, and persist (R1.13, R5.7).
+
+        Builds a ``proposed`` record from the controls, validates it against the
+        prior valid record via ``validate_device_config`` (reject-and-retain),
+        and stores the validated record under the real Mode_S when one is
+        learned, else under PENDING_AIRCRAFT_KEY. On rejection the controls are
+        reset to the validated (previous valid) values, mirroring the existing
+        "keep previous value on bad input" idiom for the frequency fields, so no
+        invalid state is silently persisted.
+        """
+        # Prior valid record: the managed aircraft, else the pending record,
+        # else None (validate_device_config supplies sensible defaults).
+        prior = self._current_aircraft_record()
+
+        # Proposed device count from the small text field.
+        try:
+            proposed_count = int(self.device_count_field.stringValue())
+        except (ValueError, TypeError):
+            # Non-integer: let validation reject it against the prior count.
+            proposed_count = self.device_count_field.stringValue()
+
+        # Proposed per-device records. Only slots up to the proposed count are
+        # considered configured; extra rows are ignored so count drives the set.
+        effective_count = (
+            proposed_count
+            if isinstance(proposed_count, int) and 1 <= proposed_count <= 3
+            else len(self.device_rows)
+        )
+        proposed_devices = {}
+        for index, row in enumerate(self.device_rows):
+            if index >= effective_count:
+                break
+            link_value = str(row["link_field"].stringValue()).strip()
+            name_value = str(row["name_field"].stringValue())
+            chart_value = bool(row["chart_checkbox"].state() == NSControlStateValueOn)
+            slot = row["slot"]
+            proposed_devices[slot] = {
+                "link_id": link_value,
+                "friendly_name": name_value,
+                "chart_capable": chart_value,
+            }
+
+        proposed = {
+            "device_count": proposed_count,
+            "devices": proposed_devices,
+            "analysis_data_source": self._selected_analysis_source(),
+        }
+
+        record, _rejections = validate_device_config(prior, proposed)
+
+        # Persist under the real Mode_S when learned, else the pending sentinel.
+        aircraft = self.config.get("aircraft")
+        if not isinstance(aircraft, dict):
+            aircraft = {}
+            self.config["aircraft"] = aircraft
+        mode_s = managed_mode_s(self.config)
+        key = mode_s if mode_s is not None else PENDING_AIRCRAFT_KEY
+        aircraft[key] = record
+
+        # Reflect the validated (reject-and-retain) values back into the
+        # controls so rejected edits do not linger as invalid on-screen state.
+        self._reload_device_controls(record)
+
+    def _reload_device_controls(self, record):
+        """Reset the device-config controls to a validated record's values."""
+        self.device_count_field.setStringValue_(str(record.get("device_count", 1)))
+        devices = record.get("devices") if isinstance(record, dict) else None
+        devices = devices if isinstance(devices, dict) else {}
+        # Map stored devices onto the fixed 1/2/3 row slots by their link_id.
+        by_link = {
+            str(dev.get("link_id")): dev
+            for dev in devices.values()
+            if isinstance(dev, dict)
+        }
+        for row in self.device_rows:
+            dev = by_link.get(row["slot"], {})
+            row["name_field"].setStringValue_(dev.get("friendly_name") or "")
+            row["link_field"].setStringValue_(str(dev.get("link_id") or row["slot"]))
+            row["chart_checkbox"].setState_(
+                NSControlStateValueOn
+                if bool(dev.get("chart_capable", True))
+                else NSControlStateValueOff
+            )
+        selected = record.get("analysis_data_source") if isinstance(record, dict) else None
+        for link_id, radio in self.analysis_source_buttons:
+            radio.setState_(
+                NSControlStateValueOn if link_id == selected else NSControlStateValueOff
+            )
 
     @objc.IBAction
     def cancelClicked_(self, sender):

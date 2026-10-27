@@ -67,7 +67,7 @@ def test_write_identity_roundtrips(mount):
     read_back = du.read_identity(mount)
     assert read_back == data
     assert read_back["kind"] == du.IDENTITY_KIND
-    assert read_back["schema_version"] == 1
+    assert read_back["schema_version"] == 2
 
 
 def test_write_identity_atomic_no_partial_file(mount, monkeypatch):

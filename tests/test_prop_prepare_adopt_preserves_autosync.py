@@ -95,6 +95,17 @@ class _StandInApp:
         # must proceed and launch auto-sync.
         return False
 
+    def _resolve_and_gate_drive(self, mount_point):
+        # multi-device-settings (task 7.1) inserted a resolution gate before
+        # the archive thread starts: a RESOLVED outcome returns True to proceed.
+        # This stand-in is the baseline managed-mount case, so it resolves and
+        # proceeds, preserving the original "auto-sync launches once" behavior
+        # under test. The resolution logic itself is covered by
+        # tests/test_device_resolution.py and tests/test_learn_prompt_integration.py.
+        self.resolve_calls = getattr(self, "resolve_calls", [])
+        self.resolve_calls.append(mount_point)
+        return True
+
     def _set_status(self, msg):
         self.status_calls.append(msg)
 

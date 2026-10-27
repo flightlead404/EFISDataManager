@@ -78,6 +78,15 @@ IDENTITY & AIRCRAFT VERIFICATION:
   (the undetermined/foreign-source path). Mode_S is the future multi-aircraft
   key (SOMEDAY item).
 
+- **Forget this aircraft (SOMEDAY):** once an aircraft's Mode_S is learned
+  and bound as the managed aircraft, there is currently no way to clear it.
+  A user who sells the plane, swaps panels, or mislearns a Mode_S (e.g.
+  confirmed the wrong prompt) is stuck with the wrong managed aircraft. Add a
+  DM action to forget/clear the managed aircraft record (and re-enter the
+  learn-on-insert flow). Deferred out of the device-identity + DM-setup
+  increment; it is aircraft-lifecycle management, adjacent to the
+  multi-aircraft keying work.
+
 DM SETUP (lives in the DM / menu-bar — the DM owns drive mount/sync/archive;
 the dashboard defers drive/device management to it):
 - **Device count** (1-3).
@@ -228,6 +237,22 @@ of "latest EFIS/AHRS software" for population; (c) exact dashboard UX for
 browsing per-device dated versions + the select->DM-write restoration handoff;
 (d) how the divergence warning surfaces (DM notification + dashboard badge?).
 
+### Chart-sync stall — reopened investigation  [2026-10-24]
+Field session isolated the chart-sync stall further. CONFIRMED: the
+mount-swap really mounts the card via in-kernel `mount_msdos` (NOT FSKit) on
+macOS 15.7.9 — the ~1s swap produces a `(msdos, local, noowners)` mount with
+no `fskit` tag; the swap mechanism is sound. CONFIRMED: card/USB/adapter/FAT
+are all good (Seattle Avionics' Windows tool under Parallels writes the same
+card reliably). The stall is therefore in the sustained rsync WRITE phase on a
+correctly kernel-mounted card. Leading (unproven) hypothesis: the rsync
+many-small-files I/O profile on FAT32 is the culprit, which the image-dd
+bulk/sequential path (and Parallels) sidestep — raising the priority of the
+composed-image-size fix. Retracted earlier mis-claims (FSKit 'known bad' =
+unsourced; 120s = our own watchdog constant, not FSKit; 'mount_msdos hangs' =
+a sudo-prompt test artifact, not real). Full detail + next experiments +
+a code-hardening gap (swap never asserts the mount is non-fskit) in
+`.kiro/specs/chart-sync-stall-fix/INVESTIGATION-2026-10-24.md`.
+
 ### 3. Sudo retirement (signed privileged helper)
 = chart-sync-stall-fix Phase 2 tasks 14-19 (currently the only open tasks in that
 spec): adopt Developer ID code signing + notarization, build a signed
@@ -274,6 +299,90 @@ Playwright/Sucuri-bypass download path for software; (3) carry-forward
 last-known. Deferred per user 2026-10-03; not blocking image-based-drive-write.
 
 ### (Windows version is item #4 above but is similarly demand-gated.)
+
+### Menu-bar "new image ready" cycle-label fixes  [LOGGED 2026-10-24]
+Two related issues with the ⬇ "New image ready (...)" label built by
+`_describe_image_cycles` in `app.py` (menu-bar/UI only — NO effect on which
+charts are current, what gets downloaded, or what is written to a drive).
+
+1. **BUG — wrong plates cycle shown (first-match instead of current).**
+   `_describe_image_cycles` iterates `currency.load_cycle_metadata()` and does
+   `if "plate" in desc or "approach" in desc: plates_valid = valid; break`. The
+   metadata holds MULTIPLE plates cycles (e.g. 2608, 2609, 2610, 2611); the
+   `break` grabs the FIRST (oldest) entry, so the badge showed a stale cycle
+   (observed: showed 2608 "Aug 6–Sep 2" while the image was actually composed
+   from the 2611 cycle). Fix: select the CURRENT/most-recent cycle — the entry
+   whose `valid_dates` range contains "today" in cycle terms, or equivalently
+   the entry with the latest start date — not the first match. "Current" should
+   equal what Seattle Avionics is serving = what was just downloaded = what the
+   composed image contains. (Confirmed 2026-10-24: SA served 2611 plates
+   Oct 29–Nov 25, matching the downloaded cycle; the badge mis-labeled it.)
+
+2. **ENHANCEMENT (user request 2026-10-24) — show THREE dates with cycle
+   numbers.** The badge currently shows at most `nav <date> + plates <date>`.
+   The user wants the DM to display three distinct cycle dates — **nav**,
+   **plates**, and **charts** (sectionals/IFR-low) — each WITH its cycle number.
+   This matters because plates and charts are on DIFFERENT cycle lengths:
+   observed 2026-10-24, plates 2611 = Oct 29–Nov 25 (28-day) while LO/SEC 2611 =
+   Oct 29–Dec 23 (56-day), so a single combined "plates/charts" date is wrong.
+   Target label shape (illustrative): `nav 10/1 (NNNN) + plates 10/29 (2611) +
+   charts 10/29 (2611)`. Needs: the cycle NUMBER surfaced from the SA
+   download-table metadata (the `2611` in the URL/path) alongside each
+   `valid_dates`, and the nav cycle number if available. Pair this with the
+   fix in #1 (both touch `_describe_image_cycles`), to be addressed shortly.
+
+### Composed-image size vs. drive slice: fit any "32 GB" card  [LOGGED 2026-10-24]
+The image-based-drive-write path dd's the WHOLE composed FAT32 image onto the
+drive's raw partition slice (`/dev/rdiskNsN`). The device guard in
+`image_writer.py` (`device_guard`, design Property 4) REQUIRES an EXACT match:
+`slice_size == expected_image_size`. This is a safety invariant — the image IS
+the filesystem, so dd-ing it only produces a consistent volume when the image
+geometry equals the partition geometry. DO NOT relax the exact-match guard.
+
+PROBLEM (observed 2026-10-24): `composed_image_size_bytes` defaults to a FIXED
+30 GiB (32212254720 bytes). A real "32 GB" card's FAT32 slice is smaller and
+VARIES (the Mini card measured 30,764,171,264 bytes ≈ 28.65 GiB). 30 GiB image
+> 28.65 GiB slice -> guard refuses -> falls back to the stall-prone rsync path.
+A fixed image size cannot match every card. So the image-dd fast path currently
+never fires on these cards.
+
+KEY CONSTRAINT: making the IMAGE smaller is NOT sufficient by itself. A 25 GiB
+image on a 28.65 GiB slice still MISMATCHES -> guard refuses (the breaking
+case). The wasted-space-is-fine outcome requires changing BOTH (a) the compose
+size AND (b) the Prepare partition geometry to the SAME fixed number, so Prepare
+carves the FAT32 partition at exactly that size and the rest of the card is left
+unpartitioned/unused (acceptable per user 2026-10-24: wasted space OK, breaking
+not OK).
+
+OPTIONS:
+  1. **Fixed-geometry prepare + fixed compose (user's preferred direction).**
+     Pick a fixed size S; Prepare formats the FAT32 partition to exactly S;
+     compose to exactly S. Image and slice always match at S on every card.
+     Keeps the pre-compose-once benefit. Cost: a few GB/card unused, and Prepare
+     must create a sized partition (newfs_msdos on a partition of size S), not
+     "whole card".
+  2. **Drive-sized compose at write time.** Read the target slice size and
+     compose to exactly that per drive. Always matches, no wasted space, but
+     defeats pre-compose-once (compose becomes drive-dependent).
+  3. **rsync fallback for mismatches (current behavior).** Works, but slow and
+     stall-prone — the thing we are trying to avoid.
+
+SIZING RECOMMENDATION for option 1 (grounded in real numbers, 2026-10-24):
+  - Full chart payload today (charts+nav+identity): ~9.2 GB (Plates 3.7G,
+    SEC 4.5G, LO 1.0G — the full IFR set).
+  - Smallest real slice seen: 28.65 GiB.
+  - **Recommend S = 20 GiB.** ~2x headroom over the 9.2 GB payload for cycle
+    growth, and comfortably under 28.65 GiB so ANY "32 GB" card (which can
+    format as low as ~29 GiB raw) clears it. AVOID 25 GiB (too close to the
+    28.65 slice — a slightly-smaller card would be stuck again). 24 GiB is the
+    ceiling if larger chart sets are expected; 20 GiB is the sweet spot for a
+    ~9 GB payload.
+  - Revisit S upward only if the chart footprint grows past ~16 GB.
+
+NOTE: this is image-based-drive-write territory (SHIPPED v1.6.0), separate from
+the multi-device + settings work. The multi-device chart-capability gate means
+non-chart-capable devices (Mini) take the small-file path and are unaffected by
+image size; this item only matters for chart-capable (HXr) drives.
 
 ---
 

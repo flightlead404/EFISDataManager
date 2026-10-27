@@ -314,6 +314,11 @@ def _make_run_update_standin(image_write_enabled=False):
     standin._perform_write = lambda *a, **k: standin.perform_write_calls.append(
         (a, k)
     )
+    # multi-device-settings added a chart-capability gate in _run_drive_update
+    # (_device_chart_capable). These routing tests use a chart-capable drive, so
+    # the stand-in returns the fail-safe default True (charts allowed) — the gate
+    # itself is covered by its own tests.
+    standin._device_chart_capable = lambda mount_point: True
     return standin
 
 
