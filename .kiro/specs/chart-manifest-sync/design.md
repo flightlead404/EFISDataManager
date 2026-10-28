@@ -41,7 +41,15 @@ rules, each gated cheaply before any expensive work:
 - **plates** on the **28-day** cycle (twice as frequent), gated by a **separate
   plates cycle number**.
 - **nav** (NAV.DB, NAV-proc.DB) — **no cycle gate**, always evaluated,
-  checksum-based, cheap (~18 MB).
+  checksum-based, cheap (~18 MB). nav is nominally on a 28-day cycle (per GRT:
+  "The Nav database is on a 28-day cycle. New updates are posted when we receive
+  them"), but there is **no cycle number we can gate on**: none appears on the
+  download page or in the filename (it may be embedded inside the DB contents,
+  but we do not parse that), and the only external clue is a human-readable date
+  on the page. Posting is also best-effort and may not line up with Seattle
+  Avionics' plates cycle. Since no reliable cycle number exists and the payload
+  is tiny (~18 MB, two files), nav is evaluated by content checksum on every
+  insert — the correct, gate-free mechanism.
 
 Layering per chart family, cheapest first: **cycle-number check → (only if the
 cycle rolled) manifest diff → write only the delta**. On an alternating cycle
@@ -168,11 +176,14 @@ flowchart TD
   it is untested in the field). FIX: add an `.HI. -> HI/` routing branch,
   parallel to LO/SEC, placing files at `ChartData/HI/W###/<file>`. With that,
   the "scanned" family (ChartData minus Plates) naturally includes `ChartData/HI/`
-  and the manifest/sync cover it with NO family-model change. **TBD (pending
-  validation):** the on-card directory name `ChartData/HI/` is INFERRED from the
-  LO/SEC parallel and the zip layout; it is being confirmed against where the
-  Seattle Avionics Windows tool places HI on a real card. Match whatever the
-  GRT EFIS actually expects; the design assumes `ChartData/HI/` until confirmed.
+  and the manifest/sync cover it with NO family-model change. **VALIDATED
+  (2026-10-27):** the on-card directory name `ChartData/HI/` is CONFIRMED against
+  a card synced by the Seattle Avionics Windows tool — it placed IFR-high at
+  `ChartData/HI/`, parallel to `LO`/`SEC`/`Plates`, with the internal
+  `HI/W###/<tile>.HI.<n>.png` layout matching the zip (card showed e.g.
+  `ChartData/HI/W062/W062.75xN46.50.HI.0.png`). The dir name is `HI` (uppercase).
+  The `.HI. -> HI/` routing branch is therefore the correct, hardware-confirmed
+  fix (no longer inferred).
 - **`drive_updater.py`** — `build_jobs` / `sync_payload` / `check_drive_currency`
   change from `--size-only` marker-time currency to **manifest-driven** currency
   and transfer. `_run_files_job` / `_file_checksum` (nav) are preserved. The
@@ -276,9 +287,11 @@ def diff_family(local: FamilyManifest, card_family: dict[str, ManifestEntry]) ->
 **Why trust the card manifest instead of re-hashing the card?** Re-hashing
 ~102k files off the card is minutes of I/O and defeats the purpose. The card
 manifest is written only after a verified successful sync (see
-`run_sync_job` sequencing), so it is a faithful record of card contents. The
-expensive re-hash-the-card is a **separate, on-demand Integrity Verify** (below),
-not part of a normal sync.
+`run_sync_job` sequencing), so it is a faithful record of card contents. A
+card corrupted out of band (bit-rot, a Finder edit, another tool) is not
+detected by normal sync; the remedy is to erase, re-prepare, and re-sync, which
+forces the self-healing full write (see Error Handling: no/corrupt card
+manifest). There is deliberately no per-sync re-hash of the card.
 
 ### Cycle gate (in `drive_updater.check_drive_currency`)
 
@@ -340,14 +353,9 @@ correctness fix and still protect against a genuinely wedged transfer.
 Unchanged in mechanism: per-file size + SHA-256 compare, copy-and-fsync changed
 files, deep checksum verify, then `complete_family`. nav has **no cycle gate and
 no manifest** — it is two small files, always evaluated, already correct.
-
-### Integrity Verify (new, on-demand — not per-sync)
-
-The expensive "re-hash the card and compare to its manifest" is exposed as a
-**separate** operation (a menu item / dashboard action), not run on every sync.
-It detects card-side bit-rot or out-of-band edits and can rewrite the card
-manifest or force a re-sync. Keeping it off the hot path is what makes normal
-sync cheap (Decision 4).
+(nav is nominally a 28-day product, but no gateable cycle number is exposed on
+the page or in the filename, and posting is best-effort; checksum-every-insert
+is therefore the only reliable mechanism — see the stream list above.)
 
 ### Prepare: Spotlight disable + label (preserved/extended `prepare_drive`)
 
@@ -443,7 +451,7 @@ a formal statement of what the system must do.*
 that preserves the exact byte size** — a sync brings the card's copy to the new
 content (the file appears in `changed` and is transferred).
 
-**Validates: Requirement 1 (correctness), Decision 3, Decision 4**
+**Validates: Requirements 1.1, 1.2, 1.3, 1.4** (content-change correctness; closes the `--size-only` gap — Decision 3, Decision 4)
 
 ### Property 2: Manifest/card convergence
 
@@ -452,7 +460,7 @@ successful sync the card's family tree equals `L` (every `added`/`changed`
 relpath present with matching content, every `removed` relpath absent) and the
 card manifest is updated to `L`.
 
-**Validates: Requirement (manifest diff), Decision 4**
+**Validates: Requirements 4.1, 4.3, 4.4** (manifest diff and delta write / card convergence — Decision 4)
 
 ### Property 3: Cycle-skip safety
 
@@ -461,7 +469,7 @@ family leaves the card byte-identical for that family — i.e. equal cycle numbe
 imply equal content, because a cycle is only recorded on the card **after** a
 verified full-convergence sync of that cycle.
 
-**Validates: Requirement (per-stream gate), Decision 5, Decision 6**
+**Validates: Requirements 3.1, 3.3, 3.4** (per-stream cycle gate / cycle-skip safety — Decision 5, Decision 6)
 
 ### Property 4: Independent streams
 
@@ -469,14 +477,14 @@ verified full-convergence sync of that cycle.
 stream's decision and write is independent: skipping charts never affects plates
 or nav, and nav is always evaluated regardless of either cycle.
 
-**Validates: Decision 5, Decision 6**
+**Validates: Requirements 2.2, 2.3** (independent streams; nav always evaluated — Decision 5, Decision 6)
 
 ### Property 5: Manifest round-trip
 
 *For any* `FamilyManifest`, `load(save(m))` yields an equal manifest (parse →
 serialize → parse is identity). This guards the JSON schema the gate depends on.
 
-**Validates: Data Models (manifest schema)**
+**Validates: Requirements 5.3** (manifest round-trip; Data Models manifest schema)
 
 ### Property 6: Flush-means-done
 
@@ -484,14 +492,14 @@ serialize → parse is identity). This guards the JSON schema the gate depends o
 and the card manifest are durable on the card (the card is `os.sync`'d and
 unmounted), so a subsequent insert reads exactly what was written.
 
-**Validates: Decision 9**
+**Validates: Requirements 7.1, 7.2** (flush-means-done; durable commit — Decision 9)
 
 ### Property 7: nav checksum correctness (preserved)
 
 *For any* nav file whose content differs from the card copy, the file is
 rewritten; nav is verified by deep checksum before the family completes.
 
-**Validates: Decision 4 (nav keeps checksums)**
+**Validates: Requirements 8.1, 8.2, 8.3** (nav checksum correctness — Decision 4, nav keeps checksums)
 
 ### Property 8: Chart-capability gate (preserved)
 
@@ -499,7 +507,7 @@ rewritten; nav is verified by deep checksum before the family completes.
 payload is written (nav only); any resolution failure fails safe to
 chart-capable.
 
-**Validates: Decision 10 (multi-device-settings preserved)**
+**Validates: Requirements 9.1, 9.2** (chart-capability gate — Decision 10, multi-device-settings preserved)
 
 ---
 
@@ -594,8 +602,7 @@ before the old is deleted, in this order:
    `os.sync`/unmount flush, and the Prepare-time `.metadata_never_index`.
 7. **Remove dead tests / config** for the retired paths; update
    `MENUBAR_VERSION` per the versioning policy (this is a menu-bar change;
-   `DASHBOARD_VERSION` unchanged unless the dashboard gains the Integrity Verify
-   action).
+   `DASHBOARD_VERSION` unchanged).
 
 Each step leaves a working sync. The old path is only deleted once the new path
 has produced a verified full and incremental sync on real hardware.
@@ -624,6 +631,3 @@ has produced a verified full and incremental sync on real hardware.
 - **Manifest build timing.** Built per family right after `extract_chart`. If the
   download path is parallelized later, ensure the manifest build for a family
   runs after that family's extraction completes.
-- **Integrity Verify UX.** Placed as an on-demand action; whether it lives in the
-  menu bar, the dashboard, or both is left to the tasks phase (it only affects
-  `DASHBOARD_VERSION` if the dashboard gains the button).
