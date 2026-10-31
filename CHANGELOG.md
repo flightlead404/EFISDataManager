@@ -5,6 +5,75 @@ a single release version (git tag + `__version__` + `pyproject.toml`) with
 independent display labels for the menu-bar tool (`MENUBAR_VERSION`) and the
 dashboard (`DASHBOARD_VERSION`).
 
+## v1.6.4
+
+Release version 1.6.4 · menu bar 0.14.2 · dashboard 1.2.3
+
+Three drive-handling / analysis fixes found during chart-capable adopt testing.
+
+### Interrupted-sync state is keyed by a stable drive id
+
+- **Fixed a drive wedged in a permanent "resuming interrupted sync" loop.**
+  Interrupted-sync state was keyed through `resolve_drive_id`, which returned no
+  id (falling back to the mount path) whenever the card manifest had not yet
+  been written. Because the drive label — and the mount path derived from it —
+  changes with every chart/plate cycle, and the card manifest does not exist
+  until the first successful sync, the same physical drive recorded and cleared
+  its sync state under different keys, so a completed family was never cleared.
+  A new `resolve_sync_state_key` keys sync state on the static identity `id`
+  from `EFIS_DRIVE_ID.json` (written once at prepare/adopt, independent of the
+  label), so a completed sync is reliably marked complete.
+
+### Fuel used no longer counts a refuel as burn
+
+- **Fixed grossly overstated fuel burn after a refuel.** The EFIS fuel-total
+  gauge counts down as fuel burns but steps up when reset after a refuel (the
+  normal procedure after engine start). Fuel used was computed as
+  first-minus-last of the gauge, which counted the reset step as burned fuel (a
+  ~15-minute flight once reported 20+ gallons). It is now the sum of the
+  gauge's decreases, which ignores refuel resets while matching the old value
+  exactly for flights with no reset. A one-time migration recomputes fuel used
+  for already-imported flights.
+
+### Status no longer falsely reads idle mid-sync
+
+- **Fixed the menu bar showing idle while a sync was still running.** A
+  concurrent chart/software/nav check could reset the status line to idle while
+  a drive sync was in progress, so the menu bar looked done when it was still
+  writing. The status line now ignores an idle reset from a background check
+  while a sync is active.
+
+## v1.6.3
+
+Release version 1.6.3 · menu bar 0.14.1 · dashboard 1.2.3
+
+Reworked how charts and the nav database are written, plus two drive-handling
+fixes.
+
+### Write mechanism
+
+- **Removed the image-compose + raw `dd`-to-slice write path and the mount-swap
+  layer.** The "FSKit write stall" premise that motivated them was never
+  confirmed. Writing now goes directly to the normal mounted volume.
+- **Removed the false-aborting write-stall detector.** A long, silent
+  receiver-side scan over a large existing chart tree on a slow USB card is
+  healthy, not wedged; the detector was cancelling good syncs. Drive-removal and
+  sleep aborts remain handled by the mount watchdog.
+- **Wired the SHA-256 chart manifest into the live sync.** After the first sync
+  builds the manifest, subsequent syncs transfer only the changed files
+  (detected by content hash, so a same-size edit is no longer missed), with the
+  legacy whole-tree reconcile kept as a self-healing fallback.
+
+### Drive handling
+
+- **Stale "Not connected" after an adopt relabel.** Adopting a drive relabels
+  its volume, which the monitor sees as an eject of the old name; the eject
+  handler now reconciles against what is actually mounted instead of blanking
+  the status while a managed drive is still present.
+- **Adopt now records the device binding.** A drive adopted for a nav-only
+  device now stores its device link id, so it is recognized on re-insert instead
+  of reporting the device as undetermined.
+
 ## v1.3.0
 
 Release version 1.3.0 · menu bar 0.9.0 · dashboard 1.1.0
