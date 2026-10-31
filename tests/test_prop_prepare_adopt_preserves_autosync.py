@@ -129,7 +129,7 @@ def _invoke_on_mounted(mount_point, drive_id="drive-xyz", pending=False):
     _RecordingThread.instances = []
 
     with mock.patch.object(app_module.threading, "Thread", _RecordingThread), \
-        mock.patch.object(du, "resolve_drive_id", return_value=drive_id), \
+        mock.patch.object(du, "resolve_sync_state_key", return_value=drive_id), \
         mock.patch.object(du, "pending_families", return_value=pending):
         EFISDataManagerApp._on_efis_drive_mounted(standin, mount_point)
 

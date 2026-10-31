@@ -102,7 +102,7 @@ def _run(standin, stale_families):
 
     with mock.patch.object(app_module, "load_config", return_value=_config_two_devices()), \
          mock.patch("efis_data_manager.drive_updater.read_identity", return_value=None), \
-         mock.patch("efis_data_manager.drive_updater.resolve_drive_id", return_value=None), \
+         mock.patch("efis_data_manager.drive_updater.resolve_sync_state_key", return_value=None), \
          mock.patch("efis_data_manager.drive_updater.check_drive_currency", return_value=currency), \
          mock.patch("efis_data_manager.drive_updater.update_drive", side_effect=_fake_update_drive), \
          mock.patch("efis_data_manager.drive_updater.verify_drive"), \
@@ -247,7 +247,7 @@ def _run_with_pending(standin, stale_families, pending_families_set):
 
     with mock.patch.object(app_module, "load_config", return_value=_config_two_devices()), \
          mock.patch("efis_data_manager.drive_updater.read_identity", return_value=None), \
-         mock.patch("efis_data_manager.drive_updater.resolve_drive_id", return_value="drive-x"), \
+         mock.patch("efis_data_manager.drive_updater.resolve_sync_state_key", return_value="drive-x"), \
          mock.patch("efis_data_manager.drive_updater.pending_families",
                     return_value=sorted(pending_families_set)), \
          mock.patch("efis_data_manager.drive_updater.check_drive_currency", return_value=currency), \

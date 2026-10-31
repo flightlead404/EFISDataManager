@@ -809,6 +809,53 @@ def resolve_drive_id(mount_point: str) -> Optional[str]:
     return None
 
 
+def resolve_sync_state_key(mount_point: str) -> Optional[str]:
+    """Resolve the STABLE durable key used to index ``.sync_state.json``.
+
+    This is deliberately distinct from :func:`resolve_drive_id`. The durable
+    interrupted-sync state must be keyed by an identifier that is STATIC after
+    prepare/adopt and INDEPENDENT of the drive label (the label changes every
+    chart/plate cycle, e.g. ``C<charts>P<plates>``, so it and the mount path
+    derived from it must never be a key).
+
+    The app-generated identity ``id`` in ``EFIS_DRIVE_ID.json`` is exactly that:
+    written once at prepare/adopt, present even when the OS ``volume_uuid`` is
+    null (as on FAT32/exFAT media), and present BEFORE any card manifest exists.
+    So the key is the identity ``id`` whenever a valid identity file carrying an
+    ``id`` exists, resolved WITHOUT regard to the card manifest.
+
+    This decouples the sync-state key from the card-manifest "fully provisioned"
+    recognition check that :func:`resolve_drive_id` applies. That check corrupted
+    the key: on a first manifest-building sync (no card manifest yet) or a
+    cycle relabel, ``resolve_drive_id`` returned None and callers fell back to
+    keying by the mount path, so interrupted entries recorded under the static
+    ``id`` could never be cleared under the mount-path fallback (and vice
+    versa), leaving a drive wedged in a permanent "resuming interrupted sync"
+    loop. Recognition/provisioning routing that legitimately depends on the card
+    manifest still lives in ``resolve_drive_id`` and its consumers; this key
+    resolver is sync-state-only.
+
+    Returns the static ``id`` string, or None ONLY when there is no readable
+    identity file or it carries no ``id`` (fail-safe: no id -> no other drive's
+    interrupted-sync state is ever applied). Never raises.
+
+    Unlike :func:`resolve_drive_id`, this does NOT wait for mount readiness: it
+    only reads the identity file, is called on hot paths, and a not-yet-ready
+    mount simply yields an unreadable identity (-> None, fail-safe). The
+    recognition-time mount-readiness debounce lives in ``resolve_drive_id``.
+    """
+    identity = read_identity(mount_point)
+    if identity is not None and identity.get("kind") == IDENTITY_KIND:
+        drive_id = identity.get("id")
+        if drive_id:
+            return drive_id
+
+    # No readable identity / no id -> fail safe (key by nothing here; callers
+    # that must still track an un-identified drive fall back to the mount path
+    # themselves, logged at WARNING).
+    return None
+
+
 def _ensure_identity(
     mount_point: str,
     *,
@@ -2045,12 +2092,12 @@ def run_sync_job(
     # unreadable volume), falling back to the mount path as the key so a drive
     # with no identity still gets tracked (keyed by mount) and behaviour degrades
     # safely. The fallback is logged once at WARNING (Req 10.7).
-    drive_id = resolve_drive_id(mount_point)
+    drive_id = resolve_sync_state_key(mount_point)
     if drive_id is None:
         drive_id = mount_point
         logger.warning(
-            "run_sync_job: could not resolve a drive id for %s; keying sync-state "
-            "by mount path as a fail-safe fallback",
+            "run_sync_job: could not resolve a stable sync-state key for %s; "
+            "keying sync-state by mount path as a fail-safe fallback",
             mount_point,
         )
 
@@ -2872,7 +2919,7 @@ def check_drive_currency(mount_point: str) -> dict:
     # (never another drive's) and rely solely on the marker-based check above —
     # the on-drive markers/payload remain the sole source of truth for currency
     # (Req 10.7). The identity file never decides currency.
-    drive_id = resolve_drive_id(mount_point)
+    drive_id = resolve_sync_state_key(mount_point)
     pending = pending_families(drive_id) if drive_id is not None else []
     for name in pending:
         if name in families:

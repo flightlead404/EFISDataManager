@@ -275,6 +275,12 @@ def _ensure_schema(conn: sqlite3.Connection):
     # passed connection (no new connection -> no recursion).
     migrate_resegment_operations(conn)
 
+    # One-time recompute of fuel_used for already-imported operations, which may
+    # carry the old inflated abs(first-last) value (spec:
+    # fuel-used-ignores-refuel-reset). Guarded by its own schema_info flag; runs
+    # on the passed connection. Idempotent.
+    migrate_recompute_fuel_used(conn)
+
 
 def _operations_has_legacy_unique(conn: sqlite3.Connection) -> bool:
     """True if the ``operations`` table still has UNIQUE(source_filename,...)."""
@@ -729,13 +735,25 @@ def _compute_operation_summary(conn: sqlite3.Connection, operation_id: int,
     oil_press_airborne = [r.oil_pressure for r in airborne_records if r.oil_pressure and r.oil_pressure > 0]
     min_oil_pressure = min(oil_press_airborne) if oil_press_airborne else None
 
-    # Fuel used (delta of fuel_total)
+    # Fuel used = sum of per-sample DECREASES in fuel_total.
+    #
+    # fuel_total is a fuel-REMAINING gauge that counts DOWN as fuel burns, but
+    # it STEPS UP when the pilot resets it after a refuel — the normal procedure
+    # (engine start -> EFIS start -> fuel reset), so the gauge jumps up seconds
+    # to minutes into the log. A naive first-minus-last (with abs()) counts that
+    # upward reset step as burned fuel and grossly overstates the result (a
+    # ~15 min flight once reported 20+ gal). Summing only the downward movements
+    # ignores every upward reset, regardless of where in the log it occurs or
+    # how many resets there are. For a monotonically non-increasing series (no
+    # reset) the sum telescopes to exactly first - last, so no-reset flights are
+    # unchanged. See spec: fuel-used-ignores-refuel-reset.
     fuel_totals = [r.fuel_total for r in records if r.fuel_total is not None]
     fuel_used = None
     if len(fuel_totals) >= 2:
-        fuel_used = fuel_totals[0] - fuel_totals[-1]  # fuel_total counts down
-        if fuel_used < 0:
-            fuel_used = abs(fuel_used)  # handle either direction
+        fuel_used = sum(
+            max(0.0, prev - curr)
+            for prev, curr in zip(fuel_totals, fuel_totals[1:])
+        )
 
     # Hourmeter
     hourmeters = [r.hourmeter for r in records if r.hourmeter is not None]
@@ -781,6 +799,100 @@ def _compute_operation_summary(conn: sqlite3.Connection, operation_id: int,
 # schema_info flag that marks the re-segmentation migration as applied. Keyed so
 # the migration runs once from the schema path and is safe to re-run manually.
 _RESEGMENT_FLAG = "fdl_resegmentation_applied"
+
+# schema_info flag marking the one-time fuel_used recompute as applied. Runs
+# once from the schema path; safe to re-run manually (force=True).
+_FUEL_RECOMPUTE_FLAG = "fuel_used_recompute_applied"
+
+
+def _fuel_used_from_totals(fuel_totals) -> "Optional[float]":
+    """Sum of per-sample DECREASES in a fuel_total series (reset-safe burn).
+
+    See the inline rationale in the per-operation stats path: fuel_total counts
+    DOWN as fuel burns and STEPS UP on a post-start refuel reset; summing only
+    the downward movements ignores any upward reset while telescoping to
+    first - last for a monotonically non-increasing (no-reset) series. Returns
+    None for fewer than two samples.
+    """
+    vals = [v for v in fuel_totals if v is not None]
+    if len(vals) < 2:
+        return None
+    return sum(max(0.0, prev - curr) for prev, curr in zip(vals, vals[1:]))
+
+
+def migrate_recompute_fuel_used(conn: sqlite3.Connection, force: bool = False) -> dict:
+    """Recompute ``operations.fuel_used`` from stored ``fdl_data`` samples.
+
+    Already-imported operations may hold the old inflated
+    ``abs(first - last)`` fuel figure (which counted a post-refuel gauge reset
+    as burn). This recomputes each operation's ``fuel_used`` as the sum of
+    per-sample decreases in ``fuel_total`` (reset-safe), reading the raw samples
+    in timestamp order from ``fdl_data``. Guarded by a ``schema_info`` flag so
+    the automatic (schema-path) invocation runs once; pass ``force=True`` to run
+    regardless of the flag. Idempotent: a second run recomputes the same values.
+
+    Returns a summary dict: {"applied", "operations_scanned", "operations_updated"}.
+    """
+    result = {"applied": False, "operations_scanned": 0, "operations_updated": 0}
+
+    flag = conn.execute(
+        "SELECT value FROM schema_info WHERE key = ?", (_FUEL_RECOMPUTE_FLAG,)
+    ).fetchone()
+    if flag is not None and flag[0] == "1" and not force:
+        logger.info("Fuel-used recompute migration already applied; skipping.")
+        return result
+
+    try:
+        op_ids = [
+            r[0] for r in conn.execute("SELECT id FROM operations").fetchall()
+        ]
+        for op_id in op_ids:
+            result["operations_scanned"] += 1
+            rows = conn.execute(
+                "SELECT fuel_total FROM fdl_data WHERE operation_id = ? "
+                "ORDER BY timestamp ASC, id ASC",
+                (op_id,),
+            ).fetchall()
+            totals = [r[0] for r in rows]
+            new_val = _fuel_used_from_totals(totals)
+
+            old_row = conn.execute(
+                "SELECT fuel_used FROM operations WHERE id = ?", (op_id,)
+            ).fetchone()
+            old_val = old_row[0] if old_row else None
+
+            # Only write when the value actually changes (idempotent, minimal).
+            changed = (new_val is None) != (old_val is None) or (
+                new_val is not None
+                and old_val is not None
+                and abs(new_val - old_val) > 1e-9
+            )
+            if changed:
+                conn.execute(
+                    "UPDATE operations SET fuel_used = ? WHERE id = ?",
+                    (new_val, op_id),
+                )
+                result["operations_updated"] += 1
+                logger.info(
+                    "fuel_used recompute: op %s %s -> %s gal",
+                    op_id, old_val, new_val,
+                )
+
+        conn.execute(
+            """INSERT INTO schema_info (key, value) VALUES (?, '1')
+               ON CONFLICT(key) DO UPDATE SET value = '1'""",
+            (_FUEL_RECOMPUTE_FLAG,),
+        )
+        conn.commit()
+        result["applied"] = True
+        logger.info(
+            "Fuel-used recompute complete: %d scanned, %d updated.",
+            result["operations_scanned"], result["operations_updated"],
+        )
+    except sqlite3.Error as e:
+        logger.error("Fuel-used recompute migration failed: %s", e)
+        conn.rollback()
+    return result
 
 # Columns persisted in fdl_data that carry record CONTENT (used to reconstruct
 # an FDLRecord and to compute a migration-local content hash). Excludes the row

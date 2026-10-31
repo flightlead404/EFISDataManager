@@ -98,7 +98,7 @@ def test_currency_current_performs_no_write():
     }
 
     with mock.patch(
-        "efis_data_manager.drive_updater.resolve_drive_id", return_value="DID-1"
+        "efis_data_manager.drive_updater.resolve_sync_state_key", return_value="DID-1"
     ), mock.patch(
         "efis_data_manager.drive_updater.pending_families", return_value=[]
     ), mock.patch(
@@ -137,7 +137,7 @@ def test_stale_family_syncs_directly_to_fskit_mount():
     update_result = {"jobs": jobs, "errors": [], "aborted": False}
 
     with mock.patch(
-        "efis_data_manager.drive_updater.resolve_drive_id", return_value="DID-1"
+        "efis_data_manager.drive_updater.resolve_sync_state_key", return_value="DID-1"
     ), mock.patch(
         "efis_data_manager.drive_updater.pending_families", return_value=[]
     ), mock.patch(
@@ -185,7 +185,7 @@ def test_pending_family_verifies_before_update():
     update_result = {"jobs": jobs, "errors": [], "aborted": False}
 
     with mock.patch(
-        "efis_data_manager.drive_updater.resolve_drive_id", return_value="DID-1"
+        "efis_data_manager.drive_updater.resolve_sync_state_key", return_value="DID-1"
     ), mock.patch(
         "efis_data_manager.drive_updater.pending_families",
         return_value=["charts"],
@@ -229,7 +229,7 @@ def test_pending_verify_not_clean_stops_before_update():
     }
 
     with mock.patch(
-        "efis_data_manager.drive_updater.resolve_drive_id", return_value="DID-1"
+        "efis_data_manager.drive_updater.resolve_sync_state_key", return_value="DID-1"
     ), mock.patch(
         "efis_data_manager.drive_updater.pending_families",
         return_value=["charts"],
@@ -273,7 +273,7 @@ def test_run_drive_update_does_not_invoke_archive():
     }
 
     with mock.patch(
-        "efis_data_manager.drive_updater.resolve_drive_id", return_value="DID-1"
+        "efis_data_manager.drive_updater.resolve_sync_state_key", return_value="DID-1"
     ), mock.patch(
         "efis_data_manager.drive_updater.pending_families", return_value=[]
     ), mock.patch(
@@ -314,7 +314,7 @@ def test_successful_update_flushes_and_unmounts_at_end():
     update_result = {"jobs": jobs, "errors": [], "aborted": False}
 
     with mock.patch(
-        "efis_data_manager.drive_updater.resolve_drive_id", return_value="DID-1"
+        "efis_data_manager.drive_updater.resolve_sync_state_key", return_value="DID-1"
     ), mock.patch(
         "efis_data_manager.drive_updater.pending_families", return_value=[]
     ), mock.patch(
@@ -351,7 +351,7 @@ def test_aborted_update_does_not_flush_and_unmount():
     update_result = {"jobs": jobs, "errors": [], "aborted": True}
 
     with mock.patch(
-        "efis_data_manager.drive_updater.resolve_drive_id", return_value="DID-1"
+        "efis_data_manager.drive_updater.resolve_sync_state_key", return_value="DID-1"
     ), mock.patch(
         "efis_data_manager.drive_updater.pending_families", return_value=[]
     ), mock.patch(

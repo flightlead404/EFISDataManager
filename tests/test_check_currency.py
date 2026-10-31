@@ -199,7 +199,7 @@ def test_interrupted_marker_forces_not_current(env, monkeypatch):
     # scanned family must force it not-current regardless of marker state.
     # The sync-state is keyed by the resolved drive id (task 15), so pin
     # resolve_drive_id to a stable id and record the interrupted family under it.
-    monkeypatch.setattr(du, "resolve_drive_id", lambda mp: "id-THIS")
+    monkeypatch.setattr(du, "resolve_sync_state_key", lambda mp: "id-THIS")
     du.begin_family("id-THIS", "scanned")
 
     result = du.check_drive_currency(env["mount"])
@@ -216,7 +216,7 @@ def test_interrupted_marker_for_other_drive_does_not_affect(env, monkeypatch):
     # An interrupted record for a DIFFERENT drive id must never bleed into this
     # drive's currency (Property 6). This drive resolves to id-THIS; the record
     # is under id-OTHER.
-    monkeypatch.setattr(du, "resolve_drive_id", lambda mp: "id-THIS")
+    monkeypatch.setattr(du, "resolve_sync_state_key", lambda mp: "id-THIS")
     du.begin_family("id-OTHER", "scanned")
     result = du.check_drive_currency(env["mount"])
     assert result["is_current"] is True
@@ -227,7 +227,7 @@ def test_unresolved_drive_id_applies_no_interrupted_state(env, monkeypatch):
     # Fail-safe (Req 10.7): when the drive id cannot be resolved, NO interrupted
     # state is applied to this drive — currency falls back to the marker check
     # (everything here is physically current, so the drive reads current).
-    monkeypatch.setattr(du, "resolve_drive_id", lambda mp: None)
+    monkeypatch.setattr(du, "resolve_sync_state_key", lambda mp: None)
     du.begin_family("id-SOMETHING", "scanned")
     result = du.check_drive_currency(env["mount"])
     assert result["is_current"] is True

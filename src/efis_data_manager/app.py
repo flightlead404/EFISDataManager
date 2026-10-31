@@ -140,6 +140,11 @@ class EFISDataManagerApp(rumps.App):
         self._history = self._load_history()
         self._charts_running = False
         self._nav_running = False
+        # True while a drive update/sync write window is active. Guards the
+        # shared status line so a concurrent, faster flow (chart check, software
+        # check, nav) cannot reset status to "Idle" while a sync is still
+        # running (spec: sync-status-overwritten-by-chart-check).
+        self._drive_sync_running = False
         self._software_running = False
         self._charts_first_tick_skipped = False
         self._nav_first_tick_skipped = False
@@ -406,7 +411,7 @@ class EFISDataManagerApp(rumps.App):
         logger.info("System did wake.")
         self._sleeping = False
         from efis_data_manager.usb_monitor import is_managed_drive
-        from efis_data_manager.drive_updater import pending_families, resolve_drive_id
+        from efis_data_manager.drive_updater import pending_families, resolve_sync_state_key
 
         try:
             mount_point = None
@@ -422,7 +427,7 @@ class EFISDataManagerApp(rumps.App):
             # Resolve it first; on an unresolved id (fail-safe) treat as no
             # pending families (Req 10.7) — the real gating is in
             # _run_drive_update, which repeats this resolution.
-            drive_id = resolve_drive_id(mount_point)
+            drive_id = resolve_sync_state_key(mount_point)
             pending = pending_families(drive_id) if drive_id is not None else []
             if not pending:
                 logger.info(
@@ -738,9 +743,9 @@ class EFISDataManagerApp(rumps.App):
         # _run_drive_update.
         from efis_data_manager.drive_updater import (
             pending_families,
-            resolve_drive_id,
+            resolve_sync_state_key,
         )
-        drive_id = resolve_drive_id(mount_point)
+        drive_id = resolve_sync_state_key(mount_point)
         if drive_id is not None and pending_families(drive_id):
             logger.info(
                 "Previous sync was interrupted for this drive — verify+repair "
@@ -1075,7 +1080,7 @@ class EFISDataManagerApp(rumps.App):
         from efis_data_manager.drive_updater import (
             check_drive_currency,
             pending_families,
-            resolve_drive_id,
+            resolve_sync_state_key,
         )
 
         def on_progress(msg):
@@ -1092,7 +1097,7 @@ class EFISDataManagerApp(rumps.App):
             # another drive's) and fall through to the normal quick check
             # (Req 10.7). On-drive markers/payload remain the sole source of
             # truth for currency.
-            drive_id = resolve_drive_id(mount_point)
+            drive_id = resolve_sync_state_key(mount_point)
             pending = pending_families(drive_id) if drive_id is not None else []
             if pending:
                 logger.warning(
@@ -1150,6 +1155,14 @@ class EFISDataManagerApp(rumps.App):
                 self._set_status("Drive current")
                 self._notify("Drive Current", "EFIS drive is up to date.")
                 return
+
+            # Write work is needed: mark the sync in progress so a concurrent
+            # chart/software/nav check cannot reset the status line to "Idle"
+            # mid-write (spec: sync-status-overwritten-by-chart-check). Cleared
+            # in the finally below. The sync's OWN terminal statuses ("Drive
+            # current", "Update failed", ...) are not "Idle", so the guard never
+            # blocks them.
+            self._drive_sync_running = True
 
             # --- 3. Write work is needed: sync directly to the FSKit mount. ---
             # The CURRENCY decision above (steps 1-2) is unchanged. The write
@@ -1264,6 +1277,9 @@ class EFISDataManagerApp(rumps.App):
             # so an interrupted family is retried on the next mount.
             self._notify("Drive Update Failed", str(e)[:100])
             self._set_status("Update failed")
+        finally:
+            # Release the status guard so later idle-state flows behave normally.
+            self._drive_sync_running = False
 
     def _with_active_watchdog(self, mount_point: str, run):
         """Run ``run(is_aborted)`` under a fresh, registered MountWatchdog.
@@ -2433,8 +2449,23 @@ class EFISDataManagerApp(rumps.App):
     # ------------------------------------------------------------------
 
     def _set_status(self, status_text: str):
-        """Update status — dispatches to main thread for UI safety."""
+        """Update status — dispatches to main thread for UI safety.
+
+        While a drive sync/update is in progress (``_drive_sync_running``), an
+        "Idle" write from a concurrent lower-priority flow (chart/software/nav
+        check) is IGNORED so it cannot clobber the sync's "Updating drive..."
+        status and make the menu bar falsely read idle mid-write. The sync flow
+        itself owns the transition out of the active state via its terminal
+        status (it clears ``_drive_sync_running`` first), so this guard never
+        blocks the sync's own completion status (spec:
+        sync-status-overwritten-by-chart-check)."""
         from AppKit import NSOperationQueue
+
+        if self._drive_sync_running and status_text == "Idle":
+            logger.debug(
+                "Ignoring 'Idle' status write while a drive sync is in progress."
+            )
+            return
 
         def _do_update():
             self.menu["Status: Idle"].title = f"Status: {status_text}"
