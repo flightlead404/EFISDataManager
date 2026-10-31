@@ -1,0 +1,660 @@
+{
+  "pbtResults": {
+    "1.2 Write property test for the manifest builder content signal": {
+      "status": "passed",
+      "lastRunTimestamp": 1793217919708
+    },
+    "1.4 Write property test for manifest round-trip": {
+      "status": "passed",
+      "lastRunTimestamp": 1793218128115
+    },
+    "3.3 Write property test for independent streams": {
+      "status": "passed",
+      "lastRunTimestamp": 1793218911413
+    },
+    "3.7 Write property test for nav checksum correctness": {
+      "status": "passed",
+      "lastRunTimestamp": 1793219838821
+    },
+    "6.3 Write property test for flush-means-done": {
+      "status": "passed",
+      "lastRunTimestamp": 1793299944768
+    }
+  },
+  "executionHistory": {
+    "1.1 Create `src/efis_data_manager/manifest.py` with the manifest data model and builder": [
+      {
+        "executionId": "5c80c50c-c21e-42ee-a82c-7c277161e850",
+        "chatSessionId": "sess_ffd9ca1a-9d64-4e1b-be88-cf117a79dc53",
+        "timestamp": 1793217450948
+      },
+      {
+        "executionId": "5c80c50c-c21e-42ee-a82c-7c277161e850",
+        "chatSessionId": "sess_ffd9ca1a-9d64-4e1b-be88-cf117a79dc53",
+        "timestamp": 1793217458740
+      },
+      {
+        "executionId": "5c80c50c-c21e-42ee-a82c-7c277161e850",
+        "chatSessionId": "sess_ffd9ca1a-9d64-4e1b-be88-cf117a79dc53",
+        "timestamp": 1793217838534
+      }
+    ],
+    "1.2 Write property test for the manifest builder content signal": [
+      {
+        "executionId": "5c80c50c-c21e-42ee-a82c-7c277161e850",
+        "chatSessionId": "sess_ffd9ca1a-9d64-4e1b-be88-cf117a79dc53",
+        "timestamp": 1793217450985
+      },
+      {
+        "executionId": "5c80c50c-c21e-42ee-a82c-7c277161e850",
+        "chatSessionId": "sess_ffd9ca1a-9d64-4e1b-be88-cf117a79dc53",
+        "timestamp": 1793217843866
+      },
+      {
+        "executionId": "5c80c50c-c21e-42ee-a82c-7c277161e850",
+        "chatSessionId": "sess_ffd9ca1a-9d64-4e1b-be88-cf117a79dc53",
+        "timestamp": 1793218060642
+      }
+    ],
+    "1.3 Implement `Manifest_Store` (local + card) with atomic card writes": [
+      {
+        "executionId": "5c80c50c-c21e-42ee-a82c-7c277161e850",
+        "chatSessionId": "sess_ffd9ca1a-9d64-4e1b-be88-cf117a79dc53",
+        "timestamp": 1793217451011
+      },
+      {
+        "executionId": "5c80c50c-c21e-42ee-a82c-7c277161e850",
+        "chatSessionId": "sess_ffd9ca1a-9d64-4e1b-be88-cf117a79dc53",
+        "timestamp": 1793217845287
+      },
+      {
+        "executionId": "5c80c50c-c21e-42ee-a82c-7c277161e850",
+        "chatSessionId": "sess_ffd9ca1a-9d64-4e1b-be88-cf117a79dc53",
+        "timestamp": 1793218061964
+      }
+    ],
+    "1.4 Write property test for manifest round-trip": [
+      {
+        "executionId": "5c80c50c-c21e-42ee-a82c-7c277161e850",
+        "chatSessionId": "sess_ffd9ca1a-9d64-4e1b-be88-cf117a79dc53",
+        "timestamp": 1793217451039
+      },
+      {
+        "executionId": "5c80c50c-c21e-42ee-a82c-7c277161e850",
+        "chatSessionId": "sess_ffd9ca1a-9d64-4e1b-be88-cf117a79dc53",
+        "timestamp": 1793218066879
+      },
+      {
+        "executionId": "5c80c50c-c21e-42ee-a82c-7c277161e850",
+        "chatSessionId": "sess_ffd9ca1a-9d64-4e1b-be88-cf117a79dc53",
+        "timestamp": 1793218271051
+      }
+    ],
+    "1.5 Implement `Manifest_Diff` pure diff": [
+      {
+        "executionId": "5c80c50c-c21e-42ee-a82c-7c277161e850",
+        "chatSessionId": "sess_ffd9ca1a-9d64-4e1b-be88-cf117a79dc53",
+        "timestamp": 1793217451064
+      },
+      {
+        "executionId": "5c80c50c-c21e-42ee-a82c-7c277161e850",
+        "chatSessionId": "sess_ffd9ca1a-9d64-4e1b-be88-cf117a79dc53",
+        "timestamp": 1793218067847
+      },
+      {
+        "executionId": "5c80c50c-c21e-42ee-a82c-7c277161e850",
+        "chatSessionId": "sess_ffd9ca1a-9d64-4e1b-be88-cf117a79dc53",
+        "timestamp": 1793218271895
+      }
+    ],
+    "1.6 Write property test for manifest/card convergence": [
+      {
+        "executionId": "5c80c50c-c21e-42ee-a82c-7c277161e850",
+        "chatSessionId": "sess_ffd9ca1a-9d64-4e1b-be88-cf117a79dc53",
+        "timestamp": 1793217451109
+      },
+      {
+        "executionId": "5c80c50c-c21e-42ee-a82c-7c277161e850",
+        "chatSessionId": "sess_ffd9ca1a-9d64-4e1b-be88-cf117a79dc53",
+        "timestamp": 1793218274938
+      },
+      {
+        "executionId": "5c80c50c-c21e-42ee-a82c-7c277161e850",
+        "chatSessionId": "sess_ffd9ca1a-9d64-4e1b-be88-cf117a79dc53",
+        "timestamp": 1793218516225
+      }
+    ],
+    "1.7 Wire the download-time manifest build into `currency.py`": [
+      {
+        "executionId": "5c80c50c-c21e-42ee-a82c-7c277161e850",
+        "chatSessionId": "sess_ffd9ca1a-9d64-4e1b-be88-cf117a79dc53",
+        "timestamp": 1793217451132
+      },
+      {
+        "executionId": "5c80c50c-c21e-42ee-a82c-7c277161e850",
+        "chatSessionId": "sess_ffd9ca1a-9d64-4e1b-be88-cf117a79dc53",
+        "timestamp": 1793218275735
+      },
+      {
+        "executionId": "5c80c50c-c21e-42ee-a82c-7c277161e850",
+        "chatSessionId": "sess_ffd9ca1a-9d64-4e1b-be88-cf117a79dc53",
+        "timestamp": 1793218517085
+      }
+    ],
+    "1.8 Write unit test for cycle-number extraction": [
+      {
+        "executionId": "5c80c50c-c21e-42ee-a82c-7c277161e850",
+        "chatSessionId": "sess_ffd9ca1a-9d64-4e1b-be88-cf117a79dc53",
+        "timestamp": 1793217451157
+      },
+      {
+        "executionId": "5c80c50c-c21e-42ee-a82c-7c277161e850",
+        "chatSessionId": "sess_ffd9ca1a-9d64-4e1b-be88-cf117a79dc53",
+        "timestamp": 1793218520274
+      },
+      {
+        "executionId": "5c80c50c-c21e-42ee-a82c-7c277161e850",
+        "chatSessionId": "sess_ffd9ca1a-9d64-4e1b-be88-cf117a79dc53",
+        "timestamp": 1793218584337
+      }
+    ],
+    "2.1 Add the `.HI. -> ChartData/HI/` routing branch": [
+      {
+        "executionId": "5c80c50c-c21e-42ee-a82c-7c277161e850",
+        "chatSessionId": "sess_ffd9ca1a-9d64-4e1b-be88-cf117a79dc53",
+        "timestamp": 1793217451184
+      },
+      {
+        "executionId": "5c80c50c-c21e-42ee-a82c-7c277161e850",
+        "chatSessionId": "sess_ffd9ca1a-9d64-4e1b-be88-cf117a79dc53",
+        "timestamp": 1793217459657
+      },
+      {
+        "executionId": "5c80c50c-c21e-42ee-a82c-7c277161e850",
+        "chatSessionId": "sess_ffd9ca1a-9d64-4e1b-be88-cf117a79dc53",
+        "timestamp": 1793217839899
+      }
+    ],
+    "2.2 Write unit test for HI routing": [
+      {
+        "executionId": "5c80c50c-c21e-42ee-a82c-7c277161e850",
+        "chatSessionId": "sess_ffd9ca1a-9d64-4e1b-be88-cf117a79dc53",
+        "timestamp": 1793217451204
+      },
+      {
+        "executionId": "5c80c50c-c21e-42ee-a82c-7c277161e850",
+        "chatSessionId": "sess_ffd9ca1a-9d64-4e1b-be88-cf117a79dc53",
+        "timestamp": 1793217846198
+      },
+      {
+        "executionId": "5c80c50c-c21e-42ee-a82c-7c277161e850",
+        "chatSessionId": "sess_ffd9ca1a-9d64-4e1b-be88-cf117a79dc53",
+        "timestamp": 1793218062917
+      }
+    ],
+    "3.1 Add the per-stream cycle gate to `drive_updater.check_drive_currency`": [
+      {
+        "executionId": "5c80c50c-c21e-42ee-a82c-7c277161e850",
+        "chatSessionId": "sess_ffd9ca1a-9d64-4e1b-be88-cf117a79dc53",
+        "timestamp": 1793217451233
+      },
+      {
+        "executionId": "5c80c50c-c21e-42ee-a82c-7c277161e850",
+        "chatSessionId": "sess_ffd9ca1a-9d64-4e1b-be88-cf117a79dc53",
+        "timestamp": 1793218521197
+      },
+      {
+        "executionId": "5c80c50c-c21e-42ee-a82c-7c277161e850",
+        "chatSessionId": "sess_ffd9ca1a-9d64-4e1b-be88-cf117a79dc53",
+        "timestamp": 1793218820653
+      }
+    ],
+    "3.2 Write property test for cycle-skip safety": [
+      {
+        "executionId": "5c80c50c-c21e-42ee-a82c-7c277161e850",
+        "chatSessionId": "sess_ffd9ca1a-9d64-4e1b-be88-cf117a79dc53",
+        "timestamp": 1793217451262
+      },
+      {
+        "executionId": "5c80c50c-c21e-42ee-a82c-7c277161e850",
+        "chatSessionId": "sess_ffd9ca1a-9d64-4e1b-be88-cf117a79dc53",
+        "timestamp": 1793218823790
+      },
+      {
+        "executionId": "5c80c50c-c21e-42ee-a82c-7c277161e850",
+        "chatSessionId": "sess_ffd9ca1a-9d64-4e1b-be88-cf117a79dc53",
+        "timestamp": 1793218991774
+      }
+    ],
+    "3.3 Write property test for independent streams": [
+      {
+        "executionId": "5c80c50c-c21e-42ee-a82c-7c277161e850",
+        "chatSessionId": "sess_ffd9ca1a-9d64-4e1b-be88-cf117a79dc53",
+        "timestamp": 1793217451291
+      },
+      {
+        "executionId": "5c80c50c-c21e-42ee-a82c-7c277161e850",
+        "chatSessionId": "sess_ffd9ca1a-9d64-4e1b-be88-cf117a79dc53",
+        "timestamp": 1793218824830
+      },
+      {
+        "executionId": "5c80c50c-c21e-42ee-a82c-7c277161e850",
+        "chatSessionId": "sess_ffd9ca1a-9d64-4e1b-be88-cf117a79dc53",
+        "timestamp": 1793218992731
+      }
+    ],
+    "3.4 Replace `--size-only` with manifest-driven `--files-from` in `sync_payload`": [
+      {
+        "executionId": "5c80c50c-c21e-42ee-a82c-7c277161e850",
+        "chatSessionId": "sess_ffd9ca1a-9d64-4e1b-be88-cf117a79dc53",
+        "timestamp": 1793217451317
+      },
+      {
+        "executionId": "5c80c50c-c21e-42ee-a82c-7c277161e850",
+        "chatSessionId": "sess_ffd9ca1a-9d64-4e1b-be88-cf117a79dc53",
+        "timestamp": 1793218825811
+      },
+      {
+        "executionId": "5c80c50c-c21e-42ee-a82c-7c277161e850",
+        "chatSessionId": "sess_ffd9ca1a-9d64-4e1b-be88-cf117a79dc53",
+        "timestamp": 1793219379913
+      }
+    ],
+    "3.5 Write the card manifest and commit marker after a verified family sync": [
+      {
+        "executionId": "5c80c50c-c21e-42ee-a82c-7c277161e850",
+        "chatSessionId": "sess_ffd9ca1a-9d64-4e1b-be88-cf117a79dc53",
+        "timestamp": 1793217451345
+      },
+      {
+        "executionId": "5c80c50c-c21e-42ee-a82c-7c277161e850",
+        "chatSessionId": "sess_ffd9ca1a-9d64-4e1b-be88-cf117a79dc53",
+        "timestamp": 1793219383171
+      },
+      {
+        "executionId": "5c80c50c-c21e-42ee-a82c-7c277161e850",
+        "chatSessionId": "sess_ffd9ca1a-9d64-4e1b-be88-cf117a79dc53",
+        "timestamp": 1793219709672
+      }
+    ],
+    "3.6 Preserve the nav files job unchanged": [
+      {
+        "executionId": "5c80c50c-c21e-42ee-a82c-7c277161e850",
+        "chatSessionId": "sess_ffd9ca1a-9d64-4e1b-be88-cf117a79dc53",
+        "timestamp": 1793217451374
+      },
+      {
+        "executionId": "5c80c50c-c21e-42ee-a82c-7c277161e850",
+        "chatSessionId": "sess_ffd9ca1a-9d64-4e1b-be88-cf117a79dc53",
+        "timestamp": 1793219383813
+      },
+      {
+        "executionId": "5c80c50c-c21e-42ee-a82c-7c277161e850",
+        "chatSessionId": "sess_ffd9ca1a-9d64-4e1b-be88-cf117a79dc53",
+        "timestamp": 1793219710428
+      }
+    ],
+    "3.7 Write property test for nav checksum correctness": [
+      {
+        "executionId": "5c80c50c-c21e-42ee-a82c-7c277161e850",
+        "chatSessionId": "sess_ffd9ca1a-9d64-4e1b-be88-cf117a79dc53",
+        "timestamp": 1793217451398
+      },
+      {
+        "executionId": "5c80c50c-c21e-42ee-a82c-7c277161e850",
+        "chatSessionId": "sess_ffd9ca1a-9d64-4e1b-be88-cf117a79dc53",
+        "timestamp": 1793219713722
+      },
+      {
+        "executionId": "5c80c50c-c21e-42ee-a82c-7c277161e850",
+        "chatSessionId": "sess_ffd9ca1a-9d64-4e1b-be88-cf117a79dc53",
+        "timestamp": 1793298403038
+      }
+    ],
+    "3.8 Write unit tests for first-sync and corrupt-manifest fallback": [
+      {
+        "executionId": "5c80c50c-c21e-42ee-a82c-7c277161e850",
+        "chatSessionId": "sess_ffd9ca1a-9d64-4e1b-be88-cf117a79dc53",
+        "timestamp": 1793217451427
+      },
+      {
+        "executionId": "5c80c50c-c21e-42ee-a82c-7c277161e850",
+        "chatSessionId": "sess_ffd9ca1a-9d64-4e1b-be88-cf117a79dc53",
+        "timestamp": 1793219715760
+      },
+      {
+        "executionId": "5c80c50c-c21e-42ee-a82c-7c277161e850",
+        "chatSessionId": "sess_ffd9ca1a-9d64-4e1b-be88-cf117a79dc53",
+        "timestamp": 1793298404370
+      }
+    ],
+    "4.1 Remove the write-path branching and call the FSKit-mount write directly": [
+      {
+        "executionId": "5c80c50c-c21e-42ee-a82c-7c277161e850",
+        "chatSessionId": "sess_ffd9ca1a-9d64-4e1b-be88-cf117a79dc53",
+        "timestamp": 1793217451462
+      },
+      {
+        "executionId": "5c80c50c-c21e-42ee-a82c-7c277161e850",
+        "chatSessionId": "sess_ffd9ca1a-9d64-4e1b-be88-cf117a79dc53",
+        "timestamp": 1793219715081
+      },
+      {
+        "executionId": "5c80c50c-c21e-42ee-a82c-7c277161e850",
+        "chatSessionId": "sess_ffd9ca1a-9d64-4e1b-be88-cf117a79dc53",
+        "timestamp": 1793298405322
+      }
+    ],
+    "4.2 Write property test for the chart-capability gate": [
+      {
+        "executionId": "5c80c50c-c21e-42ee-a82c-7c277161e850",
+        "chatSessionId": "sess_ffd9ca1a-9d64-4e1b-be88-cf117a79dc53",
+        "timestamp": 1793217451488
+      },
+      {
+        "executionId": "5c80c50c-c21e-42ee-a82c-7c277161e850",
+        "chatSessionId": "sess_ffd9ca1a-9d64-4e1b-be88-cf117a79dc53",
+        "timestamp": 1793298409467
+      },
+      {
+        "executionId": "5c80c50c-c21e-42ee-a82c-7c277161e850",
+        "chatSessionId": "sess_ffd9ca1a-9d64-4e1b-be88-cf117a79dc53",
+        "timestamp": 1793298605819
+      }
+    ],
+    "5.1 Relocate `build_volume_label`, `_cycles_from_metadata`, and their cycle helpers out of `image_composer.py`": [
+      {
+        "executionId": "5c80c50c-c21e-42ee-a82c-7c277161e850",
+        "chatSessionId": "sess_ffd9ca1a-9d64-4e1b-be88-cf117a79dc53",
+        "timestamp": 1793217451521
+      },
+      {
+        "executionId": "5c80c50c-c21e-42ee-a82c-7c277161e850",
+        "chatSessionId": "sess_ffd9ca1a-9d64-4e1b-be88-cf117a79dc53",
+        "timestamp": 1793217460911
+      },
+      {
+        "executionId": "5c80c50c-c21e-42ee-a82c-7c277161e850",
+        "chatSessionId": "sess_ffd9ca1a-9d64-4e1b-be88-cf117a79dc53",
+        "timestamp": 1793217840846
+      }
+    ],
+    "5.2 Write unit tests for `build_volume_label` after relocation": [
+      {
+        "executionId": "5c80c50c-c21e-42ee-a82c-7c277161e850",
+        "chatSessionId": "sess_ffd9ca1a-9d64-4e1b-be88-cf117a79dc53",
+        "timestamp": 1793217451553
+      },
+      {
+        "executionId": "5c80c50c-c21e-42ee-a82c-7c277161e850",
+        "chatSessionId": "sess_ffd9ca1a-9d64-4e1b-be88-cf117a79dc53",
+        "timestamp": 1793217847256
+      },
+      {
+        "executionId": "5c80c50c-c21e-42ee-a82c-7c277161e850",
+        "chatSessionId": "sess_ffd9ca1a-9d64-4e1b-be88-cf117a79dc53",
+        "timestamp": 1793218063835
+      }
+    ],
+    "5.3 Retire mount-swap (only after Stage 3 is proven)": [
+      {
+        "executionId": "5c80c50c-c21e-42ee-a82c-7c277161e850",
+        "chatSessionId": "sess_ffd9ca1a-9d64-4e1b-be88-cf117a79dc53",
+        "timestamp": 1793217451578
+      },
+      {
+        "executionId": "5c80c50c-c21e-42ee-a82c-7c277161e850",
+        "chatSessionId": "sess_ffd9ca1a-9d64-4e1b-be88-cf117a79dc53",
+        "timestamp": 1793298411463
+      },
+      {
+        "executionId": "5c80c50c-c21e-42ee-a82c-7c277161e850",
+        "chatSessionId": "sess_ffd9ca1a-9d64-4e1b-be88-cf117a79dc53",
+        "timestamp": 1793299025715
+      }
+    ],
+    "5.4 Retire image-dd": [
+      {
+        "executionId": "5c80c50c-c21e-42ee-a82c-7c277161e850",
+        "chatSessionId": "sess_ffd9ca1a-9d64-4e1b-be88-cf117a79dc53",
+        "timestamp": 1793217451616
+      },
+      {
+        "executionId": "5c80c50c-c21e-42ee-a82c-7c277161e850",
+        "chatSessionId": "sess_ffd9ca1a-9d64-4e1b-be88-cf117a79dc53",
+        "timestamp": 1793298410408
+      },
+      {
+        "executionId": "5c80c50c-c21e-42ee-a82c-7c277161e850",
+        "chatSessionId": "sess_ffd9ca1a-9d64-4e1b-be88-cf117a79dc53",
+        "timestamp": 1793298606540
+      }
+    ],
+    "6.1 Relabel the volume after a successful sync": [
+      {
+        "executionId": "5c80c50c-c21e-42ee-a82c-7c277161e850",
+        "chatSessionId": "sess_ffd9ca1a-9d64-4e1b-be88-cf117a79dc53",
+        "timestamp": 1793217451650
+      },
+      {
+        "executionId": "5c80c50c-c21e-42ee-a82c-7c277161e850",
+        "chatSessionId": "sess_ffd9ca1a-9d64-4e1b-be88-cf117a79dc53",
+        "timestamp": 1793299031985
+      },
+      {
+        "executionId": "5c80c50c-c21e-42ee-a82c-7c277161e850",
+        "chatSessionId": "sess_ffd9ca1a-9d64-4e1b-be88-cf117a79dc53",
+        "timestamp": 1793299477744
+      }
+    ],
+    "6.2 Flush on done: `os.sync` + unmount inside the timed bracket": [
+      {
+        "executionId": "5c80c50c-c21e-42ee-a82c-7c277161e850",
+        "chatSessionId": "sess_ffd9ca1a-9d64-4e1b-be88-cf117a79dc53",
+        "timestamp": 1793217451671
+      },
+      {
+        "executionId": "5c80c50c-c21e-42ee-a82c-7c277161e850",
+        "chatSessionId": "sess_ffd9ca1a-9d64-4e1b-be88-cf117a79dc53",
+        "timestamp": 1793299482111
+      },
+      {
+        "executionId": "5c80c50c-c21e-42ee-a82c-7c277161e850",
+        "chatSessionId": "sess_ffd9ca1a-9d64-4e1b-be88-cf117a79dc53",
+        "timestamp": 1793299817539
+      }
+    ],
+    "6.3 Write property test for flush-means-done": [
+      {
+        "executionId": "5c80c50c-c21e-42ee-a82c-7c277161e850",
+        "chatSessionId": "sess_ffd9ca1a-9d64-4e1b-be88-cf117a79dc53",
+        "timestamp": 1793217451705
+      },
+      {
+        "executionId": "5c80c50c-c21e-42ee-a82c-7c277161e850",
+        "chatSessionId": "sess_ffd9ca1a-9d64-4e1b-be88-cf117a79dc53",
+        "timestamp": 1793299821467
+      },
+      {
+        "executionId": "5c80c50c-c21e-42ee-a82c-7c277161e850",
+        "chatSessionId": "sess_ffd9ca1a-9d64-4e1b-be88-cf117a79dc53",
+        "timestamp": 1793300035738
+      }
+    ],
+    "6.4 Write the `.metadata_never_index` marker at Prepare time": [
+      {
+        "executionId": "5c80c50c-c21e-42ee-a82c-7c277161e850",
+        "chatSessionId": "sess_ffd9ca1a-9d64-4e1b-be88-cf117a79dc53",
+        "timestamp": 1793217451733
+      },
+      {
+        "executionId": "5c80c50c-c21e-42ee-a82c-7c277161e850",
+        "chatSessionId": "sess_ffd9ca1a-9d64-4e1b-be88-cf117a79dc53",
+        "timestamp": 1793299031035
+      },
+      {
+        "executionId": "5c80c50c-c21e-42ee-a82c-7c277161e850",
+        "chatSessionId": "sess_ffd9ca1a-9d64-4e1b-be88-cf117a79dc53",
+        "timestamp": 1793299478377
+      }
+    ],
+    "6.5 Write unit tests for Prepare marker and flush": [
+      {
+        "executionId": "5c80c50c-c21e-42ee-a82c-7c277161e850",
+        "chatSessionId": "sess_ffd9ca1a-9d64-4e1b-be88-cf117a79dc53",
+        "timestamp": 1793217451761
+      },
+      {
+        "executionId": "5c80c50c-c21e-42ee-a82c-7c277161e850",
+        "chatSessionId": "sess_ffd9ca1a-9d64-4e1b-be88-cf117a79dc53",
+        "timestamp": 1793299824767
+      },
+      {
+        "executionId": "5c80c50c-c21e-42ee-a82c-7c277161e850",
+        "chatSessionId": "sess_ffd9ca1a-9d64-4e1b-be88-cf117a79dc53",
+        "timestamp": 1793300037305
+      }
+    ],
+    "7.1 Write end-to-end diff -> `--files-from` rsync -> marker -> card manifest -> relabel -> unmount integration test": [
+      {
+        "executionId": "5c80c50c-c21e-42ee-a82c-7c277161e850",
+        "chatSessionId": "sess_ffd9ca1a-9d64-4e1b-be88-cf117a79dc53",
+        "timestamp": 1793217451794
+      },
+      {
+        "executionId": "5c80c50c-c21e-42ee-a82c-7c277161e850",
+        "chatSessionId": "sess_ffd9ca1a-9d64-4e1b-be88-cf117a79dc53",
+        "timestamp": 1793299822925
+      },
+      {
+        "executionId": "5c80c50c-c21e-42ee-a82c-7c277161e850",
+        "chatSessionId": "sess_ffd9ca1a-9d64-4e1b-be88-cf117a79dc53",
+        "timestamp": 1793300038521
+      }
+    ],
+    "7.2 Write nav-stream integration test": [
+      {
+        "executionId": "5c80c50c-c21e-42ee-a82c-7c277161e850",
+        "chatSessionId": "sess_ffd9ca1a-9d64-4e1b-be88-cf117a79dc53",
+        "timestamp": 1793217451824
+      },
+      {
+        "executionId": "5c80c50c-c21e-42ee-a82c-7c277161e850",
+        "chatSessionId": "sess_ffd9ca1a-9d64-4e1b-be88-cf117a79dc53",
+        "timestamp": 1793299823780
+      },
+      {
+        "executionId": "5c80c50c-c21e-42ee-a82c-7c277161e850",
+        "chatSessionId": "sess_ffd9ca1a-9d64-4e1b-be88-cf117a79dc53",
+        "timestamp": 1793300039187
+      }
+    ],
+    "8.1 Remove dead tests and config for the retired paths": [
+      {
+        "executionId": "5c80c50c-c21e-42ee-a82c-7c277161e850",
+        "chatSessionId": "sess_ffd9ca1a-9d64-4e1b-be88-cf117a79dc53",
+        "timestamp": 1793217451852
+      },
+      {
+        "executionId": "5c80c50c-c21e-42ee-a82c-7c277161e850",
+        "chatSessionId": "sess_ffd9ca1a-9d64-4e1b-be88-cf117a79dc53",
+        "timestamp": 1793300044637
+      },
+      {
+        "executionId": "5c80c50c-c21e-42ee-a82c-7c277161e850",
+        "chatSessionId": "sess_ffd9ca1a-9d64-4e1b-be88-cf117a79dc53",
+        "timestamp": 1793300292604
+      }
+    ],
+    "8.2 Bump `MENUBAR_VERSION` per the versioning policy": [
+      {
+        "executionId": "5c80c50c-c21e-42ee-a82c-7c277161e850",
+        "chatSessionId": "sess_ffd9ca1a-9d64-4e1b-be88-cf117a79dc53",
+        "timestamp": 1793217451879
+      },
+      {
+        "executionId": "5c80c50c-c21e-42ee-a82c-7c277161e850",
+        "chatSessionId": "sess_ffd9ca1a-9d64-4e1b-be88-cf117a79dc53",
+        "timestamp": 1793300045574
+      },
+      {
+        "executionId": "5c80c50c-c21e-42ee-a82c-7c277161e850",
+        "chatSessionId": "sess_ffd9ca1a-9d64-4e1b-be88-cf117a79dc53",
+        "timestamp": 1793300293319
+      }
+    ],
+    "9. Final checkpoint": [
+      {
+        "executionId": "5c80c50c-c21e-42ee-a82c-7c277161e850",
+        "chatSessionId": "sess_ffd9ca1a-9d64-4e1b-be88-cf117a79dc53",
+        "timestamp": 1793217451909
+      },
+      {
+        "executionId": "5c80c50c-c21e-42ee-a82c-7c277161e850",
+        "chatSessionId": "sess_ffd9ca1a-9d64-4e1b-be88-cf117a79dc53",
+        "timestamp": 1793300297358
+      },
+      {
+        "executionId": "5c80c50c-c21e-42ee-a82c-7c277161e850",
+        "chatSessionId": "sess_ffd9ca1a-9d64-4e1b-be88-cf117a79dc53",
+        "timestamp": 1793300500196
+      }
+    ],
+    "2. Stage 1 — IFR-high (HI) extraction placement fix in `currency._extract_multidisk`": [
+      {
+        "executionId": "5c80c50c-c21e-42ee-a82c-7c277161e850",
+        "chatSessionId": "sess_ffd9ca1a-9d64-4e1b-be88-cf117a79dc53",
+        "timestamp": 1793218062959
+      }
+    ],
+    "1. Stage 1 — Add the manifest module and download-time build alongside the live `--size-only` sync": [
+      {
+        "executionId": "5c80c50c-c21e-42ee-a82c-7c277161e850",
+        "chatSessionId": "sess_ffd9ca1a-9d64-4e1b-be88-cf117a79dc53",
+        "timestamp": 1793218584378
+      }
+    ],
+    "3. Stage 2 — Switch the transfer to manifest-driven `--files-from` and wire the cycle gate": [
+      {
+        "executionId": "5c80c50c-c21e-42ee-a82c-7c277161e850",
+        "chatSessionId": "sess_ffd9ca1a-9d64-4e1b-be88-cf117a79dc53",
+        "timestamp": 1793298404402
+      }
+    ],
+    "4. Stage 3 — Collapse the write dispatch in `app.py` to the single FSKit `/Volumes` mount": [
+      {
+        "executionId": "5c80c50c-c21e-42ee-a82c-7c277161e850",
+        "chatSessionId": "sess_ffd9ca1a-9d64-4e1b-be88-cf117a79dc53",
+        "timestamp": 1793298605884
+      }
+    ],
+    "5. Stage 5 — Relocate the label helpers, THEN retire the image-dd and mount-swap paths": [
+      {
+        "executionId": "5c80c50c-c21e-42ee-a82c-7c277161e850",
+        "chatSessionId": "sess_ffd9ca1a-9d64-4e1b-be88-cf117a79dc53",
+        "timestamp": 1793299025802
+      }
+    ],
+    "6. Stage 6 — Post-sync relabel, flush, and Prepare-time Spotlight marker": [
+      {
+        "executionId": "5c80c50c-c21e-42ee-a82c-7c277161e850",
+        "chatSessionId": "sess_ffd9ca1a-9d64-4e1b-be88-cf117a79dc53",
+        "timestamp": 1793300037392
+      }
+    ],
+    "7. Integration tests for the end-to-end flow": [
+      {
+        "executionId": "5c80c50c-c21e-42ee-a82c-7c277161e850",
+        "chatSessionId": "sess_ffd9ca1a-9d64-4e1b-be88-cf117a79dc53",
+        "timestamp": 1793300039303
+      }
+    ],
+    "8. Stage 7 — Remove dead tests/config and bump the menu-bar version": [
+      {
+        "executionId": "5c80c50c-c21e-42ee-a82c-7c277161e850",
+        "chatSessionId": "sess_ffd9ca1a-9d64-4e1b-be88-cf117a79dc53",
+        "timestamp": 1793300293401
+      }
+    ]
+  }
+}

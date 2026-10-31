@@ -67,12 +67,13 @@ def test_new_identity_includes_device_link_id_none_and_schema_v2(mount):
 def test_new_identity_preserves_all_preexisting_fields(mount):
     identity = du._new_identity(mount)
 
-    # Every field that existed before the device_link_id extension must remain.
+    # Every field that survives the device_link_id extension must remain. The
+    # stale volume ``label`` field was dropped by the chart-sync-wiring-fix
+    # identity-schema change (R8.1): it is NOT a required field any longer.
     for field in (
         "id",
         "kind",
         "volume_uuid",
-        "label",
         "created",
         "prepared_by",
         "last_sync_started",
@@ -83,6 +84,11 @@ def test_new_identity_preserves_all_preexisting_fields(mount):
         "data_cycle",
     ):
         assert field in identity, f"missing pre-existing field: {field}"
+
+    # (R8.1) The stale volume ``label`` is gone; (R8.5) the labeling-only
+    # ``chart_capable`` snapshot is now present instead.
+    assert "label" not in identity
+    assert "chart_capable" in identity
 
 
 # --- backward-read of a v1 drive --------------------------------------------
@@ -95,7 +101,6 @@ def test_read_identity_parses_v1_without_device_link_id(mount):
         "id": "v1-drive-id",
         "kind": "efis-chart-drive",
         "volume_uuid": "V1-UUID",
-        "label": "EFIS",
         "created": "2025-01-01T00:00:00Z",
         "prepared_by": "EFISDataManager 0.6.0 on oldhost",
         "last_sync_started": None,
@@ -126,7 +131,6 @@ def test_update_provenance_adds_device_link_id_to_v1_drive(mount):
         "id": "v1-drive-id",
         "kind": "efis-chart-drive",
         "volume_uuid": "V1-UUID",
-        "label": "EFIS",
         "created": "2025-01-01T00:00:00Z",
         "prepared_by": "EFISDataManager 0.6.0 on oldhost",
         "last_sync_started": "2025-01-02T00:00:00Z",
@@ -147,8 +151,10 @@ def test_update_provenance_adds_device_link_id_to_v1_drive(mount):
     assert updated["id"] == v1["id"]
     assert updated["kind"] == v1["kind"]
     assert updated["volume_uuid"] == v1["volume_uuid"]
+    # (R8.1) The stale volume ``label`` field is gone from the identity schema;
+    # the merge neither introduces nor requires one, so it stays absent here.
+    assert "label" not in updated
     # Provenance fields preserved unchanged.
-    assert updated["label"] == v1["label"]
     assert updated["created"] == v1["created"]
     assert updated["prepared_by"] == v1["prepared_by"]
     assert updated["last_sync_started"] == v1["last_sync_started"]

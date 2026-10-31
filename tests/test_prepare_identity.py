@@ -23,6 +23,7 @@ import os
 import pytest
 
 from efis_data_manager import drive_updater as du
+from efis_data_manager import manifest as mf
 
 
 @pytest.fixture
@@ -90,4 +91,7 @@ def test_prepared_drive_resolves_to_written_id(mount, monkeypatch):
     monkeypatch.setattr(du, "wait_for_mount_ready", lambda *a, **k: True)
 
     written_id = du._ensure_identity(mount)
+    # Recognition requires BOTH files (R3): write a valid card manifest
+    # alongside the identity so the both-files gate recognizes the drive.
+    mf.Manifest_Store.save_card(mount, mf.CardManifest())
     assert du.resolve_drive_id(mount) == written_id

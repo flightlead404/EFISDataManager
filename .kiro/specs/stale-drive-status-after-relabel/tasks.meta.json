@@ -1,0 +1,137 @@
+{
+  "pbtResults": {
+    "1. Write bug condition exploration test": {
+      "status": "passed",
+      "failingExample": "Relabel eject with /Volumes/MINIAP1029 still mounted while _on_efis_drive_ejected(\"/Volumes/EFIS_MINI\") runs. Unfixed handler counterexamples: (1) _set_drive_status calls=['Not connected'] -> status ends 'Not connected' (expected 'Connected'); (2) _set_status('Idle') called (expected not called); (3) _notify('EFIS Drive Ejected', 'Drive removed safely.') fired (expected not fired). 3 relabel-case assertions FAILED on unfixed code (bug confirmed); genuine-removal baseline PASSED.",
+      "lastRunTimestamp": 1793463253933
+    }
+  },
+  "executionHistory": {
+    "1. Write bug condition exploration test": [
+      {
+        "executionId": "a8d0a0bc-823b-4ec0-b512-deb72eacd3d8",
+        "chatSessionId": "sess_ef32eb0f-95d6-4e40-a8fe-60e4ca492388",
+        "timestamp": 1793463157976
+      },
+      {
+        "executionId": "a8d0a0bc-823b-4ec0-b512-deb72eacd3d8",
+        "chatSessionId": "sess_ef32eb0f-95d6-4e40-a8fe-60e4ca492388",
+        "timestamp": 1793463163282
+      },
+      {
+        "executionId": "a8d0a0bc-823b-4ec0-b512-deb72eacd3d8",
+        "chatSessionId": "sess_ef32eb0f-95d6-4e40-a8fe-60e4ca492388",
+        "timestamp": 1793463271592
+      }
+    ],
+    "2. Write preservation property tests (BEFORE implementing fix)": [
+      {
+        "executionId": "a8d0a0bc-823b-4ec0-b512-deb72eacd3d8",
+        "chatSessionId": "sess_ef32eb0f-95d6-4e40-a8fe-60e4ca492388",
+        "timestamp": 1793463158040
+      },
+      {
+        "executionId": "a8d0a0bc-823b-4ec0-b512-deb72eacd3d8",
+        "chatSessionId": "sess_ef32eb0f-95d6-4e40-a8fe-60e4ca492388",
+        "timestamp": 1793463274127
+      },
+      {
+        "executionId": "a8d0a0bc-823b-4ec0-b512-deb72eacd3d8",
+        "chatSessionId": "sess_ef32eb0f-95d6-4e40-a8fe-60e4ca492388",
+        "timestamp": 1793463443879
+      }
+    ],
+    "3.1 Rewrite `_on_efis_drive_ejected` to reconcile against ground truth": [
+      {
+        "executionId": "a8d0a0bc-823b-4ec0-b512-deb72eacd3d8",
+        "chatSessionId": "sess_ef32eb0f-95d6-4e40-a8fe-60e4ca492388",
+        "timestamp": 1793463158080
+      },
+      {
+        "executionId": "a8d0a0bc-823b-4ec0-b512-deb72eacd3d8",
+        "chatSessionId": "sess_ef32eb0f-95d6-4e40-a8fe-60e4ca492388",
+        "timestamp": 1793463446709
+      },
+      {
+        "executionId": "a8d0a0bc-823b-4ec0-b512-deb72eacd3d8",
+        "chatSessionId": "sess_ef32eb0f-95d6-4e40-a8fe-60e4ca492388",
+        "timestamp": 1793463707856
+      }
+    ],
+    "3.2 Verify bug condition exploration test now passes": [
+      {
+        "executionId": "a8d0a0bc-823b-4ec0-b512-deb72eacd3d8",
+        "chatSessionId": "sess_ef32eb0f-95d6-4e40-a8fe-60e4ca492388",
+        "timestamp": 1793463158113
+      },
+      {
+        "executionId": "a8d0a0bc-823b-4ec0-b512-deb72eacd3d8",
+        "chatSessionId": "sess_ef32eb0f-95d6-4e40-a8fe-60e4ca492388",
+        "timestamp": 1793463710339
+      },
+      {
+        "executionId": "a8d0a0bc-823b-4ec0-b512-deb72eacd3d8",
+        "chatSessionId": "sess_ef32eb0f-95d6-4e40-a8fe-60e4ca492388",
+        "timestamp": 1793463739391
+      }
+    ],
+    "3.3 Verify preservation tests still pass": [
+      {
+        "executionId": "a8d0a0bc-823b-4ec0-b512-deb72eacd3d8",
+        "chatSessionId": "sess_ef32eb0f-95d6-4e40-a8fe-60e4ca492388",
+        "timestamp": 1793463158144
+      },
+      {
+        "executionId": "a8d0a0bc-823b-4ec0-b512-deb72eacd3d8",
+        "chatSessionId": "sess_ef32eb0f-95d6-4e40-a8fe-60e4ca492388",
+        "timestamp": 1793463741645
+      },
+      {
+        "executionId": "a8d0a0bc-823b-4ec0-b512-deb72eacd3d8",
+        "chatSessionId": "sess_ef32eb0f-95d6-4e40-a8fe-60e4ca492388",
+        "timestamp": 1793463786202
+      }
+    ],
+    "4. Add integration tests for the adopt-relabel flow": [
+      {
+        "executionId": "a8d0a0bc-823b-4ec0-b512-deb72eacd3d8",
+        "chatSessionId": "sess_ef32eb0f-95d6-4e40-a8fe-60e4ca492388",
+        "timestamp": 1793463158175
+      },
+      {
+        "executionId": "a8d0a0bc-823b-4ec0-b512-deb72eacd3d8",
+        "chatSessionId": "sess_ef32eb0f-95d6-4e40-a8fe-60e4ca492388",
+        "timestamp": 1793463788820
+      },
+      {
+        "executionId": "a8d0a0bc-823b-4ec0-b512-deb72eacd3d8",
+        "chatSessionId": "sess_ef32eb0f-95d6-4e40-a8fe-60e4ca492388",
+        "timestamp": 1793464062285
+      }
+    ],
+    "5. Checkpoint - Ensure all tests pass": [
+      {
+        "executionId": "a8d0a0bc-823b-4ec0-b512-deb72eacd3d8",
+        "chatSessionId": "sess_ef32eb0f-95d6-4e40-a8fe-60e4ca492388",
+        "timestamp": 1793463158210
+      },
+      {
+        "executionId": "a8d0a0bc-823b-4ec0-b512-deb72eacd3d8",
+        "chatSessionId": "sess_ef32eb0f-95d6-4e40-a8fe-60e4ca492388",
+        "timestamp": 1793464064682
+      },
+      {
+        "executionId": "a8d0a0bc-823b-4ec0-b512-deb72eacd3d8",
+        "chatSessionId": "sess_ef32eb0f-95d6-4e40-a8fe-60e4ca492388",
+        "timestamp": 1793464277486
+      }
+    ],
+    "3. Fix stale drive status after relabel in the eject handler": [
+      {
+        "executionId": "a8d0a0bc-823b-4ec0-b512-deb72eacd3d8",
+        "chatSessionId": "sess_ef32eb0f-95d6-4e40-a8fe-60e4ca492388",
+        "timestamp": 1793463786257
+      }
+    ]
+  }
+}

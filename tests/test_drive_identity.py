@@ -26,12 +26,25 @@ import os
 import pytest
 
 from efis_data_manager import drive_updater as du
+from efis_data_manager import manifest as mf
 
 
 @pytest.fixture
 def mount(tmp_path):
     """A ready, writable, listable mount root that passes wait_for_mount_ready."""
     return str(tmp_path)
+
+
+def _write_card_manifest(mount):
+    """Write a valid (empty) card manifest at the volume root.
+
+    Recognition requires BOTH files (R3): since the chart-sync-wiring-fix
+    both-files gate, ``resolve_drive_id`` returns ``None`` for a drive that has
+    an identity file but no valid ``EFIS_MANIFEST.json``. These identity-only
+    resolve tests therefore write an empty card manifest alongside the identity
+    so the drive is recognized as fully provisioned.
+    """
+    mf.Manifest_Store.save_card(mount, mf.CardManifest())
 
 
 @pytest.fixture(autouse=True)
@@ -154,6 +167,7 @@ def test_update_provenance_noop_without_identity(mount):
 def test_resolve_returns_existing_id(mount):
     data = du._new_identity(mount)
     du.write_identity(mount, data)
+    _write_card_manifest(mount)
     assert du.resolve_drive_id(mount) == data["id"]
 
 
@@ -198,6 +212,7 @@ def test_resolve_volume_uuid_mismatch_warns(mount, monkeypatch, caplog):
     data = du._new_identity(mount)
     data["volume_uuid"] = "STORED-UUID"
     du.write_identity(mount, data)
+    _write_card_manifest(mount)
 
     # diskutil now reports a different VolumeUUID (cloned drive / copied file).
     monkeypatch.setattr(du, "_volume_uuid", lambda mp: "OBSERVED-UUID")
@@ -216,6 +231,7 @@ def test_resolve_volume_uuid_match_no_warning(mount, monkeypatch, caplog):
     data = du._new_identity(mount)
     data["volume_uuid"] = "SAME-UUID"
     du.write_identity(mount, data)
+    _write_card_manifest(mount)
     monkeypatch.setattr(du, "_volume_uuid", lambda mp: "SAME-UUID")
 
     with caplog.at_level(logging.WARNING, logger="efis_data_manager.drive_updater"):

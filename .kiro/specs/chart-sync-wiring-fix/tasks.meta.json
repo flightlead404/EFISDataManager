@@ -1,0 +1,656 @@
+{
+  "pbtResults": {},
+  "executionHistory": {
+    "1.1 Delete stall machinery from `drive_updater.py`": [
+      {
+        "executionId": "a0ee2ffc-e456-432f-a23d-ef0698a4fad5",
+        "chatSessionId": "sess_ffd9ca1a-9d64-4e1b-be88-cf117a79dc53",
+        "timestamp": 1793396959588
+      },
+      {
+        "executionId": "a0ee2ffc-e456-432f-a23d-ef0698a4fad5",
+        "chatSessionId": "sess_ffd9ca1a-9d64-4e1b-be88-cf117a79dc53",
+        "timestamp": 1793396972197
+      },
+      {
+        "executionId": "a0ee2ffc-e456-432f-a23d-ef0698a4fad5",
+        "chatSessionId": "sess_ffd9ca1a-9d64-4e1b-be88-cf117a79dc53",
+        "timestamp": 1793397123763
+      }
+    ],
+    "1.2 Sever the `stall_hook` wiring in `repro_harness.py`": [
+      {
+        "executionId": "a0ee2ffc-e456-432f-a23d-ef0698a4fad5",
+        "chatSessionId": "sess_ffd9ca1a-9d64-4e1b-be88-cf117a79dc53",
+        "timestamp": 1793396959646
+      },
+      {
+        "executionId": "a0ee2ffc-e456-432f-a23d-ef0698a4fad5",
+        "chatSessionId": "sess_ffd9ca1a-9d64-4e1b-be88-cf117a79dc53",
+        "timestamp": 1793397426040
+      },
+      {
+        "executionId": "a0ee2ffc-e456-432f-a23d-ef0698a4fad5",
+        "chatSessionId": "sess_ffd9ca1a-9d64-4e1b-be88-cf117a79dc53",
+        "timestamp": 1793397620293
+      }
+    ],
+    "2.1 Implement `labels.build_nav_volume_label`": [
+      {
+        "executionId": "a0ee2ffc-e456-432f-a23d-ef0698a4fad5",
+        "chatSessionId": "sess_ffd9ca1a-9d64-4e1b-be88-cf117a79dc53",
+        "timestamp": 1793396959670
+      },
+      {
+        "executionId": "a0ee2ffc-e456-432f-a23d-ef0698a4fad5",
+        "chatSessionId": "sess_ffd9ca1a-9d64-4e1b-be88-cf117a79dc53",
+        "timestamp": 1793396970759
+      },
+      {
+        "executionId": "a0ee2ffc-e456-432f-a23d-ef0698a4fad5",
+        "chatSessionId": "sess_ffd9ca1a-9d64-4e1b-be88-cf117a79dc53",
+        "timestamp": 1793397124789
+      }
+    ],
+    "3.1 Implement `drive_updater._delete_chart_data_tree`": [
+      {
+        "executionId": "a0ee2ffc-e456-432f-a23d-ef0698a4fad5",
+        "chatSessionId": "sess_ffd9ca1a-9d64-4e1b-be88-cf117a79dc53",
+        "timestamp": 1793396959709
+      },
+      {
+        "executionId": "a0ee2ffc-e456-432f-a23d-ef0698a4fad5",
+        "chatSessionId": "sess_ffd9ca1a-9d64-4e1b-be88-cf117a79dc53",
+        "timestamp": 1793397137081
+      },
+      {
+        "executionId": "a0ee2ffc-e456-432f-a23d-ef0698a4fad5",
+        "chatSessionId": "sess_ffd9ca1a-9d64-4e1b-be88-cf117a79dc53",
+        "timestamp": 1793397216986
+      }
+    ],
+    "4.1 Implement `drive_updater._card_manifest_from_card`": [
+      {
+        "executionId": "a0ee2ffc-e456-432f-a23d-ef0698a4fad5",
+        "chatSessionId": "sess_ffd9ca1a-9d64-4e1b-be88-cf117a79dc53",
+        "timestamp": 1793396959726
+      },
+      {
+        "executionId": "a0ee2ffc-e456-432f-a23d-ef0698a4fad5",
+        "chatSessionId": "sess_ffd9ca1a-9d64-4e1b-be88-cf117a79dc53",
+        "timestamp": 1793397217979
+      },
+      {
+        "executionId": "a0ee2ffc-e456-432f-a23d-ef0698a4fad5",
+        "chatSessionId": "sess_ffd9ca1a-9d64-4e1b-be88-cf117a79dc53",
+        "timestamp": 1793397306233
+      }
+    ],
+    "5.1 Drop `label`, add `chart_capable` + `nav_label_prefix`": [
+      {
+        "executionId": "a0ee2ffc-e456-432f-a23d-ef0698a4fad5",
+        "chatSessionId": "sess_ffd9ca1a-9d64-4e1b-be88-cf117a79dc53",
+        "timestamp": 1793396959748
+      },
+      {
+        "executionId": "a0ee2ffc-e456-432f-a23d-ef0698a4fad5",
+        "chatSessionId": "sess_ffd9ca1a-9d64-4e1b-be88-cf117a79dc53",
+        "timestamp": 1793397306960
+      },
+      {
+        "executionId": "a0ee2ffc-e456-432f-a23d-ef0698a4fad5",
+        "chatSessionId": "sess_ffd9ca1a-9d64-4e1b-be88-cf117a79dc53",
+        "timestamp": 1793397412450
+      }
+    ],
+    "6.1 Implement `_chart_family_job` + `build_jobs` diff wiring": [
+      {
+        "executionId": "a0ee2ffc-e456-432f-a23d-ef0698a4fad5",
+        "chatSessionId": "sess_ffd9ca1a-9d64-4e1b-be88-cf117a79dc53",
+        "timestamp": 1793396959765
+      },
+      {
+        "executionId": "a0ee2ffc-e456-432f-a23d-ef0698a4fad5",
+        "chatSessionId": "sess_ffd9ca1a-9d64-4e1b-be88-cf117a79dc53",
+        "timestamp": 1793397424588
+      },
+      {
+        "executionId": "a0ee2ffc-e456-432f-a23d-ef0698a4fad5",
+        "chatSessionId": "sess_ffd9ca1a-9d64-4e1b-be88-cf117a79dc53",
+        "timestamp": 1793397618860
+      }
+    ],
+    "7.1 Make `verify_drive`'s repair branch run a legacy full job": [
+      {
+        "executionId": "a0ee2ffc-e456-432f-a23d-ef0698a4fad5",
+        "chatSessionId": "sess_ffd9ca1a-9d64-4e1b-be88-cf117a79dc53",
+        "timestamp": 1793396959782
+      },
+      {
+        "executionId": "a0ee2ffc-e456-432f-a23d-ef0698a4fad5",
+        "chatSessionId": "sess_ffd9ca1a-9d64-4e1b-be88-cf117a79dc53",
+        "timestamp": 1793397651825
+      },
+      {
+        "executionId": "a0ee2ffc-e456-432f-a23d-ef0698a4fad5",
+        "chatSessionId": "sess_ffd9ca1a-9d64-4e1b-be88-cf117a79dc53",
+        "timestamp": 1793397837411
+      }
+    ],
+    "8.1 Add the card-manifest AND check to `resolve_drive_id`": [
+      {
+        "executionId": "a0ee2ffc-e456-432f-a23d-ef0698a4fad5",
+        "chatSessionId": "sess_ffd9ca1a-9d64-4e1b-be88-cf117a79dc53",
+        "timestamp": 1793396959804
+      },
+      {
+        "executionId": "a0ee2ffc-e456-432f-a23d-ef0698a4fad5",
+        "chatSessionId": "sess_ffd9ca1a-9d64-4e1b-be88-cf117a79dc53",
+        "timestamp": 1793397844898
+      },
+      {
+        "executionId": "a0ee2ffc-e456-432f-a23d-ef0698a4fad5",
+        "chatSessionId": "sess_ffd9ca1a-9d64-4e1b-be88-cf117a79dc53",
+        "timestamp": 1793398080216
+      }
+    ],
+    "9. Checkpoint — Ensure all tests pass": [
+      {
+        "executionId": "a0ee2ffc-e456-432f-a23d-ef0698a4fad5",
+        "chatSessionId": "sess_ffd9ca1a-9d64-4e1b-be88-cf117a79dc53",
+        "timestamp": 1793396959829
+      },
+      {
+        "executionId": "a0ee2ffc-e456-432f-a23d-ef0698a4fad5",
+        "chatSessionId": "sess_ffd9ca1a-9d64-4e1b-be88-cf117a79dc53",
+        "timestamp": 1793398490332
+      },
+      {
+        "executionId": "a0ee2ffc-e456-432f-a23d-ef0698a4fad5",
+        "chatSessionId": "sess_ffd9ca1a-9d64-4e1b-be88-cf117a79dc53",
+        "timestamp": 1793398894324
+      }
+    ],
+    "10.1 Write `CardManifest()` before prepare's first populate": [
+      {
+        "executionId": "a0ee2ffc-e456-432f-a23d-ef0698a4fad5",
+        "chatSessionId": "sess_ffd9ca1a-9d64-4e1b-be88-cf117a79dc53",
+        "timestamp": 1793396959846
+      },
+      {
+        "executionId": "a0ee2ffc-e456-432f-a23d-ef0698a4fad5",
+        "chatSessionId": "sess_ffd9ca1a-9d64-4e1b-be88-cf117a79dc53",
+        "timestamp": 1793398901463
+      },
+      {
+        "executionId": "a0ee2ffc-e456-432f-a23d-ef0698a4fad5",
+        "chatSessionId": "sess_ffd9ca1a-9d64-4e1b-be88-cf117a79dc53",
+        "timestamp": 1793398963617
+      }
+    ],
+    "11.1 Make `_relabel_from_card_manifest` nav-aware": [
+      {
+        "executionId": "a0ee2ffc-e456-432f-a23d-ef0698a4fad5",
+        "chatSessionId": "sess_ffd9ca1a-9d64-4e1b-be88-cf117a79dc53",
+        "timestamp": 1793396959865
+      },
+      {
+        "executionId": "a0ee2ffc-e456-432f-a23d-ef0698a4fad5",
+        "chatSessionId": "sess_ffd9ca1a-9d64-4e1b-be88-cf117a79dc53",
+        "timestamp": 1793398964983
+      },
+      {
+        "executionId": "a0ee2ffc-e456-432f-a23d-ef0698a4fad5",
+        "chatSessionId": "sess_ffd9ca1a-9d64-4e1b-be88-cf117a79dc53",
+        "timestamp": 1793399057921
+      }
+    ],
+    "11.2 Refresh `chart_capable` in identity at end of a managed sync": [
+      {
+        "executionId": "a0ee2ffc-e456-432f-a23d-ef0698a4fad5",
+        "chatSessionId": "sess_ffd9ca1a-9d64-4e1b-be88-cf117a79dc53",
+        "timestamp": 1793396959889
+      },
+      {
+        "executionId": "a0ee2ffc-e456-432f-a23d-ef0698a4fad5",
+        "chatSessionId": "sess_ffd9ca1a-9d64-4e1b-be88-cf117a79dc53",
+        "timestamp": 1793399070917
+      },
+      {
+        "executionId": "a0ee2ffc-e456-432f-a23d-ef0698a4fad5",
+        "chatSessionId": "sess_ffd9ca1a-9d64-4e1b-be88-cf117a79dc53",
+        "timestamp": 1793399196300
+      }
+    ],
+    "12.1 Extend `adopt_drive` with the content-action signature + branches": [
+      {
+        "executionId": "a0ee2ffc-e456-432f-a23d-ef0698a4fad5",
+        "chatSessionId": "sess_ffd9ca1a-9d64-4e1b-be88-cf117a79dc53",
+        "timestamp": 1793396959905
+      },
+      {
+        "executionId": "a0ee2ffc-e456-432f-a23d-ef0698a4fad5",
+        "chatSessionId": "sess_ffd9ca1a-9d64-4e1b-be88-cf117a79dc53",
+        "timestamp": 1793399231807
+      },
+      {
+        "executionId": "a0ee2ffc-e456-432f-a23d-ef0698a4fad5",
+        "chatSessionId": "sess_ffd9ca1a-9d64-4e1b-be88-cf117a79dc53",
+        "timestamp": 1793399350699
+      }
+    ],
+    "13.1 Add `_resolve_adopt_device_link_id` and thread the plan into the worker": [
+      {
+        "executionId": "a0ee2ffc-e456-432f-a23d-ef0698a4fad5",
+        "chatSessionId": "sess_ffd9ca1a-9d64-4e1b-be88-cf117a79dc53",
+        "timestamp": 1793396959921
+      },
+      {
+        "executionId": "a0ee2ffc-e456-432f-a23d-ef0698a4fad5",
+        "chatSessionId": "sess_ffd9ca1a-9d64-4e1b-be88-cf117a79dc53",
+        "timestamp": 1793399375770
+      },
+      {
+        "executionId": "a0ee2ffc-e456-432f-a23d-ef0698a4fad5",
+        "chatSessionId": "sess_ffd9ca1a-9d64-4e1b-be88-cf117a79dc53",
+        "timestamp": 1793399503065
+      }
+    ],
+    "15.1 Bump `MENUBAR_VERSION` in `src/efis_data_manager/__init__.py`": [
+      {
+        "executionId": "a0ee2ffc-e456-432f-a23d-ef0698a4fad5",
+        "chatSessionId": "sess_ffd9ca1a-9d64-4e1b-be88-cf117a79dc53",
+        "timestamp": 1793396959938
+      },
+      {
+        "executionId": "a0ee2ffc-e456-432f-a23d-ef0698a4fad5",
+        "chatSessionId": "sess_ffd9ca1a-9d64-4e1b-be88-cf117a79dc53",
+        "timestamp": 1793399742613
+      },
+      {
+        "executionId": "a0ee2ffc-e456-432f-a23d-ef0698a4fad5",
+        "chatSessionId": "sess_ffd9ca1a-9d64-4e1b-be88-cf117a79dc53",
+        "timestamp": 1793399865181
+      }
+    ],
+    "16. Final checkpoint — Ensure the full suite passes": [
+      {
+        "executionId": "a0ee2ffc-e456-432f-a23d-ef0698a4fad5",
+        "chatSessionId": "sess_ffd9ca1a-9d64-4e1b-be88-cf117a79dc53",
+        "timestamp": 1793396959957
+      },
+      {
+        "executionId": "a0ee2ffc-e456-432f-a23d-ef0698a4fad5",
+        "chatSessionId": "sess_ffd9ca1a-9d64-4e1b-be88-cf117a79dc53",
+        "timestamp": 1793400017014
+      },
+      {
+        "executionId": "a0ee2ffc-e456-432f-a23d-ef0698a4fad5",
+        "chatSessionId": "sess_ffd9ca1a-9d64-4e1b-be88-cf117a79dc53",
+        "timestamp": 1793400528637
+      }
+    ],
+    "2. Add the nav-only label builder (R9)": [
+      {
+        "executionId": "a0ee2ffc-e456-432f-a23d-ef0698a4fad5",
+        "chatSessionId": "sess_ffd9ca1a-9d64-4e1b-be88-cf117a79dc53",
+        "timestamp": 1793397124832
+      }
+    ],
+    "3. Add the scoped ChartData delete helper (R7)": [
+      {
+        "executionId": "a0ee2ffc-e456-432f-a23d-ef0698a4fad5",
+        "chatSessionId": "sess_ffd9ca1a-9d64-4e1b-be88-cf117a79dc53",
+        "timestamp": 1793397217035
+      }
+    ],
+    "4. Add the build-manifest-from-card helper (R6)": [
+      {
+        "executionId": "a0ee2ffc-e456-432f-a23d-ef0698a4fad5",
+        "chatSessionId": "sess_ffd9ca1a-9d64-4e1b-be88-cf117a79dc53",
+        "timestamp": 1793397306261
+      }
+    ],
+    "5. Change the identity schema (R8)": [
+      {
+        "executionId": "a0ee2ffc-e456-432f-a23d-ef0698a4fad5",
+        "chatSessionId": "sess_ffd9ca1a-9d64-4e1b-be88-cf117a79dc53",
+        "timestamp": 1793397412488
+      }
+    ],
+    "2.2 Write property test for the nav-only label": [
+      {
+        "executionId": "a0ee2ffc-e456-432f-a23d-ef0698a4fad5",
+        "chatSessionId": "sess_ffd9ca1a-9d64-4e1b-be88-cf117a79dc53",
+        "timestamp": 1793397427487
+      },
+      {
+        "executionId": "a0ee2ffc-e456-432f-a23d-ef0698a4fad5",
+        "chatSessionId": "sess_ffd9ca1a-9d64-4e1b-be88-cf117a79dc53",
+        "timestamp": 1793397621632
+      }
+    ],
+    "3.2 Write property test for the delete scope": [
+      {
+        "executionId": "a0ee2ffc-e456-432f-a23d-ef0698a4fad5",
+        "chatSessionId": "sess_ffd9ca1a-9d64-4e1b-be88-cf117a79dc53",
+        "timestamp": 1793397428391
+      },
+      {
+        "executionId": "a0ee2ffc-e456-432f-a23d-ef0698a4fad5",
+        "chatSessionId": "sess_ffd9ca1a-9d64-4e1b-be88-cf117a79dc53",
+        "timestamp": 1793397622669
+      }
+    ],
+    "4.2 Write property test for from-card manifest build correctness": [
+      {
+        "executionId": "a0ee2ffc-e456-432f-a23d-ef0698a4fad5",
+        "chatSessionId": "sess_ffd9ca1a-9d64-4e1b-be88-cf117a79dc53",
+        "timestamp": 1793397429324
+      },
+      {
+        "executionId": "a0ee2ffc-e456-432f-a23d-ef0698a4fad5",
+        "chatSessionId": "sess_ffd9ca1a-9d64-4e1b-be88-cf117a79dc53",
+        "timestamp": 1793397623491
+      }
+    ],
+    "6. Wire the manifest diff into `build_jobs` (R2)": [
+      {
+        "executionId": "a0ee2ffc-e456-432f-a23d-ef0698a4fad5",
+        "chatSessionId": "sess_ffd9ca1a-9d64-4e1b-be88-cf117a79dc53",
+        "timestamp": 1793397618924
+      }
+    ],
+    "1. Remove the stall detector (R1)": [
+      {
+        "executionId": "a0ee2ffc-e456-432f-a23d-ef0698a4fad5",
+        "chatSessionId": "sess_ffd9ca1a-9d64-4e1b-be88-cf117a79dc53",
+        "timestamp": 1793397620331
+      }
+    ],
+    "1.3 Update stall-detector tests": [
+      {
+        "executionId": "a0ee2ffc-e456-432f-a23d-ef0698a4fad5",
+        "chatSessionId": "sess_ffd9ca1a-9d64-4e1b-be88-cf117a79dc53",
+        "timestamp": 1793397653286
+      },
+      {
+        "executionId": "a0ee2ffc-e456-432f-a23d-ef0698a4fad5",
+        "chatSessionId": "sess_ffd9ca1a-9d64-4e1b-be88-cf117a79dc53",
+        "timestamp": 1793397833301
+      }
+    ],
+    "5.2 Write property test for identity schema invariants": [
+      {
+        "executionId": "a0ee2ffc-e456-432f-a23d-ef0698a4fad5",
+        "chatSessionId": "sess_ffd9ca1a-9d64-4e1b-be88-cf117a79dc53",
+        "timestamp": 1793397654294
+      },
+      {
+        "executionId": "a0ee2ffc-e456-432f-a23d-ef0698a4fad5",
+        "chatSessionId": "sess_ffd9ca1a-9d64-4e1b-be88-cf117a79dc53",
+        "timestamp": 1793397836658
+      }
+    ],
+    "6.2 Write property test for diff wiring": [
+      {
+        "executionId": "a0ee2ffc-e456-432f-a23d-ef0698a4fad5",
+        "chatSessionId": "sess_ffd9ca1a-9d64-4e1b-be88-cf117a79dc53",
+        "timestamp": 1793397655617
+      },
+      {
+        "executionId": "a0ee2ffc-e456-432f-a23d-ef0698a4fad5",
+        "chatSessionId": "sess_ffd9ca1a-9d64-4e1b-be88-cf117a79dc53",
+        "timestamp": 1793397834152
+      }
+    ],
+    "6.3 Write property test for skip-cycle omission": [
+      {
+        "executionId": "a0ee2ffc-e456-432f-a23d-ef0698a4fad5",
+        "chatSessionId": "sess_ffd9ca1a-9d64-4e1b-be88-cf117a79dc53",
+        "timestamp": 1793397656456
+      },
+      {
+        "executionId": "a0ee2ffc-e456-432f-a23d-ef0698a4fad5",
+        "chatSessionId": "sess_ffd9ca1a-9d64-4e1b-be88-cf117a79dc53",
+        "timestamp": 1793397835118
+      }
+    ],
+    "7. Force a legacy full reconcile on verify+repair (R2)": [
+      {
+        "executionId": "a0ee2ffc-e456-432f-a23d-ef0698a4fad5",
+        "chatSessionId": "sess_ffd9ca1a-9d64-4e1b-be88-cf117a79dc53",
+        "timestamp": 1793397837428
+      }
+    ],
+    "8.2 Write unit tests for the both-files gate": [
+      {
+        "executionId": "a0ee2ffc-e456-432f-a23d-ef0698a4fad5",
+        "chatSessionId": "sess_ffd9ca1a-9d64-4e1b-be88-cf117a79dc53",
+        "timestamp": 1793397845876
+      },
+      {
+        "executionId": "a0ee2ffc-e456-432f-a23d-ef0698a4fad5",
+        "chatSessionId": "sess_ffd9ca1a-9d64-4e1b-be88-cf117a79dc53",
+        "timestamp": 1793398081615
+      }
+    ],
+    "7.2 Write unit test for repair legacy-full behavior": [
+      {
+        "executionId": "a0ee2ffc-e456-432f-a23d-ef0698a4fad5",
+        "chatSessionId": "sess_ffd9ca1a-9d64-4e1b-be88-cf117a79dc53",
+        "timestamp": 1793397847303
+      },
+      {
+        "executionId": "a0ee2ffc-e456-432f-a23d-ef0698a4fad5",
+        "chatSessionId": "sess_ffd9ca1a-9d64-4e1b-be88-cf117a79dc53",
+        "timestamp": 1793398082531
+      }
+    ],
+    "5.3 Update tests asserting `identity[\"label\"]`": [
+      {
+        "executionId": "a0ee2ffc-e456-432f-a23d-ef0698a4fad5",
+        "chatSessionId": "sess_ffd9ca1a-9d64-4e1b-be88-cf117a79dc53",
+        "timestamp": 1793397848241
+      },
+      {
+        "executionId": "a0ee2ffc-e456-432f-a23d-ef0698a4fad5",
+        "chatSessionId": "sess_ffd9ca1a-9d64-4e1b-be88-cf117a79dc53",
+        "timestamp": 1793398083967
+      }
+    ],
+    "6.4 Write property test for absent-manifest legacy job": [
+      {
+        "executionId": "a0ee2ffc-e456-432f-a23d-ef0698a4fad5",
+        "chatSessionId": "sess_ffd9ca1a-9d64-4e1b-be88-cf117a79dc53",
+        "timestamp": 1793397849273
+      },
+      {
+        "executionId": "a0ee2ffc-e456-432f-a23d-ef0698a4fad5",
+        "chatSessionId": "sess_ffd9ca1a-9d64-4e1b-be88-cf117a79dc53",
+        "timestamp": 1793398084639
+      }
+    ],
+    "8. Gate recognition on both files (R3)": [
+      {
+        "executionId": "a0ee2ffc-e456-432f-a23d-ef0698a4fad5",
+        "chatSessionId": "sess_ffd9ca1a-9d64-4e1b-be88-cf117a79dc53",
+        "timestamp": 1793398080256
+      }
+    ],
+    "6.5 Write property test for relpath/payload-root alignment": [
+      {
+        "executionId": "a0ee2ffc-e456-432f-a23d-ef0698a4fad5",
+        "chatSessionId": "sess_ffd9ca1a-9d64-4e1b-be88-cf117a79dc53",
+        "timestamp": 1793398094947
+      },
+      {
+        "executionId": "a0ee2ffc-e456-432f-a23d-ef0698a4fad5",
+        "chatSessionId": "sess_ffd9ca1a-9d64-4e1b-be88-cf117a79dc53",
+        "timestamp": 1793398482982
+      }
+    ],
+    "6.6 Write property test for root flight-data preservation under prune": [
+      {
+        "executionId": "a0ee2ffc-e456-432f-a23d-ef0698a4fad5",
+        "chatSessionId": "sess_ffd9ca1a-9d64-4e1b-be88-cf117a79dc53",
+        "timestamp": 1793398095903
+      },
+      {
+        "executionId": "a0ee2ffc-e456-432f-a23d-ef0698a4fad5",
+        "chatSessionId": "sess_ffd9ca1a-9d64-4e1b-be88-cf117a79dc53",
+        "timestamp": 1793398484999
+      }
+    ],
+    "6.7 Update `tests/test_chart_family_integration.py`": [
+      {
+        "executionId": "a0ee2ffc-e456-432f-a23d-ef0698a4fad5",
+        "chatSessionId": "sess_ffd9ca1a-9d64-4e1b-be88-cf117a79dc53",
+        "timestamp": 1793398096971
+      },
+      {
+        "executionId": "a0ee2ffc-e456-432f-a23d-ef0698a4fad5",
+        "chatSessionId": "sess_ffd9ca1a-9d64-4e1b-be88-cf117a79dc53",
+        "timestamp": 1793398485032
+      }
+    ],
+    "10. Prepare writes an empty initial Card_Manifest (R4)": [
+      {
+        "executionId": "a0ee2ffc-e456-432f-a23d-ef0698a4fad5",
+        "chatSessionId": "sess_ffd9ca1a-9d64-4e1b-be88-cf117a79dc53",
+        "timestamp": 1793398963652
+      }
+    ],
+    "11. Nav-aware post-sync relabel + chart_capable refresh (R8, R9)": [
+      {
+        "executionId": "a0ee2ffc-e456-432f-a23d-ef0698a4fad5",
+        "chatSessionId": "sess_ffd9ca1a-9d64-4e1b-be88-cf117a79dc53",
+        "timestamp": 1793399196333
+      }
+    ],
+    "12. Adopt content-handling in `adopt_drive` (R5, R6, R7)": [
+      {
+        "executionId": "a0ee2ffc-e456-432f-a23d-ef0698a4fad5",
+        "chatSessionId": "sess_ffd9ca1a-9d64-4e1b-be88-cf117a79dc53",
+        "timestamp": 1793399350738
+      }
+    ],
+    "13. Adopt device selection on the main thread (R5)": [
+      {
+        "executionId": "a0ee2ffc-e456-432f-a23d-ef0698a4fad5",
+        "chatSessionId": "sess_ffd9ca1a-9d64-4e1b-be88-cf117a79dc53",
+        "timestamp": 1793399503121
+      }
+    ],
+    "12.2 Write unit tests for the four content cases": [
+      {
+        "executionId": "a0ee2ffc-e456-432f-a23d-ef0698a4fad5",
+        "chatSessionId": "sess_ffd9ca1a-9d64-4e1b-be88-cf117a79dc53",
+        "timestamp": 1793399511696
+      },
+      {
+        "executionId": "a0ee2ffc-e456-432f-a23d-ef0698a4fad5",
+        "chatSessionId": "sess_ffd9ca1a-9d64-4e1b-be88-cf117a79dc53",
+        "timestamp": 1793399734062
+      }
+    ],
+    "13.2 Write unit tests for resolve-then-prompt and cancel-aborts": [
+      {
+        "executionId": "a0ee2ffc-e456-432f-a23d-ef0698a4fad5",
+        "chatSessionId": "sess_ffd9ca1a-9d64-4e1b-be88-cf117a79dc53",
+        "timestamp": 1793399512604
+      },
+      {
+        "executionId": "a0ee2ffc-e456-432f-a23d-ef0698a4fad5",
+        "chatSessionId": "sess_ffd9ca1a-9d64-4e1b-be88-cf117a79dc53",
+        "timestamp": 1793399735539
+      }
+    ],
+    "11.3 Write unit tests for the relabel branches": [
+      {
+        "executionId": "a0ee2ffc-e456-432f-a23d-ef0698a4fad5",
+        "chatSessionId": "sess_ffd9ca1a-9d64-4e1b-be88-cf117a79dc53",
+        "timestamp": 1793399514036
+      },
+      {
+        "executionId": "a0ee2ffc-e456-432f-a23d-ef0698a4fad5",
+        "chatSessionId": "sess_ffd9ca1a-9d64-4e1b-be88-cf117a79dc53",
+        "timestamp": 1793399733132
+      }
+    ],
+    "10.2 Write unit test for prepare recognition-immediately": [
+      {
+        "executionId": "a0ee2ffc-e456-432f-a23d-ef0698a4fad5",
+        "chatSessionId": "sess_ffd9ca1a-9d64-4e1b-be88-cf117a79dc53",
+        "timestamp": 1793399514936
+      },
+      {
+        "executionId": "a0ee2ffc-e456-432f-a23d-ef0698a4fad5",
+        "chatSessionId": "sess_ffd9ca1a-9d64-4e1b-be88-cf117a79dc53",
+        "timestamp": 1793399731765
+      }
+    ],
+    "14.1 Write/keep tests for the non-regressions": [
+      {
+        "executionId": "a0ee2ffc-e456-432f-a23d-ef0698a4fad5",
+        "chatSessionId": "sess_ffd9ca1a-9d64-4e1b-be88-cf117a79dc53",
+        "timestamp": 1793399516018
+      },
+      {
+        "executionId": "a0ee2ffc-e456-432f-a23d-ef0698a4fad5",
+        "chatSessionId": "sess_ffd9ca1a-9d64-4e1b-be88-cf117a79dc53",
+        "timestamp": 1793399736215
+      }
+    ],
+    "14. Verify preserved invariants (R10)": [
+      {
+        "executionId": "a0ee2ffc-e456-432f-a23d-ef0698a4fad5",
+        "chatSessionId": "sess_ffd9ca1a-9d64-4e1b-be88-cf117a79dc53",
+        "timestamp": 1793399736266
+      }
+    ],
+    "12.3 Write unit test for Case C decline-aborts": [
+      {
+        "executionId": "a0ee2ffc-e456-432f-a23d-ef0698a4fad5",
+        "chatSessionId": "sess_ffd9ca1a-9d64-4e1b-be88-cf117a79dc53",
+        "timestamp": 1793399741695
+      },
+      {
+        "executionId": "a0ee2ffc-e456-432f-a23d-ef0698a4fad5",
+        "chatSessionId": "sess_ffd9ca1a-9d64-4e1b-be88-cf117a79dc53",
+        "timestamp": 1793399864156
+      }
+    ],
+    "15. Bump `MENUBAR_VERSION` (versioning policy)": [
+      {
+        "executionId": "a0ee2ffc-e456-432f-a23d-ef0698a4fad5",
+        "chatSessionId": "sess_ffd9ca1a-9d64-4e1b-be88-cf117a79dc53",
+        "timestamp": 1793399865259
+      }
+    ],
+    "13.3 Expand `tests/test_adopt_drive.py` end-to-end": [
+      {
+        "executionId": "a0ee2ffc-e456-432f-a23d-ef0698a4fad5",
+        "chatSessionId": "sess_ffd9ca1a-9d64-4e1b-be88-cf117a79dc53",
+        "timestamp": 1793399866189
+      },
+      {
+        "executionId": "a0ee2ffc-e456-432f-a23d-ef0698a4fad5",
+        "chatSessionId": "sess_ffd9ca1a-9d64-4e1b-be88-cf117a79dc53",
+        "timestamp": 1793400013055
+      }
+    ],
+    "1.4 Assert `repro_harness` imports and self-tests clean": [
+      {
+        "executionId": "a0ee2ffc-e456-432f-a23d-ef0698a4fad5",
+        "chatSessionId": "sess_ffd9ca1a-9d64-4e1b-be88-cf117a79dc53",
+        "timestamp": 1793400541076
+      },
+      {
+        "executionId": "a0ee2ffc-e456-432f-a23d-ef0698a4fad5",
+        "chatSessionId": "sess_ffd9ca1a-9d64-4e1b-be88-cf117a79dc53",
+        "timestamp": 1793400618035
+      }
+    ]
+  }
+}

@@ -25,27 +25,10 @@ end-to-end in test_run_sync_job.py; here it is stubbed so the aggregation
 logic is tested deterministically without a real rsync/mount.
 """
 
-import contextlib
-
 import pytest
 
 from efis_data_manager import drive_updater as du
 from efis_data_manager.drive_updater import JobResult
-
-
-@contextlib.contextmanager
-def _fake_msdos_mount(mount_point, poller=None):
-    """Stand-in for ``msdos_mount`` that yields the same mount_point.
-
-    The prepare-drive-mount-swap fix wraps the populate in
-    ``with msdos_mount(mount_point, poller=poller) as work_mount:``. The real
-    swap can't resolve a device node for the tests' fake ``/Volumes/...`` paths
-    and would raise ``MountSwapError``. Yielding the mount_point unchanged lets
-    control reach the (already-stubbed) ``update_drive`` exactly as before the
-    fix; these tests assert on ``update_drive``'s result aggregation, not the
-    mount path.
-    """
-    yield mount_point
 
 
 @pytest.fixture(autouse=True)
@@ -323,10 +306,6 @@ def _prepare_to_populate(monkeypatch, tmp_path):
 
     monkeypatch.setattr(du.os, "makedirs", fake_makedirs)
 
-    # The fix wraps the populate in `with msdos_mount(...) as work_mount:`; the
-    # real swap can't resolve a device for the fake mount, so stub it to yield
-    # straight through to the stubbed update_drive.
-    monkeypatch.setattr(du, "msdos_mount", _fake_msdos_mount)
     return mount
 
 
@@ -446,7 +425,6 @@ def test_prepare_drive_erases_whole_disk_not_slice(monkeypatch, tmp_path):
         return real_makedirs(path, *a, **k)
 
     monkeypatch.setattr(du.os, "makedirs", fake_makedirs)
-    monkeypatch.setattr(du, "msdos_mount", _fake_msdos_mount)
     monkeypatch.setattr(
         du, "update_drive",
         lambda *a, **k: {
@@ -520,7 +498,6 @@ def test_prepare_drive_wholedisk_falls_back_to_device_id(monkeypatch, tmp_path):
         return real_makedirs(path, *a, **k)
 
     monkeypatch.setattr(du.os, "makedirs", fake_makedirs)
-    monkeypatch.setattr(du, "msdos_mount", _fake_msdos_mount)
     monkeypatch.setattr(
         du, "update_drive",
         lambda *a, **k: {
@@ -533,3 +510,177 @@ def test_prepare_drive_wholedisk_falls_back_to_device_id(monkeypatch, tmp_path):
     out = du.prepare_drive("/Volumes/UNTITLED")
     assert out["success"] is True
     assert "/dev/disk9" in captured["erase_cmd"]
+
+
+# --- post-sync relabel (chart-manifest-sync task 6.1, Req 3.6 / 6.4) ---------
+# After all jobs converge and the per-family card manifests are written, the
+# card manifest reflects BOTH cycles. update_drive mirrors them into the
+# human-facing volume label C<charts>P<plates> via a best-effort diskutil
+# rename. A relabel failure must NOT fail the sync (the label is not trusted
+# for the cycle gate). The diskutil rename is mocked here.
+
+
+def _write_card_manifest(mount_point, charts_cycle, plates_cycle):
+    """Write a real EFIS_MANIFEST.json at the mount root with both cycles."""
+    from efis_data_manager import manifest as _manifest
+
+    card = _manifest.CardManifest(
+        charts_cycle=charts_cycle,
+        plates_cycle=plates_cycle,
+        written="2026-10-24T18:40:52-07:00",
+    )
+    _manifest.Manifest_Store.save_card(mount_point, card)
+
+
+def test_successful_sync_relabels_from_card_manifest(monkeypatch, tmp_path):
+    """A successful sync relabels the volume to C<charts>P<plates>, reading the
+    cycles from the freshly-written card manifest (diskutil rename mocked)."""
+    mount = tmp_path / "EFIS"
+    mount.mkdir()
+    # The card manifest the tree jobs would have written on convergence.
+    _write_card_manifest(str(mount), "2611", "2612")
+
+    results_by_name = {
+        "scanned": JobResult(name="scanned", status="updated", verified=True),
+        "plates": JobResult(name="plates", status="updated", verified=True),
+    }
+    _stub_jobs_and_driver(monkeypatch, results_by_name)
+
+    rename_calls = []
+
+    def fake_rename(mount_point, label):
+        rename_calls.append((mount_point, label))
+        return True
+
+    monkeypatch.setattr(du, "_rename_volume", fake_rename)
+
+    out = du.update_drive(str(mount))
+
+    assert out["aborted"] is False
+    assert rename_calls == [(str(mount), "C2611P2612")]
+
+
+def test_relabel_skipped_when_a_family_failed(monkeypatch, tmp_path):
+    """A failed family means the run did not fully converge: no relabel."""
+    mount = tmp_path / "EFIS"
+    mount.mkdir()
+    _write_card_manifest(str(mount), "2611", "2612")
+
+    results_by_name = {
+        "scanned": JobResult(name="scanned", status="updated", verified=True),
+        "plates": JobResult(
+            name="plates", status="failed", errors=["boom"], verified=False
+        ),
+    }
+    _stub_jobs_and_driver(monkeypatch, results_by_name)
+
+    rename_calls = []
+    monkeypatch.setattr(
+        du, "_rename_volume",
+        lambda mp, label: rename_calls.append((mp, label)) or True,
+    )
+
+    du.update_drive(str(mount))
+
+    assert rename_calls == []
+
+
+def test_relabel_skipped_when_aborted(monkeypatch, tmp_path):
+    """An aborted run does not relabel."""
+    mount = tmp_path / "EFIS"
+    mount.mkdir()
+    _write_card_manifest(str(mount), "2611", "2612")
+
+    results_by_name = {
+        "scanned": JobResult(
+            name="scanned", status="aborted", errors=["removed"], verified=False
+        ),
+    }
+    _stub_jobs_and_driver(monkeypatch, results_by_name)
+
+    rename_calls = []
+    monkeypatch.setattr(
+        du, "_rename_volume",
+        lambda mp, label: rename_calls.append((mp, label)) or True,
+    )
+
+    du.update_drive(str(mount))
+
+    assert rename_calls == []
+
+
+def test_relabel_failure_does_not_fail_the_sync(monkeypatch, tmp_path):
+    """A diskutil rename failure is logged but never fails the sync: the label
+    is a human-facing mirror, not trusted for the cycle gate."""
+    mount = tmp_path / "EFIS"
+    mount.mkdir()
+    _write_card_manifest(str(mount), "2611", "2612")
+
+    results_by_name = {
+        "scanned": JobResult(name="scanned", status="updated", verified=True),
+    }
+    _stub_jobs_and_driver(monkeypatch, results_by_name)
+
+    monkeypatch.setattr(du, "_rename_volume", lambda mp, label: False)
+
+    out = du.update_drive(str(mount))
+
+    # Rename failed, but the sync result is still clean (no errors/abort).
+    assert out["aborted"] is False
+    assert out["errors"] == []
+    assert out["jobs"]["scanned"].status == "updated"
+
+
+def test_relabel_noop_without_card_manifest(monkeypatch, tmp_path):
+    """No card manifest (e.g. nav-only run on a fresh card) -> no rename."""
+    mount = tmp_path / "EFIS"
+    mount.mkdir()
+    # Deliberately no card manifest written.
+
+    results_by_name = {
+        "nav": JobResult(name="nav", status="updated", verified=True),
+    }
+    _stub_jobs_and_driver(monkeypatch, results_by_name)
+
+    rename_calls = []
+    monkeypatch.setattr(
+        du, "_rename_volume",
+        lambda mp, label: rename_calls.append((mp, label)) or True,
+    )
+
+    du.update_drive(str(mount))
+
+    assert rename_calls == []
+
+
+def test_rename_volume_invokes_diskutil(monkeypatch):
+    """_rename_volume shells out to `diskutil rename <mount> <label>` and
+    returns True on a clean exit, False otherwise (best-effort, never raises)."""
+    import subprocess
+
+    captured = {}
+
+    class _OK:
+        returncode = 0
+        stderr = b""
+
+    def fake_run(cmd, *a, **k):
+        captured["cmd"] = cmd
+        return _OK()
+
+    monkeypatch.setattr(subprocess, "run", fake_run)
+    assert du._rename_volume("/Volumes/EFIS", "C2611P2612") is True
+    assert captured["cmd"] == ["diskutil", "rename", "/Volumes/EFIS", "C2611P2612"]
+
+    class _Fail:
+        returncode = 1
+        stderr = b"could not rename"
+
+    monkeypatch.setattr(subprocess, "run", lambda *a, **k: _Fail())
+    assert du._rename_volume("/Volumes/EFIS", "C2611P2612") is False
+
+    def boom(*a, **k):
+        raise OSError("diskutil missing")
+
+    monkeypatch.setattr(subprocess, "run", boom)
+    assert du._rename_volume("/Volumes/EFIS", "C2611P2612") is False

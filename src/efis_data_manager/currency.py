@@ -32,6 +32,8 @@ import requests
 from bs4 import BeautifulSoup
 
 from efis_data_manager.config import load_config, APP_SUPPORT_DIR
+from efis_data_manager import labels
+from efis_data_manager import manifest as manifest_mod
 
 logger = logging.getLogger(__name__)
 
@@ -390,6 +392,121 @@ def _determine_extract_dir(description: str, usb_image_path: str) -> str:
     return os.path.join(usb_image_path, "ChartData")
 
 
+# ---------------------------------------------------------------------------
+# Download-time manifest build (chart-manifest-sync Stage 1, task 1.7)
+# ---------------------------------------------------------------------------
+#
+# After a chart zip extracts successfully, build the affected family's SHA-256
+# content manifest on the SSD and persist it locally (alongside
+# chart_cycles.json). This is the "add alongside the live --size-only sync"
+# stage: manifests are computed and stored but do NOT yet drive transfer. A
+# build failure is logged at WARNING and never fails download/extract — the
+# first-sync / absent-manifest fallback covers a missing local manifest later.
+
+
+def _family_for_description(description: str) -> str:
+    """Classify a chart entry's description into a sync family.
+
+    Returns ``"plates"`` for approach plates / airport diagrams (the Plates
+    family on the 28-day cycle), else ``"scanned"`` (SEC + LO + optional HI on
+    the 56-day charts cycle). Mirrors ``_determine_extract_dir``'s routing: only
+    plates land under ``ChartData/Plates``; everything else is scanned.
+    """
+    desc = (description or "").lower()
+    if "approach plates" in desc or "airport diagrams" in desc:
+        return "plates"
+    return "scanned"
+
+
+def _cycle_from_url(download_url: str) -> Optional[str]:
+    """Harvest the YYCC cycle number from a Seattle Avionics download URL.
+
+    The 4-digit YYCC cycle is embedded in the SA download-URL key (e.g. a path
+    or filename segment containing ``2611``). A bare 4-digit token is only
+    accepted when its last two digits are a plausible cycle ordinal (01..13),
+    matching ``labels.extract_cycle``'s guard, so a stray year/size token does
+    not masquerade as a cycle.
+    """
+    if not download_url:
+        return None
+    for token in re.findall(r"(?<!\d)(\d{4})(?!\d)", download_url):
+        cc = int(token[2:])
+        if 1 <= cc <= 13:
+            return token
+    return None
+
+
+def _harvest_cycle(download_url: str, valid_dates: str) -> Optional[str]:
+    """Derive the governing cycle number for a chart entry.
+
+    Prefers the 4-digit YYCC token embedded in the SA download-URL key, then
+    falls back to deriving it from the ``valid_dates`` prose range via
+    ``labels.extract_cycle``. Returns ``None`` when neither yields a cycle (the
+    manifest is still built — the cycle is best-effort metadata).
+    """
+    return _cycle_from_url(download_url) or labels.extract_cycle(valid_dates or "")
+
+
+def _family_root(family: str, usb_image_path: str) -> str:
+    """Return the on-SSD root directory for a sync ``family``.
+
+    The scanned family root is ``ChartData`` (its Plates subtree is excluded by
+    the builder wiring below); the plates family root is ``ChartData/Plates``.
+    """
+    if family == "plates":
+        return os.path.join(usb_image_path, "ChartData", "Plates")
+    return os.path.join(usb_image_path, "ChartData")
+
+
+def _build_family_manifest(family: str, usb_image_path: str,
+                           cycle: Optional[str]) -> manifest_mod.FamilyManifest:
+    """Build the family manifest, dropping the Plates subtree for scanned.
+
+    ``Manifest_Builder.build`` walks the whole root, so for the scanned family
+    (rooted at ``ChartData``) the ``Plates/`` subtree — owned by the plates
+    family — is pruned here so the scanned manifest matches exactly what the
+    scanned sync job transfers (which excludes ``Plates/``).
+    """
+    root = _family_root(family, usb_image_path)
+    built = manifest_mod.Manifest_Builder.build(family, root, cycle)
+    if family == "scanned":
+        built.entries = {
+            rel: entry
+            for rel, entry in built.entries.items()
+            if not (rel == "Plates" or rel.startswith("Plates/"))
+        }
+    return built
+
+
+def build_and_store_manifest(entry: dict, usb_image_path: str) -> None:
+    """Build and persist the local manifest for the family ``entry`` belongs to.
+
+    Called after a successful ``extract_chart``. Classifies the entry into its
+    sync family, harvests the cycle number from the download URL / valid_dates,
+    builds the SHA-256 manifest of that family's SSD tree, and saves it locally
+    alongside ``chart_cycles.json``.
+
+    Best-effort: any failure is logged at WARNING and swallowed so it never
+    fails the download/extract. A missing local manifest is handled later by the
+    first-sync / absent-manifest full-write fallback.
+    """
+    try:
+        family = _family_for_description(entry.get("description", ""))
+        cycle = _harvest_cycle(entry.get("download_url", ""), entry.get("valid_dates", ""))
+        built = _build_family_manifest(family, usb_image_path, cycle)
+        manifest_mod.Manifest_Store.save_local(built)
+        logger.info(
+            "Built %s manifest (cycle %s): %d file(s).",
+            family, cycle, len(built.entries),
+        )
+    except Exception as exc:  # never fail download/extract on a manifest error
+        logger.warning(
+            "Manifest build failed for %r (continuing; full-write fallback "
+            "covers it): %s",
+            entry.get("description", "?"), exc,
+        )
+
+
 def download_chart(session: requests.Session, entry: dict, download_dir: str,
                    progress_callback=None) -> str:
     """Download a chart zip file with resume support.
@@ -655,15 +772,17 @@ def _extract_plates_png(zip_path: str, pwd_str: Optional[str], plates_dir: str) 
 
 
 def _extract_multidisk(zip_path: str, pwd: Optional[bytes], chartdata_dir: str) -> int:
-    """Extract a MultiDiskImg zip, routing files to LO/ or SEC/ based on filename.
+    """Extract a MultiDiskImg zip, routing files to LO/, SEC/, or HI/ by filename.
 
     MultiDiskImg zips contain files like:
         2607/W085/W085.00xN31.00.LO.0.png
         2607/W085/W085.00xN31.00.SEC.0.png
+        2607/W085/W085.00xN31.00.HI.0.png
 
     These need to be extracted to:
         ChartData/LO/W085/W085.00xN31.00.LO.0.png
         ChartData/SEC/W085/W085.00xN31.00.SEC.0.png
+        ChartData/HI/W085/W085.00xN31.00.HI.0.png
     """
     import pyzipper
 
@@ -692,11 +811,16 @@ def _extract_multidisk(zip_path: str, pwd: Optional[bytes], chartdata_dir: str) 
             filename = parts[-1]
             tile_dir = parts[-2] if len(parts) >= 2 else ""
 
-            # Determine if this is LO or SEC based on filename
+            # Determine if this is LO, SEC, or HI based on filename
             if ".LO." in filename:
                 sub_dir = "LO"
             elif ".SEC." in filename:
                 sub_dir = "SEC"
+            elif ".HI." in filename:
+                # IFR-high enroute charts land at ChartData/HI/W###/<file>
+                # (hardware-confirmed uppercase "HI" dir, verified 2026-10-27),
+                # parallel to LO/SEC, so the EFIS reads them where it expects.
+                sub_dir = "HI"
             else:
                 # Unknown type — put in base chartdata dir
                 sub_dir = ""
@@ -720,7 +844,7 @@ def _extract_multidisk(zip_path: str, pwd: Optional[bytes], chartdata_dir: str) 
     finally:
         zf.close()
 
-    logger.info(f"Extracted {n_files} MultiDiskImg file(s), routed to LO/SEC in {chartdata_dir}")
+    logger.info(f"Extracted {n_files} MultiDiskImg file(s), routed to LO/SEC/HI in {chartdata_dir}")
     return n_files
 
 
@@ -782,6 +906,10 @@ def download_charts(entries: list[dict], progress_callback=None) -> dict:
                 "last_downloaded": download_mtime,
             }
             save_cycle_metadata(metadata)
+
+            # Build the affected family's content manifest on the SSD alongside
+            # chart_cycles.json. Best-effort; never fails the download/extract.
+            build_and_store_manifest(entry, usb_image_path)
 
             # Clean up zip after successful extraction
             if os.path.exists(zip_path):
@@ -855,6 +983,10 @@ def update_charts(force: bool = False) -> dict:
                 "last_downloaded": download_mtime,
             }
             save_cycle_metadata(metadata)
+
+            # Build the affected family's content manifest on the SSD alongside
+            # chart_cycles.json. Best-effort; never fails the download/extract.
+            build_and_store_manifest(entry, usb_image_path)
 
             # Clean up zip after successful extraction
             os.remove(zip_path)

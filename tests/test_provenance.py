@@ -28,6 +28,7 @@ import shutil
 import pytest
 
 from efis_data_manager import drive_updater as du
+from efis_data_manager import manifest as mf
 
 
 pytestmark = pytest.mark.skipif(
@@ -122,10 +123,17 @@ def _adopt(env, monkeypatch):
     Returns the drive id. Detection is identity-only (no lazy adoption on
     mount), so the identity file is written explicitly — the way the Prepare
     Drive flow does — then resolve_drive_id reads it back.
+
+    Recognition requires BOTH files (R3): since the chart-sync-wiring-fix
+    both-files gate, ``resolve_drive_id`` returns ``None`` for a drive that has
+    an identity file but no valid ``EFIS_MANIFEST.json``. A valid (empty) card
+    manifest is written alongside the identity so the drive is recognized as
+    fully provisioned (mirrors the fix in tests/test_drive_identity.py).
     """
     monkeypatch.setattr(du, "_volume_uuid", lambda mp: None)
     monkeypatch.setattr(du, "_volume_name", lambda mp: None)
     du.write_identity(env["mount"], du._new_identity(env["mount"]))
+    mf.Manifest_Store.save_card(env["mount"], mf.CardManifest())
     drive_id = du.resolve_drive_id(env["mount"])
     assert drive_id is not None
     assert du.read_identity(env["mount"]) is not None

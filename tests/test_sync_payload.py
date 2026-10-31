@@ -363,14 +363,6 @@ def test_files_updated_ignores_progress2_lines(tmp_path, monkeypatch):
         return _WritingProc(stdout)
 
     monkeypatch.setattr(subprocess, "Popen", fake_popen)
-    # CPU advancing so the (silent-until-write) first tick is not a stall.
-    cpu = {"t": 0.0}
-
-    def advancing_cpu(pid):
-        cpu["t"] += 1.0
-        return cpu["t"]
-
-    monkeypatch.setattr(du, "_proc_cpu_seconds", advancing_cpu)
 
     files_updated, errors = du.sync_payload(job)
 
@@ -385,10 +377,8 @@ def test_rsync_command_has_no_info_progress2_flag(tmp_path, monkeypatch):
     Regression guard for the v1.5.2 -> v1.5.3 fix: the app runs under launchd,
     whose minimal PATH resolves bare ``rsync`` to /usr/bin/rsync (openrsync
     2.6.9), which rejects ``--info`` with "unrecognized option" and aborts the
-    whole transfer. Liveness during the silent scan phase is carried by the
-    rsync CPU-advance signal, not progress2, so the flag must stay out of the
-    command. ``--out-format=%n`` (file-count + transfer-phase stdout signal)
-    must remain.
+    whole transfer, so the flag must stay out of the command.
+    ``--out-format=%n`` (the file-count stdout signal) must remain.
     """
     import subprocess
 
@@ -411,3 +401,215 @@ def test_rsync_command_has_no_info_progress2_flag(tmp_path, monkeypatch):
     assert "--info=progress2" not in captured["cmd"]
     assert not any(str(a).startswith("--info") for a in captured["cmd"])
     assert "--out-format=%n" in captured["cmd"]
+
+
+# --- manifest-driven --files-from transfer (chart-manifest-sync task 3.4) ---
+#
+# When a tree job carries a manifest-driven change set (job.files_from), the
+# payload is transferred via ``rsync --files-from=-`` (exactly the added+changed
+# relpaths) and removals are pruned explicitly, instead of the retired
+# ``--size-only`` whole-tree delta. These run rsync against real temp dirs.
+
+
+def _files_from_job(src_dir, dst_dir, files_from, removed=None, excludes=None):
+    """Build a manifest-driven tree SyncJob pointing at two temp dirs."""
+    return du.SyncJob(
+        name="scanned",
+        kind="tree",
+        payload_root_local=str(src_dir) + os.sep,
+        payload_root_drive=str(dst_dir) + os.sep,
+        excludes=list(du.COMMON_TREE_EXCLUDES) + (excludes or []),
+        files_from=list(files_from),
+        removed=list(removed or []),
+    )
+
+
+def test_files_from_transfers_only_listed_relpaths(tmp_path):
+    """Only the relpaths in files_from are transferred; others are untouched."""
+    src = tmp_path / "local"
+    dst = tmp_path / "drive"
+    _write(src / "SEC" / "a.png", "aaa")
+    _write(src / "SEC" / "b.png", "bbb")  # present locally but NOT in files_from
+    _write(src / "LO" / "c.png", "ccc")
+    dst.mkdir()
+
+    job = _files_from_job(src, dst, files_from=["SEC/a.png", "LO/c.png"])
+    files_updated, errors = du.sync_payload(job)
+
+    assert errors == []
+    # Exactly the listed files land on the drive; b.png is not transferred.
+    assert _rel_files(dst) == {"SEC/a.png", "LO/c.png"}
+    assert (dst / "SEC" / "a.png").read_text() == "aaa"
+    assert files_updated == 2
+
+
+def test_files_from_overwrites_changed_same_size_content(tmp_path):
+    """A same-byte-size content change IS written (closes the --size-only gap).
+
+    This is the core correctness win: --size-only would skip a same-size change;
+    feeding the relpath via files_from forces the new content onto the drive.
+    """
+    src = tmp_path / "local"
+    dst = tmp_path / "drive"
+    _write(src / "SEC" / "a.png", "NEW")  # 3 bytes
+    _write(dst / "SEC" / "a.png", "OLD")  # 3 bytes, SAME size, stale content
+
+    job = _files_from_job(src, dst, files_from=["SEC/a.png"])
+    _updated, errors = du.sync_payload(job)
+
+    assert errors == []
+    assert (dst / "SEC" / "a.png").read_text() == "NEW"
+
+
+def test_files_from_empty_changeset_transfers_nothing(tmp_path):
+    """An empty files_from leaves the drive untouched and reports no updates."""
+    src = tmp_path / "local"
+    dst = tmp_path / "drive"
+    _write(src / "SEC" / "a.png", "aaa")
+    _write(dst / "SEC" / "a.png", "aaa")
+    _write(dst / "keep.png", "keep")
+
+    job = _files_from_job(src, dst, files_from=[])
+    files_updated, errors = du.sync_payload(job)
+
+    assert errors == []
+    assert files_updated == 0
+    assert _rel_files(dst) == {"SEC/a.png", "keep.png"}
+
+
+def test_files_from_removed_relpaths_are_pruned(tmp_path):
+    """diff.removed relpaths are unlinked from the drive explicitly."""
+    src = tmp_path / "local"
+    dst = tmp_path / "drive"
+    _write(src / "SEC" / "a.png", "aaa")
+    _write(dst / "SEC" / "a.png", "aaa")
+    _write(dst / "SEC" / "gone.png", "stale")  # removed locally -> prune
+    _write(dst / "OLD" / "old.png", "stale")   # removed locally -> prune
+
+    job = _files_from_job(
+        src, dst, files_from=[], removed=["SEC/gone.png", "OLD/old.png"]
+    )
+    _updated, errors = du.sync_payload(job)
+
+    assert errors == []
+    assert "SEC/gone.png" not in _rel_files(dst)
+    assert "OLD/old.png" not in _rel_files(dst)
+    # The surviving file stays.
+    assert "SEC/a.png" in _rel_files(dst)
+    # The now-empty OLD/ directory is pruned; SEC/ still holds a.png so it stays.
+    assert not (dst / "OLD").exists()
+    assert (dst / "SEC").is_dir()
+
+
+def test_files_from_prune_is_idempotent_for_absent_paths(tmp_path):
+    """Pruning a relpath that is already absent on the drive is a no-op."""
+    src = tmp_path / "local"
+    dst = tmp_path / "drive"
+    _write(src / "SEC" / "a.png", "aaa")
+    dst.mkdir()
+
+    # 'ghost.png' never existed on the drive; prune must not raise.
+    job = _files_from_job(
+        src, dst, files_from=["SEC/a.png"], removed=["SEC/ghost.png"]
+    )
+    _updated, errors = du.sync_payload(job)
+
+    assert errors == []
+    assert "SEC/a.png" in _rel_files(dst)
+
+
+def test_files_from_add_and_remove_converge_to_local(tmp_path):
+    """Added+changed written AND removed pruned => drive matches the intent."""
+    src = tmp_path / "local"
+    dst = tmp_path / "drive"
+    # Local intent: SEC/a.png (changed) and SEC/new.png (added) present.
+    _write(src / "SEC" / "a.png", "NEW")
+    _write(src / "SEC" / "new.png", "added")
+    # Drive before: a.png stale (same size), old.png to be removed.
+    _write(dst / "SEC" / "a.png", "OLD")
+    _write(dst / "SEC" / "old.png", "stale")
+
+    job = _files_from_job(
+        src, dst,
+        files_from=["SEC/a.png", "SEC/new.png"],
+        removed=["SEC/old.png"],
+    )
+    _updated, errors = du.sync_payload(job)
+
+    assert errors == []
+    assert _rel_files(dst) == {"SEC/a.png", "SEC/new.png"}
+    assert (dst / "SEC" / "a.png").read_text() == "NEW"
+    assert (dst / "SEC" / "new.png").read_text() == "added"
+
+
+def test_files_from_command_shape(tmp_path, monkeypatch):
+    """The manifest-driven invocation uses --files-from=- and drops --size-only.
+
+    Regression guard: --files-from must be present and fed over stdin, and the
+    retired --size-only / --delete flags must NOT appear in this mode.
+    """
+    import subprocess
+
+    src = tmp_path / "local"
+    dst = tmp_path / "drive"
+    _write(src / "a.png", "a")
+    dst.mkdir()
+    job = _files_from_job(src, dst, files_from=["a.png"])
+
+    captured = {}
+
+    class _StdinProc:
+        def __init__(self):
+            self.returncode = None
+            self.pid = 4242
+            self._polls = 0
+            import io
+
+            captured_stdin = {"text": ""}
+
+            class _CapturingStdin(io.StringIO):
+                def close(self_inner):
+                    captured_stdin["text"] = self_inner.getvalue()
+                    super().close()
+
+            self.stdin = _CapturingStdin()
+            self._captured_stdin = captured_stdin
+
+        def poll(self):
+            self._polls += 1
+            if self._polls == 1:
+                return None
+            self.returncode = 0
+            return 0
+
+        def wait(self, timeout=None):
+            return self.returncode
+
+        def terminate(self):
+            self.returncode = -15
+
+        def kill(self):
+            self.returncode = -9
+
+    proc = _StdinProc()
+
+    def fake_popen(cmd, stdin=None, stdout=None, stderr=None, **k):
+        captured["cmd"] = list(cmd)
+        captured["stdin_requested"] = stdin
+        return proc
+
+    monkeypatch.setattr(subprocess, "Popen", fake_popen)
+
+    du.sync_payload(job)
+
+    assert "--files-from=-" in captured["cmd"]
+    # The manifest diff is authoritative, so rsync must not re-apply its own
+    # size/time quick-check skip (that is the --size-only gap we are closing).
+    assert "--ignore-times" in captured["cmd"]
+    assert "--size-only" not in captured["cmd"]
+    assert "--delete" not in captured["cmd"]
+    assert "--delete-excluded" not in captured["cmd"]
+    assert "--out-format=%n" in captured["cmd"]
+    # The change set was fed over stdin (one relpath per line).
+    assert captured["stdin_requested"] is subprocess.PIPE
+    assert proc._captured_stdin["text"] == "a.png\n"

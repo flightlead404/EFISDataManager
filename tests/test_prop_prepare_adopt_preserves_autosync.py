@@ -19,40 +19,17 @@ design.md Preservation Requirements).
 **Validates: Requirements 3.1, 3.2, 3.3, 3.4**
 
 Every device / mount / subprocess boundary is mocked (mirroring the mocking
-style in ``tests/test_prop_mount_swap_never_orphaned.py`` and
-``tests/test_adopt_drive.py``), so no real device is ever touched. Assertions
-(2)/(3) call ``prepare_drive``/``adopt_drive``. On the FIXED code these wrap the
-populate in ``with msdos_mount(mount_point, poller=poller) as work_mount:
-update_drive(work_mount, ...)``, so the real swap would try to operate on the
-fake ``/Volumes/<label>`` device. We therefore mock ``drive_updater.msdos_mount``
-with a context manager that yields a sentinel work-mount, so no real swap runs.
-These assertions are about identity-ordering and the ``update_drive`` call
-contract (progress_callback passed through, families default None), NOT the mount
-path — the mount path is what task 1's exploration test covers, so we no longer
-assert ``update_drive`` receives the raw FSKit path. ``update_drive`` is stubbed
-so it does no real work.
+style in ``tests/test_adopt_drive.py``), so no real device is ever touched.
+Assertions (2)/(3) call ``prepare_drive``/``adopt_drive``. With chart-manifest-
+sync the mount-swap path was retired: ``prepare_drive``/``adopt_drive`` now run
+``update_drive(mount_point, ...)`` DIRECTLY against the FSKit ``/Volumes/``
+mount, so there is no swap to mock. These assertions are about identity-ordering
+and the ``update_drive`` call contract (progress_callback passed through,
+families default None). ``update_drive`` is stubbed so it does no real work.
 """
 
-import contextlib
 import os
 from unittest import mock
-
-
-# Sentinel work-mount yielded by the mocked ``msdos_mount`` context manager.
-# ``update_drive`` runs against this on the fixed code; the preservation test
-# does not assert the mount path (see module docstring), only the call contract.
-_WORK_MOUNT = "/private/tmp/efis-datamanager/WORK"
-
-
-@contextlib.contextmanager
-def _fake_msdos_mount(mount_point, poller=None):
-    """Stand-in for ``msdos_mount`` that yields a sentinel work-mount.
-
-    Avoids the real mount swap (which fails on the fake ``/Volumes/<label>``
-    device) while preserving the ``with ... as work_mount:`` contract the fixed
-    ``prepare_drive``/``adopt_drive`` rely on.
-    """
-    yield _WORK_MOUNT
 
 from hypothesis import given, settings
 from hypothesis import strategies as st
@@ -280,7 +257,6 @@ def _run_prepare(mount_point, label, progress_callback=None, order=None):
 
     with mock.patch.object(du, "_ensure_identity", _fake_ensure_identity), \
         mock.patch.object(du, "update_drive", _fake_update_drive), \
-        mock.patch.object(du, "msdos_mount", _fake_msdos_mount), \
         mock.patch.object(du, "_safe_update_provenance", lambda *a, **k: None), \
         mock.patch.object(du, "_current_data_cycle", lambda: "2601"), \
         mock.patch.object(du.subprocess, "run", _fake_run), \
@@ -299,10 +275,22 @@ def _run_prepare(mount_point, label, progress_callback=None, order=None):
 
 
 def _run_adopt(mount_point, progress_callback=None, order=None):
-    """Drive ``adopt_drive`` with identity/update/diskutil stubbed."""
+    """Drive ``adopt_drive`` with identity/update/diskutil/manifest stubbed.
+
+    chart-sync-wiring-fix (task 12.1) made ``adopt_drive`` keyword-only in
+    ``chart_capable`` / ``nav_label_prefix`` / ``content_action`` and inserted a
+    ``Manifest_Store.save_card`` BETWEEN the identity write and the populate. We
+    drive the ``content_action="fresh"`` branch (chart-capable, no existing data)
+    because it is the plain "write identity, then update_drive(all families)"
+    path whose identity-before-populate ordering and update_drive delegation
+    shape these tests assert. ``save_card`` is mocked to a no-op so the unit test
+    never touches disk; it records ``"save_card"`` in ``order`` only to prove it
+    lands between identity and update, not to change what is asserted.
+    """
     calls = {}
 
-    def _fake_ensure_identity(mp):
+    def _fake_ensure_identity(mp, **kw):
+        # Production now passes chart_capable=/nav_label_prefix= kwargs.
         (order if order is not None else []).append("identity")
         return "id-123"
 
@@ -322,13 +310,26 @@ def _run_adopt(mount_point, progress_callback=None, order=None):
             "aborted": False,
         }
 
+    def _fake_save_card(mp, card):
+        (order if order is not None else []).append("save_card")
+
+    from efis_data_manager import manifest as _manifest
+
     with mock.patch.object(du, "_ensure_identity", _fake_ensure_identity), \
         mock.patch.object(du, "update_drive", _fake_update_drive), \
-        mock.patch.object(du, "msdos_mount", _fake_msdos_mount), \
         mock.patch.object(du, "_safe_update_provenance", lambda *a, **k: None), \
         mock.patch.object(du, "_current_data_cycle", lambda: "2601"), \
+        mock.patch.object(
+            _manifest.Manifest_Store, "save_card", staticmethod(_fake_save_card)
+        ), \
         mock.patch.object(du.os, "makedirs", lambda *a, **k: None):
-        result = du.adopt_drive(mount_point, progress_callback=progress_callback)
+        result = du.adopt_drive(
+            mount_point,
+            chart_capable=True,
+            nav_label_prefix="HXR",
+            content_action="fresh",
+            progress_callback=progress_callback,
+        )
 
     calls["result"] = result
     return calls
@@ -387,7 +388,10 @@ def test_prepare_identity_before_populate_example():
 def test_adopt_identity_before_populate_example():
     order = []
     _run_adopt("/Volumes/EFIS_4", order=order)
-    assert order == ["identity", "update"]
+    # task 12.1 inserted a save_card between identity and the populate; the
+    # invariant under test is only that identity is written BEFORE update_drive.
+    assert order == ["identity", "save_card", "update"]
+    assert order.index("identity") < order.index("update")
 
 
 # --------------------------------------------------------------------------- #
@@ -428,7 +432,10 @@ def test_adopt_delegates_to_update_drive_with_expected_shape():
 
     assert calls["progress_callback"] is _cb
     assert calls["families"] is None
-    assert calls["extra_kwargs"] == {}
+    # task 12.1 threads the labeling snapshot through as chart_capable=; the
+    # delegation contract under test is progress_callback pass-through +
+    # families default None, so only assert the new kwarg is the capability.
+    assert calls["extra_kwargs"] == {"chart_capable": True}
     assert calls["result"]["success"] is True
 
 

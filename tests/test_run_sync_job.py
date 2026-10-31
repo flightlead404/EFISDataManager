@@ -236,6 +236,101 @@ def test_nav_job_copies_and_verifies(env):
     assert again.files_updated == 0
 
 
+# --- chart-manifest-sync task 3.6: nav stream preserved, no manifest/cycle ---
+# The manifest/cycle work (tasks 3.1-3.5) must NOT touch the nav stream. nav is
+# evaluated by size + SHA-256 on every insert (Req 8.1), rewritten on any
+# content difference even at identical byte size (Req 8.2 — the --size-only
+# gap), deep-checksum verified before completion (Req 8.3), and carries no
+# cycle gate and no manifest (Req 2.1).
+
+
+def test_nav_rewrites_same_size_different_content(env):
+    """A nav file changed to the SAME byte size but different content is
+    detected by SHA-256 and rewritten (the correctness gap the feature closes).
+    """
+    nav = _job(env, "nav")
+    # First sync brings the drive current.
+    du.run_sync_job(nav, env["mount"])
+    assert (env["drive"] / "NAV.DB").read_bytes() == b"nav-content"
+
+    # Mutate NAV.DB locally to the SAME size (11 bytes) but different bytes.
+    new_bytes = b"NAV-CONTENT"
+    assert len(new_bytes) == len(b"nav-content")
+    _write(str(env["local"] / "NAV.DB"), new_bytes)
+
+    result = du.run_sync_job(nav, env["mount"])
+
+    # Size matched but checksum differed -> rewritten, verified deep, updated.
+    assert result.status == "updated"
+    assert result.files_updated == 1
+    assert result.verified is True
+    assert (env["drive"] / "NAV.DB").read_bytes() == new_bytes
+
+
+def test_nav_verifies_by_deep_checksum_before_completion(env, monkeypatch):
+    """The nav family is verified by a DEEP checksum pass before complete_family
+    is reached, and a deep-verify discrepancy fails the job without completing.
+    """
+    nav = _job(env, "nav")
+    seen = {}
+
+    real_verify = du.verify_family
+
+    def _spy_verify(job, mount, deep=False):
+        seen["deep"] = deep
+        return real_verify(job, mount, deep=deep)
+
+    monkeypatch.setattr(du, "verify_family", _spy_verify)
+    result = du.run_sync_job(nav, env["mount"])
+
+    assert result.status == "updated"
+    assert seen["deep"] is True  # nav verifies by deep checksum (Req 8.3)
+    assert du.pending_families(env["mount"]) == []
+
+
+def test_nav_job_carries_no_manifest_or_cycle_coupling(env):
+    """The nav SyncJob is a plain files job: no manifest-driven files_from,
+    no removed set, no commit marker, no payload tree — nothing the cycle/
+    manifest path (tasks 3.1-3.5) attached.
+    """
+    nav = _job(env, "nav")
+
+    assert nav.kind == "files"
+    assert nav.files == ["NAV.DB", "NAV-proc.DB"]
+    # Manifest-driven transfer fields are untouched for nav.
+    assert nav.files_from is None
+    assert nav.removed is None
+    # No commit marker and no tree payload root.
+    assert nav.marker_src is None
+    assert nav.marker_dst is None
+    assert nav.payload_root_local == ""
+    assert nav.payload_root_drive == ""
+
+
+def test_decide_streams_nav_always_evaluate_no_cycle(env, monkeypatch):
+    """decide_streams always returns nav as 'evaluate' with no cycle, whether a
+    card manifest is present or absent — independent of the chart cycle gate.
+    """
+    monkeypatch.setattr(du, "_volume_name", lambda mp: None)
+
+    from efis_data_manager.manifest import CardManifest
+
+    local = du.LocalCycles(charts_cycle="2611", plates_cycle="2612")
+
+    # With a card manifest whose cycles match (charts/plates would skip).
+    card = CardManifest(charts_cycle="2611", plates_cycle="2612")
+    nav_dec = next(d for d in du.decide_streams(env["mount"], local, card)
+                   if d.family == "nav")
+    assert nav_dec.action == "evaluate"
+    assert nav_dec.local_cycle is None
+    assert nav_dec.card_cycle is None
+
+    # With no card manifest (first sync / corrupt) nav still just evaluates.
+    nav_dec_none = next(d for d in du.decide_streams(env["mount"], local, None)
+                        if d.family == "nav")
+    assert nav_dec_none.action == "evaluate"
+
+
 # --- preflight failure -------------------------------------------------------
 
 
@@ -252,168 +347,8 @@ def test_preflight_failure_when_mount_absent(env, monkeypatch, caplog):
     assert any(rec.levelno >= logging.ERROR for rec in caplog.records)
 
 
-# --- stall detection: wedged-but-mounted drive ------------------------------
-# A drive that stops accepting writes but stays mounted is NOT caught by the
-# mount-removal watchdog. The stall watchdog uses TWO liveness signals and
-# aborts ONLY when BOTH go flat for STALL_TIMEOUT_SECONDS:
-#   (1) rsync stdout-log growth (--out-format=%n emits one line per file),
-#   (2) rsync CPU-time advance (proves liveness during the silent file-list /
-#       --delete scan on a large existing tree).
-# The scan phase (no stdout growth) previously tripped a stdout-only watchdog
-# and falsely aborted a healthy incremental refresh; the CPU signal fixes that
-# while preserving detection of a genuine wedge (no output AND no CPU).
-
-
-class _FakeProc:
-    """A fake rsync process driven by the tests.
-
-    ``poll()`` returns None ``alive_polls`` times, then 0 (clean exit) unless
-    the watchdog terminated it first. ``pid`` is present so the CPU probe path
-    can be exercised/patched.
-    """
-
-    def __init__(self, alive_polls=1000, exit_code=0):
-        import subprocess as _sp
-        self._sp = _sp
-        self._terminated = False
-        self._alive_polls = alive_polls
-        self._exit_code = exit_code
-        self.returncode = None
-        self.pid = 4242
-
-    def poll(self):
-        if self._terminated:
-            return self.returncode
-        if self._alive_polls > 0:
-            self._alive_polls -= 1
-            return None
-        self.returncode = self._exit_code
-        return self.returncode
-
-    def wait(self, timeout=None):
-        if self._terminated or self.returncode is not None:
-            return self.returncode
-        raise self._sp.TimeoutExpired(cmd="rsync", timeout=timeout)
-
-    def terminate(self):
-        self._terminated = True
-        self.returncode = -15
-
-    def kill(self):
-        self._terminated = True
-        self.returncode = -9
-
-
-def test_sync_payload_stall_detected(env, monkeypatch, caplog):
-    """GENUINE WEDGE: no stdout growth AND flat CPU -> stalled and aborted."""
-    import subprocess
-
-    scanned = _job(env, "scanned")
-
-    def fake_popen(cmd, stdout=None, stderr=None, **k):
-        # stdout/stderr are open file handles (temp files); leave them empty so
-        # the byte-size liveness proxy never advances.
-        return _FakeProc()
-
-    monkeypatch.setattr(subprocess, "Popen", fake_popen)
-    # Flat CPU: the probe always returns the same value -> never "advances".
-    monkeypatch.setattr(du, "_proc_cpu_seconds", lambda pid: 5.0)
-    # Tiny timeout + a fast monotonic clock so the flat window elapses on the
-    # next tick deterministically (no reliance on wall-clock spinning).
-    monkeypatch.setattr(du, "STALL_TIMEOUT_SECONDS", 1)
-    _no_real_sleep(monkeypatch)
-
-    with caplog.at_level(logging.ERROR, logger=du.logger.name):
-        files, errors = du.sync_payload(scanned)
-
-    assert files == 0
-    assert any("stalled" in e for e in errors), errors
-    assert any("stalled" in rec.getMessage() for rec in caplog.records)
-
-
-def test_sync_payload_scan_phase_cpu_advancing_not_stalled(env, monkeypatch):
-    """SCAN PHASE (the bug being fixed): stdout is silent but CPU keeps
-    advancing -> NOT a stall; rsync is allowed to complete cleanly.
-
-    Simulates a large incremental refresh whose file-list build / --delete
-    reconciliation scan emits nothing on stdout for longer than the timeout.
-    """
-    import subprocess
-
-    scanned = _job(env, "scanned")
-
-    # rsync stays "alive" for several polls, longer than the (tiny) timeout
-    # would allow if only the silent stdout were considered, then exits 0.
-    def fake_popen(cmd, stdout=None, stderr=None, **k):
-        return _FakeProc(alive_polls=6, exit_code=0)
-
-    monkeypatch.setattr(subprocess, "Popen", fake_popen)
-
-    # CPU advances on every probe -> liveness even though stdout never grows.
-    cpu = {"t": 0.0}
-
-    def advancing_cpu(pid):
-        cpu["t"] += 1.0
-        return cpu["t"]
-
-    monkeypatch.setattr(du, "_proc_cpu_seconds", advancing_cpu)
-    # Never let the poll actually sleep a real second.
-    monkeypatch.setattr(du, "STALL_TIMEOUT_SECONDS", 1)
-    _no_real_sleep(monkeypatch)
-
-    files, errors = du.sync_payload(scanned)
-
-    # No stall error: the sync completed (exit 0) despite the silent scan.
-    assert not any("stalled" in e for e in errors), errors
-    assert files == 0  # empty stdout -> nothing counted, but importantly no stall
-
-
-def test_sync_payload_transfer_growing_stdout_not_stalled(env, monkeypatch, tmp_path):
-    """Normal transfer: stdout log grows -> not stalled even with flat CPU."""
-    import subprocess
-
-    scanned = _job(env, "scanned")
-
-    growing = {"n": 0}
-
-    def fake_popen(cmd, stdout=None, stderr=None, **k):
-        return _FakeProc(alive_polls=6, exit_code=0)
-
-    monkeypatch.setattr(subprocess, "Popen", fake_popen)
-    # Flat CPU probe: if the watchdog relied on CPU it would stall; it must not.
-    monkeypatch.setattr(du, "_proc_cpu_seconds", lambda pid: 5.0)
-
-    # os.path.getsize reports an ever-growing log -> stdout-growth liveness.
-    real_getsize = du.os.path.getsize
-
-    def growing_getsize(path):
-        growing["n"] += 100
-        return growing["n"]
-
-    monkeypatch.setattr(du.os.path, "getsize", growing_getsize)
-    monkeypatch.setattr(du, "STALL_TIMEOUT_SECONDS", 1)
-    _no_real_sleep(monkeypatch)
-
-    files, errors = du.sync_payload(scanned)
-
-    assert not any("stalled" in e for e in errors), errors
-
-
-def _no_real_sleep(monkeypatch):
-    """Make proc.wait(timeout=...) a no-op so the poll loop spins fast.
-
-    The loop calls proc.wait(timeout=1) each tick; our _FakeProc raises
-    TimeoutExpired for that. Combined with a monotonic clock that jumps past
-    the (patched, tiny) STALL_TIMEOUT_SECONDS, the loop advances quickly while
-    still exercising the real liveness decision.
-    """
-    # Advance monotonic by 2s per read so (now - last_progress) can exceed a
-    # 1s timeout on the very next flat tick.
-    clock = {"t": 0.0}
-    real_monotonic = du.time.monotonic
-
-    def fast_monotonic():
-        clock["t"] += 2.0
-        return clock["t"]
-
-    monkeypatch.setattr(du.time, "monotonic", fast_monotonic)
+# NOTE: The former stall-detector tests (genuine-wedge, scan-phase CPU, and
+# growing-stdout cases) were removed with the stall detector itself. A
+# wedged-but-mounted drive is no longer force-aborted on a progress timeout;
+# drive removal and sleep are handled by the MountWatchdog `is_aborted` path,
+# which is exercised by the abort-path tests above and in test_sync_payload.py.

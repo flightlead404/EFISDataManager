@@ -19,6 +19,8 @@ import json
 import logging
 import os
 import plistlib
+import re
+import shutil
 import socket
 import subprocess
 import time
@@ -31,7 +33,6 @@ from typing import Callable, Optional
 
 from efis_data_manager import __version__
 from efis_data_manager.config import load_config
-from efis_data_manager.mount_swap import msdos_mount, MountSwapError
 
 logger = logging.getLogger(__name__)
 
@@ -46,23 +47,6 @@ SYNC_STATE_PATH = os.path.join(SYNC_STATE_DIR, ".sync_state.json")
 # drive may be absent. A genuinely-interrupted drive is re-detected by its
 # on-drive markers/payload on next mount and repaired.
 LEGACY_SYNC_MARKER_PATH = os.path.join(SYNC_STATE_DIR, ".sync_in_progress")
-
-# Stall detection for tree-sync (sync_payload). A drive that wedges mid-write
-# but stays MOUNTED — flaky USB link, controller hang under sustained writes,
-# or hypervisor USB contention — is not caught by the mount-removal watchdog.
-# The watchdog declares a stall only when BOTH liveness signals go flat for
-# this many seconds while rsync is still running: (1) stdout-log growth (rsync
-# emits one --out-format=%n line per transferred file, so the log grows during
-# the transfer phase) AND (2) rsync CPU advance (proves the process is alive
-# during the silent file-list/--delete scan on a large existing tree, which
-# emits NOTHING on stdout and previously tripped a stdout-only watchdog). CPU
-# is the only signal available during that scan because we cannot use
-# --info=progress2 (the launchd-resolved system rsync rejects it). Only a
-# genuine wedge — no output AND no CPU — aborts.
-# Field-tuned: routine per-family syncs advance at least one signal steadily; a
-# genuine stall parks at 0 B/s and 0% CPU for far longer than this.
-# Set to 0 to disable stall detection.
-STALL_TIMEOUT_SECONDS = 120
 
 
 def _terminate(proc):
@@ -92,36 +76,6 @@ def _silent_unlink(path):
         pass
 
 
-def _proc_cpu_seconds(pid):
-    """Return cumulative CPU time (user+system, seconds) for ``pid``.
-
-    This is the second liveness signal for the sync_payload stall watchdog: an
-    rsync that is walking a huge directory tree or reconciling ``--delete`` is
-    silent on stdout yet burns CPU, so a monotonically advancing CPU total
-    proves the process is alive even when the log is not growing.
-
-    psutil is not a dependency of this project, so we shell out to ``ps`` (the
-    portable macOS/BSD approach): ``ps -o time= -p <pid>`` prints the process's
-    cumulative CPU time as ``[[DD-]HH:]MM:SS[.ss]``. We parse that to seconds.
-    Returns ``None`` on any failure (dead process, parse error, ps missing); the
-    caller treats ``None`` as "no CPU reading this tick" and falls back to the
-    stdout-growth signal alone.
-    """
-    if pid is None:
-        return None
-    try:
-        out = subprocess.run(
-            ["ps", "-o", "time=", "-p", str(pid)],
-            capture_output=True, text=True, timeout=5,
-        )
-    except (OSError, subprocess.SubprocessError):
-        return None
-    raw = (out.stdout or "").strip()
-    if not raw:
-        return None
-    return _parse_ps_time(raw)
-
-
 def _is_progress2_noise(line):
     """True if a stdout fragment is an ``--info=progress2`` progress/summary line.
 
@@ -144,26 +98,6 @@ def _is_progress2_noise(line):
     if lowered.startswith(("sent ", "total size is ", "total: ")):
         return True
     return False
-
-
-def _parse_ps_time(raw):
-    """Parse a ``ps -o time`` value (``[[DD-]HH:]MM:SS[.ss]``) into seconds.
-
-    Returns ``None`` if the string cannot be parsed.
-    """
-    try:
-        days = 0
-        if "-" in raw:
-            day_part, raw = raw.split("-", 1)
-            days = int(day_part)
-        parts = raw.split(":")
-        parts = [float(p) for p in parts]
-        seconds = 0.0
-        for p in parts:
-            seconds = seconds * 60 + p
-        return days * 86400 + seconds
-    except (ValueError, TypeError):
-        return None
 
 
 # Current durable sync-state schema version (v2, id-keyed map — Req 10.5).
@@ -193,6 +127,15 @@ class SyncJob:
     marker_src: Optional[str] = None
     marker_dst: Optional[str] = None
     files: list = field(default_factory=list)  # for "files" jobs (nav)
+    # Manifest-driven change set for tree jobs (chart-manifest-sync task 3.4).
+    # When ``files_from`` is not None the tree job transfers EXACTLY these
+    # family-root-relative POSIX relpaths via ``rsync --files-from=-`` (the
+    # added+changed set from a ManifestDiff) and prunes each path in ``removed``
+    # explicitly, instead of the retired ``--size-only`` whole-tree delta.
+    # When None, the legacy ``--size-only`` transfer is used (kept live while
+    # the manifest path is proven — see the design Retirement plan).
+    files_from: Optional[list] = None
+    removed: Optional[list] = None
 
 
 # --- Sync-state helpers (v2: id-keyed map) ----------------------------------
@@ -441,6 +384,160 @@ def _volume_name(mount_point: str) -> Optional[str]:
     return info.get("VolumeName") or None
 
 
+def _rename_volume(mount_point: str, label: str) -> bool:
+    """Best-effort relabel of the mounted volume to ``label`` via ``diskutil``.
+
+    Runs ``diskutil rename <mount_point> <label>`` (diskutil accepts either a
+    mount point or a device node as the first argument). This is the companion
+    to :func:`_volume_name`, which reads the VolumeName; this sets it.
+
+    Returns True on a clean rename, False on any failure (diskutil missing,
+    non-zero exit, timeout, OS error). It NEVER raises: the volume label is a
+    human-facing mirror of the card manifest cycles (``C<charts>P<plates>``),
+    not trusted for the cycle gate, so a relabel failure must be logged but must
+    NOT fail the sync (chart-manifest-sync task 6.1, Req 3.6 / 6.4).
+    """
+    try:
+        result = subprocess.run(
+            ["diskutil", "rename", mount_point, label],
+            capture_output=True,
+            timeout=30,
+        )
+    except (OSError, subprocess.SubprocessError) as exc:
+        logger.warning("Volume relabel to %r failed: %s", label, exc)
+        return False
+    if result.returncode != 0:
+        stderr = (result.stderr or b"").decode("utf-8", "replace").strip()
+        logger.warning(
+            "Volume relabel to %r failed (exit %d): %s",
+            label,
+            result.returncode,
+            stderr,
+        )
+        return False
+    return True
+
+
+def flush_and_unmount(mount_point: str) -> bool:
+    """Flush buffered writes and unmount the card so a sync is durable.
+
+    This is the "flush = done" step of the chart-manifest-sync pipeline
+    (task 6.2, Req 7.1 / Property 6): once the family data, commit markers, card
+    manifest, and volume relabel are written, make the bytes durable on the card
+    and release the mount so a *subsequent* insert reads exactly what was
+    written. It does two things, in order:
+
+      1. ``os.sync()`` — flush the OS buffer cache to the device.
+      2. ``diskutil unmount <mount_point>`` — unmount (NOT eject; the design
+         specifies unmount so the physical device is left attached). diskutil's
+         unmount itself flushes the volume before detaching.
+
+    Entirely best-effort: the bytes are already ``os.sync``'d before the
+    unmount, so a failure to unmount is logged but NEVER raises into / fails the
+    sync result. It is called at the END of the top-level auto-sync operation
+    (``app._run_drive_update``), deliberately NOT inside :func:`update_drive`,
+    which :func:`prepare_drive` / :func:`adopt_drive` reuse and which must stay
+    mounted for their follow-up work.
+
+    Returns:
+        True if the volume was unmounted cleanly, False if ``os.sync`` ran but
+        the unmount failed (diskutil missing, non-zero exit, timeout, OS error).
+    """
+    # Step 1: flush the OS buffer cache so the bytes are on the device even if
+    # the unmount below cannot run (e.g. diskutil missing on a test host).
+    try:
+        os.sync()
+    except OSError as exc:  # os.sync is documented not to raise, but be safe.
+        logger.warning("os.sync before unmount failed: %s", exc)
+
+    # Step 2: unmount the volume (not eject — leave the device attached).
+    try:
+        result = subprocess.run(
+            ["diskutil", "unmount", mount_point],
+            capture_output=True,
+            timeout=60,
+        )
+    except (OSError, subprocess.SubprocessError) as exc:
+        logger.warning("Unmount of %s failed: %s", mount_point, exc)
+        return False
+    if result.returncode != 0:
+        stderr = (result.stderr or b"").decode("utf-8", "replace").strip()
+        logger.warning(
+            "Unmount of %s failed (exit %d): %s",
+            mount_point,
+            result.returncode,
+            stderr,
+        )
+        return False
+    logger.info("Flushed and unmounted %s (sync durable)", mount_point)
+    return True
+
+
+def _delete_chart_data_tree(mount_point: str) -> None:
+    """Remove ONLY the card's ChartData/ tree (scanned payload, Plates/ payload,
+    and the ScannedCharts.sqlite / Plates.sqlite markers within it).
+
+    LEAVES UNTOUCHED: NAV.DB, NAV-proc.DB, EFIS_DRIVE_ID.json, EFIS_MANIFEST.json,
+    GRTCHARTS/, and all root-level settings / flight-data / backup files
+    (Settings.dat, Plan.dat, State.dat, WP.dat, *.bak, ...). This is a targeted
+    ChartData/ removal, NOT a format and NOT a root-level wipe (R7.1-R7.3).
+
+    Because ScannedCharts.sqlite, Plates.sqlite, and Plates/ all live inside
+    ChartData/, a single rmtree of ChartData/ removes exactly the chart payload
+    and its markers and nothing else at the volume root. This is the scoped
+    ChartData_Delete used by adopt Case A2 and Case C-confirmed; it is an
+    explicit, user-confirmed adopt action, distinct from the sync's family
+    --delete (R10.6).
+    """
+    chart_root = os.path.join(mount_point, "ChartData")
+    if os.path.isdir(chart_root):
+        shutil.rmtree(chart_root, ignore_errors=False)
+
+
+def _card_manifest_from_card(mount_point, progress_callback=None):
+    """Build a truthful CardManifest from the card's own ChartData/ tree.
+
+    scanned: Manifest_Builder.build("scanned", <ChartData/>, cycle=None) with the
+             Plates/ subtree pruned (same prune currency._build_family_manifest
+             applies), so scanned excludes Plates/.
+    plates:  Manifest_Builder.build("plates", <ChartData/Plates/>, cycle=None).
+
+    Both per-family cycles are null: the card carries no trustworthy cycle stamp,
+    so with null recorded cycles decide_streams cannot skip-cycle and the first
+    diff sync transfers the delta up to the current local cycle, pruning orphans
+    through the standard files_from / removed path (R6.3, R6.11).
+
+    Hashing ~100,000 small files on a slow USB card is a multi-minute operation,
+    so progress is surfaced via ``progress_callback`` before each family's hash
+    (R6.5). A missing ChartData/ or ChartData/Plates/ root yields empty entries
+    gracefully (os.walk over a nonexistent directory walks nothing).
+    """
+    # Lazy import: manifest imports drive_updater at module load, so importing
+    # manifest at the top of this module would create a circular import.
+    from . import manifest as _manifest
+
+    chart_root = os.path.join(mount_point, "ChartData")
+    if progress_callback is not None:
+        progress_callback("Scanning existing chart data on card...")
+    scanned = _manifest.Manifest_Builder.build("scanned", chart_root, cycle=None)
+    scanned.entries = {
+        rel: entry
+        for rel, entry in scanned.entries.items()
+        if not (rel == "Plates" or rel.startswith("Plates/"))
+    }
+
+    plates_root = os.path.join(chart_root, "Plates")
+    if progress_callback is not None:
+        progress_callback("Scanning existing plates data on card...")
+    plates = _manifest.Manifest_Builder.build("plates", plates_root, cycle=None)
+
+    return _manifest.CardManifest(
+        charts_cycle=None,
+        plates_cycle=None,
+        families={"scanned": scanned, "plates": plates},
+    )
+
+
 def read_identity(mount_point: str) -> Optional[dict]:
     """Read and parse the identity file at the volume root.
 
@@ -595,30 +692,41 @@ def _bumped_sync_count(mount_point: str) -> int:
     return current + 1
 
 
-def _new_identity(mount_point: str, label: Optional[str] = None) -> dict:
+def _new_identity(
+    mount_point: str,
+    *,
+    chart_capable: bool = True,
+    nav_label_prefix: str = "",
+) -> dict:
     """Build a fresh identity dict for a drive at ``mount_point``.
 
-    Captures the OS VolumeUUID and label as cross-check fields, an app-generated
-    uuid4 as the durable ``id`` key, and initialises all provenance/telemetry
-    fields (Req 10.1, 10.8).
+    Captures the OS VolumeUUID as a cross-check field, an app-generated uuid4 as
+    the durable ``id`` key, and initialises all provenance/telemetry fields
+    (Req 10.1, 10.8). No volume ``label`` is stored: the Card_Manifest is the
+    single authoritative cycle/label record, so duplicating a stale label into
+    identity is intentionally dropped (R8.1, R8.2).
 
-    ``label`` is the human-facing volume label to record. When omitted (the
-    default, used by the prepare/adopt flows against a REAL mounted drive) it is
-    derived from the mount's basename, falling back to the diskutil VolumeName —
-    which for a real drive is its VolumeName. Callers that mount into a staging
-    directory (the image composer, which attaches at a temp mountpoint) MUST
-    pass the intended label explicitly, otherwise the temp dir name would leak
-    into the identity (observed on a composed drive as
-    ``"label": "efis_compose_mnt_..."``).
+    ``chart_capable`` (keyword-only, default ``True`` = fail-safe chart-capable)
+    is a labeling-only snapshot recorded for the post-sync relabel; it NEVER
+    gates which families sync (R8.5, R8.7). ``nav_label_prefix`` (keyword-only,
+    default ``""``) is the sanitized device-friendly-name prefix used to build a
+    nav-only volume label without reading the aircraft config at relabel time
+    (R9.7). No chart/plate cycle numbers are stored — cycles live only in the
+    Card_Manifest (R8.4).
+
+    Backward read: old identities written before this schema change lack
+    ``chart_capable`` / ``nav_label_prefix`` (readers default ``chart_capable``
+    to ``True`` and treat a missing prefix as blank) and may still carry a stale
+    ``label`` field, which is harmlessly ignored (no reader). IDENTITY_SCHEMA_VERSION
+    is intentionally NOT bumped: the shape change is backward-compatible.
     """
-    if label is None:
-        label = os.path.basename(mount_point.rstrip(os.sep)) or _volume_name(mount_point)
     return {
         "schema_version": IDENTITY_SCHEMA_VERSION,
         "id": str(uuid.uuid4()),
         "kind": IDENTITY_KIND,
         "volume_uuid": _volume_uuid(mount_point),
-        "label": label,
+        "chart_capable": chart_capable,
+        "nav_label_prefix": nav_label_prefix,
         "created": _now_iso(),
         "prepared_by": f"EFISDataManager {__version__} on {socket.gethostname()}",
         "device_link_id": None,
@@ -679,6 +787,15 @@ def resolve_drive_id(mount_point: str) -> Optional[str]:
             )
         drive_id = identity.get("id")
         if drive_id:
+            # R3: recognition requires BOTH files. Identity but no valid card
+            # manifest -> not fully provisioned -> route to Prepare/Adopt.
+            from . import manifest as _manifest
+            if _manifest.Manifest_Store.load_card(mount_point) is None:
+                logger.warning(
+                    "resolve_drive_id: %s has identity but no valid card manifest; "
+                    "treating as unmanaged (re-Adopt required).", mount_point,
+                )
+                return None
             return drive_id
         # Identity present but missing an id — fall through to fail-safe None.
 
@@ -692,7 +809,12 @@ def resolve_drive_id(mount_point: str) -> Optional[str]:
     return None
 
 
-def _ensure_identity(mount_point: str) -> Optional[str]:
+def _ensure_identity(
+    mount_point: str,
+    *,
+    chart_capable: bool = True,
+    nav_label_prefix: str = "",
+) -> Optional[str]:
     """Ensure a freshly-prepared drive has a durable identity file (Req 10.3).
 
     Writes a fresh identity file at the volume root so a prepared drive carries
@@ -711,8 +833,15 @@ def _ensure_identity(mount_point: str) -> Optional[str]:
     """
     existing = read_identity(mount_point)
     if existing is not None and existing.get("id"):
+        # A re-prepare keeps the established id unchanged. The prepare/adopt
+        # tasks (10.1/12.1) merge chart_capable via update_identity_provenance
+        # when needed, so no merge is done here.
         return existing.get("id")
-    data = _new_identity(mount_point)
+    data = _new_identity(
+        mount_point,
+        chart_capable=chart_capable,
+        nav_label_prefix=nav_label_prefix,
+    )
     try:
         write_identity(mount_point, data)
     except Exception as e:  # pragma: no cover - defensive; must never fail prepare
@@ -802,12 +931,41 @@ def build_jobs(mount_point: str, families: Optional[list] = None) -> list:
 
     requested = ["scanned", "plates", "nav"] if families is None else list(families)
 
-    def _tree_root(*parts: str) -> str:
-        # Trailing separator => rsync copies the directory contents.
-        return os.path.join(*parts) + os.sep
+    # Load the card manifest ONCE (tolerant: None on absent/corrupt) and pass it
+    # to each chart-family builder so there is no per-family load_card (design
+    # Section B). manifest is imported lazily inside the helpers to avoid the
+    # circular import (manifest imports drive_updater).
+    from . import manifest as _manifest
 
-    builders = {
-        "scanned": lambda: SyncJob(
+    card = _manifest.Manifest_Store.load_card(mount_point)
+
+    jobs = []
+    for name in requested:
+        if name == "nav":
+            jobs.append(_nav_files_job())  # unchanged (R2.5)
+        elif name in ("scanned", "plates"):
+            job = _chart_family_job(name, mount_point, local_root, card)
+            if job is not None:  # skip-cycle omits the transfer job (R2.2)
+                jobs.append(job)
+    return jobs
+
+
+def _tree_root(*parts: str) -> str:
+    """Join ``parts`` with a trailing separator so rsync copies the directory
+    contents (not the directory itself)."""
+    return os.path.join(*parts) + os.sep
+
+
+def _legacy_tree_job(name: str, mount_point: str, local_root: str) -> SyncJob:
+    """Build the legacy whole-tree :class:`SyncJob` for a chart family.
+
+    ``files_from`` is ``None``, so this runs the legacy ``--size-only --delete``
+    whole-tree reconcile. The payload roots, excludes, and markers are identical
+    to the pre-manifest builders so legacy behavior is preserved exactly (design
+    Section B).
+    """
+    if name == "scanned":
+        return SyncJob(
             name="scanned",
             kind="tree",
             payload_root_local=_tree_root(local_root, "ChartData"),
@@ -817,8 +975,9 @@ def build_jobs(mount_point: str, families: Optional[list] = None) -> list:
             excludes=list(COMMON_TREE_EXCLUDES) + ["Plates/", "ScannedCharts.sqlite"],
             marker_src=os.path.join(local_root, SCANNED_MARKER),
             marker_dst=os.path.join(mount_point, SCANNED_MARKER),
-        ),
-        "plates": lambda: SyncJob(
+        )
+    if name == "plates":
+        return SyncJob(
             name="plates",
             kind="tree",
             payload_root_local=_tree_root(local_root, "ChartData", "Plates"),
@@ -826,15 +985,65 @@ def build_jobs(mount_point: str, families: Optional[list] = None) -> list:
             excludes=list(COMMON_TREE_EXCLUDES) + ["Plates.sqlite"],
             marker_src=os.path.join(local_root, PLATES_MARKER),
             marker_dst=os.path.join(mount_point, PLATES_MARKER),
-        ),
-        "nav": lambda: SyncJob(
-            name="nav",
-            kind="files",
-            files=list(NAV_FILES),
-        ),
-    }
+        )
+    raise ValueError(f"_legacy_tree_job: unknown chart family {name!r}")
 
-    return [builders[name]() for name in requested if name in builders]
+
+def _nav_files_job() -> SyncJob:
+    """Build the standalone nav ``kind == "files"`` job (unchanged by the
+    manifest wiring): NAV DBs verified per file by size + SHA-256, no manifest,
+    no cycle gate, ``files_from`` left ``None`` (R2.5)."""
+    return SyncJob(
+        name="nav",
+        kind="files",
+        files=list(NAV_FILES),
+    )
+
+
+def _chart_family_job(
+    name: str, mount_point: str, local_root: str, card
+) -> Optional[SyncJob]:
+    """Return the :class:`SyncJob` for a chart family, or ``None`` to omit it.
+
+    Wires the SHA-256 manifest diff into the job (design Section B):
+
+      * ``card is None`` (absent/corrupt card manifest) -> legacy job so the
+        ``--size-only --delete`` whole-tree reconcile self-heals (R2.3).
+      * local manifest missing -> legacy job (cannot diff without the local
+        content hashes; strictly safer than an empty diff).
+      * ``decide_streams`` returns ``skip-cycle`` -> ``None`` (omit the transfer
+        job; local cycle equals the card's recorded cycle, R2.2).
+      * otherwise -> ``files_from`` / ``removed`` populated from
+        ``diff_family`` (R2.1). The diff relpaths are family-root-relative and
+        align with the legacy job's payload roots, so no remapping is needed
+        (R2.4).
+    """
+    from . import manifest as _manifest
+
+    base = _legacy_tree_job(name, mount_point, local_root)  # files_from=None
+
+    if card is None:
+        return base  # absent/corrupt card manifest -> legacy --delete self-heal (R2.3)
+
+    local_fam = _manifest.Manifest_Store.load_local(name)
+    if local_fam is None:
+        return base  # no local manifest -> cannot diff -> legacy fallback
+
+    cycles = LocalCycles(
+        charts_cycle=(local_fam.cycle if name == "scanned" else None),
+        plates_cycle=(local_fam.cycle if name == "plates" else None),
+    )
+    decisions = {d.family: d for d in decide_streams(mount_point, cycles, card)}
+    if decisions[name].action == "skip-cycle":
+        return None  # OMIT the job entirely (R2.2)
+
+    card_entries = (
+        card.families[name].entries if name in card.families else {}
+    )
+    diff = _manifest.diff_family(local_fam, card_entries)
+    base.files_from = list(diff.files_from)
+    base.removed = list(diff.removed)
+    return base
 
 
 # --- Tree-job payload sync --------------------------------------------------
@@ -843,15 +1052,31 @@ def build_jobs(mount_point: str, families: Optional[list] = None) -> list:
 def sync_payload(
     job: SyncJob,
     is_aborted: Optional[Callable[[], bool]] = None,
-    stall_hook: Optional[Callable[[dict], None]] = None,
 ):
-    """Sync a tree job's payload to the drive via rsync (size+mtime delta).
+    """Sync a tree job's payload to the drive via rsync.
 
-    Implements design.md "Per-job sequence (tree job)" step 3: an efficient
-    delta copy using size + modification time (NOT a full-content checksum) so
-    a routine sync converges quickly instead of running for an hour.
+    Two transfer modes, selected by whether the job carries a manifest-driven
+    change set (chart-manifest-sync task 3.4):
 
-    rsync flags:
+    1. **Manifest-driven (``job.files_from is not None``).** Transfer EXACTLY
+       the family-root-relative relpaths in ``job.files_from`` (the added +
+       changed set from a SHA-256 ``ManifestDiff``) via ``rsync --files-from=-``
+       fed over stdin, then prune every path in ``job.removed`` with an explicit
+       ``os.unlink`` and remove the directories they leave empty. This closes
+       the retired ``--size-only`` correctness gap: a same-byte-size content
+       change is still detected (by the diff) and transferred, and we tell rsync
+       the correct change set rather than letting it guess. No ``--delete`` /
+       ``--size-only`` / ``--modify-window`` is used in this mode — the change
+       set is already authoritative and removals are pruned explicitly.
+
+    2. **Legacy ``--size-only`` (``job.files_from is None``).** The prior
+       efficient size+mtime whole-tree delta, kept live while the manifest path
+       is proven on real hardware (design Retirement plan). Flags below.
+
+    Both modes keep the temp-file stdout/stderr draining, the metadata
+    excludes, and ``COPYFILE_DISABLE=1``.
+
+    Legacy-mode rsync flags:
       - ``-r``               recurse into the tree.
       - ``--delete``         remove drive files no longer present locally so the
                              payload converges exactly to the source.
@@ -887,20 +1112,6 @@ def sync_payload(
         job: A ``kind == "tree"`` :class:`SyncJob` with payload roots + excludes.
         is_aborted: Optional predicate polled while rsync runs; when it returns
             True the transfer is terminated and reported as aborted.
-        stall_hook: Optional diagnostic callback invoked exactly once, at the
-            instant the no-progress watchdog latches a stall, with a dict
-            describing the onset. This surfaces the watchdog's liveness timing
-            for the FSKit root-cause harness — it does NOT change the abort
-            behaviour. The dict carries: ``family`` (job name), ``onset_wall``
-            (ISO-8601 UTC wall clock at onset), ``onset_monotonic`` (the
-            ``time.monotonic()`` value), ``last_progress_monotonic`` (monotonic
-            time of the last observed liveness — stdout growth OR CPU advance),
-            ``no_progress_seconds`` (elapsed since last liveness),
-            ``progress_bytes`` (rsync stdout-log size at onset), ``cpu_seconds``
-            (last observed cumulative rsync CPU time, or ``None`` if unavailable)
-            and ``timeout_seconds`` (the configured threshold). Any exception
-            raised by the hook is swallowed so diagnostics can never disturb the
-            sync.
 
     Returns:
         Tuple ``(files_updated, errors)`` where ``files_updated`` is the count of
@@ -926,19 +1137,50 @@ def sync_payload(
     structural = [p for p in job.excludes if p not in metadata]
     metadata_used = [p for p in job.excludes if p in metadata]
 
-    cmd = ["rsync", "-r", "--delete", "--delete-excluded",
-           "--size-only", "--modify-window=2",
-           "--out-format=%n"]
-    # Protect structural excludes from --delete-excluded.
-    for pattern in structural:
-        cmd += ["--filter", f"P {pattern}"]
-    # Exclude structural paths from the transfer (don't send them either).
-    for pattern in structural:
-        cmd += ["--exclude", pattern]
-    # Purge metadata from the receiver and never send it.
-    for pattern in metadata_used:
-        cmd += ["--exclude", pattern]
-    cmd += [job.payload_root_local, job.payload_root_drive]
+    # chart-manifest-sync task 3.4: when the job carries a manifest-driven
+    # change set (job.files_from is not None), transfer EXACTLY those relpaths
+    # via ``rsync --files-from=-`` (fed over stdin) instead of the retired
+    # ``--size-only`` whole-tree delta. We stop asking rsync WHAT changed (its
+    # --size-only guess silently skips same-size content changes) and tell it
+    # the correct set computed from the SHA-256 manifest diff. Removals are
+    # pruned explicitly below (--delete cannot prune under --files-from, which
+    # restricts the transfer list), so neither --delete nor --delete-excluded is
+    # used here. The metadata excludes and COPYFILE_DISABLE=1 are kept so stray
+    # ``._*`` / ``.DS_Store`` relpaths are never pushed; --size-only is removed.
+    manifest_driven = job.files_from is not None
+    stdin_payload: Optional[str] = None
+
+    if manifest_driven:
+        # --ignore-times (-I): the manifest diff has ALREADY decided these
+        # relpaths changed (by SHA-256). rsync's default quick-check skips a
+        # file whose size + mtime match the receiver — which is exactly the
+        # same-size-content-change case the manifest exists to catch. Forcing
+        # the transfer of every listed file makes the diff authoritative and
+        # closes the --size-only gap end to end. (We never list unchanged files,
+        # so -I never causes spurious work.)
+        cmd = ["rsync", "-r", "--ignore-times", "--files-from=-",
+               "--out-format=%n"]
+        # Never send macOS metadata even if a relpath somehow names one.
+        for pattern in metadata_used:
+            cmd += ["--exclude", pattern]
+        cmd += [job.payload_root_local, job.payload_root_drive]
+        # One relpath per line, NUL-free; rsync reads these from stdin. An empty
+        # change set yields an empty payload (rsync transfers nothing).
+        stdin_payload = "".join(f"{rel}\n" for rel in (job.files_from or []))
+    else:
+        cmd = ["rsync", "-r", "--delete", "--delete-excluded",
+               "--size-only", "--modify-window=2",
+               "--out-format=%n"]
+        # Protect structural excludes from --delete-excluded.
+        for pattern in structural:
+            cmd += ["--filter", f"P {pattern}"]
+        # Exclude structural paths from the transfer (don't send them either).
+        for pattern in structural:
+            cmd += ["--exclude", pattern]
+        # Purge metadata from the receiver and never send it.
+        for pattern in metadata_used:
+            cmd += ["--exclude", pattern]
+        cmd += [job.payload_root_local, job.payload_root_drive]
 
     env = dict(os.environ)
     env["COPYFILE_DISABLE"] = "1"
@@ -962,7 +1204,9 @@ def sync_payload(
 
     try:
         proc = subprocess.Popen(
-            cmd, stdout=out_f, stderr=err_f, text=True, env=env,
+            cmd,
+            stdin=subprocess.PIPE if manifest_driven else None,
+            stdout=out_f, stderr=err_f, text=True, env=env,
         )
     except OSError as e:
         out_f.close()
@@ -974,76 +1218,29 @@ def sync_payload(
         logger.error(msg)
         return 0, errors
 
-    # Poll for completion. Two out-of-band conditions terminate the transfer:
-    #   1. is_aborted() — mount removed / system sleeping (watchdog).
-    #   2. Stall detection — no progress for STALL_TIMEOUT_SECONDS. A drive that
-    #      wedges mid-write but stays mounted (flaky USB link, controller hang,
-    #      hypervisor USB contention) is NOT caught by the mount watchdog.
-    #
-    #      Liveness is measured by TWO independent signals, and we abort ONLY
-    #      when BOTH have been flat for the timeout window:
-    #        (a) stdout-log GROWTH — rsync emits one --out-format=%n line per
-    #            transferred file, so a growing log means the transfer phase is
-    #            making progress; and
-    #        (b) rsync CPU ADVANCE — during the file-list build and --delete
-    #            reconciliation scan rsync is SILENT on stdout (it emits nothing
-    #            until the first byte transfers) yet burns CPU walking the tree.
-    #            On a large existing tree (~22k plates) that silent scan can run
-    #            well past the timeout, so the byte-size signal alone falsely
-    #            aborts a healthy rsync. Polling cumulative CPU time proves the
-    #            process is alive during the scan.
-    #      Either signal advancing resets the clock. Only a genuine wedge — no
-    #      log growth AND no CPU advance for the full window (rsync blocked in
-    #      write() to a dead filesystem, 0% CPU, 0 progress) — is treated as a
-    #      stall: we abort and surface a clear error instead of hanging forever.
+    # Feed the manifest-driven change set over stdin for ``--files-from=-``.
+    # stdout/stderr are temp files (never pipes), so rsync cannot block on
+    # stdout while we write stdin — we can safely push the whole list and close
+    # stdin before entering the poll loop. Closing stdin signals end-of-list.
+    if manifest_driven and proc.stdin is not None:
+        try:
+            proc.stdin.write(stdin_payload or "")
+            proc.stdin.close()
+        except (BrokenPipeError, OSError):
+            # rsync exited before reading the full list (e.g. a bad root). The
+            # non-zero exit is captured below from stderr; nothing to do here.
+            pass
+
+    # Poll for completion. The only out-of-band condition that terminates the
+    # transfer is is_aborted() — mount removed / system sleeping (watchdog).
+    # There is deliberately no progress/CPU stall detection: a large-but-healthy
+    # transfer (and the long silent receiver-side file-list / --delete scan over
+    # a big existing tree) must be allowed to run to completion. Liveness during
+    # the wait is driven solely by the temp-file stdout/stderr draining below.
     aborted = False
-    stalled = False
-    last_size = -1
-    last_cpu = _proc_cpu_seconds(proc.pid)
-    last_progress = time.monotonic()
     while proc.poll() is None:
         if is_aborted is not None and is_aborted():
             aborted = True
-            _terminate(proc)
-            break
-        try:
-            cur_size = os.path.getsize(out_path)
-        except OSError:
-            cur_size = last_size
-        cur_cpu = _proc_cpu_seconds(proc.pid)
-        now = time.monotonic()
-        stdout_grew = cur_size != last_size
-        # A CPU reading may be unavailable (None) on any tick; only count it as
-        # liveness when we have a reading that strictly exceeds the last one.
-        cpu_advanced = (
-            cur_cpu is not None and last_cpu is not None and cur_cpu > last_cpu
-        )
-        if stdout_grew or cpu_advanced:
-            # At least one liveness signal advanced -> the process is alive.
-            last_size = cur_size
-            if cur_cpu is not None:
-                last_cpu = cur_cpu
-            last_progress = now
-        elif STALL_TIMEOUT_SECONDS and (now - last_progress) >= STALL_TIMEOUT_SECONDS:
-            stalled = True
-            # Surface the watchdog's onset timing + liveness state to any
-            # diagnostic hook BEFORE terminating rsync (Req 2.1). Diagnostics
-            # must never disturb the sync, so the hook is best-effort and its
-            # exceptions are swallowed.
-            if stall_hook is not None:
-                try:
-                    stall_hook({
-                        "family": job.name,
-                        "onset_wall": datetime.now(timezone.utc).isoformat(),
-                        "onset_monotonic": now,
-                        "last_progress_monotonic": last_progress,
-                        "no_progress_seconds": now - last_progress,
-                        "progress_bytes": last_size if last_size >= 0 else 0,
-                        "cpu_seconds": last_cpu,
-                        "timeout_seconds": STALL_TIMEOUT_SECONDS,
-                    })
-                except Exception:  # pragma: no cover - diagnostics are best-effort
-                    logger.debug("stall_hook raised; ignoring", exc_info=True)
             _terminate(proc)
             break
         try:
@@ -1064,17 +1261,6 @@ def sync_payload(
 
     if aborted:
         msg = f"{job.name} sync aborted (drive removed or system sleeping)"
-        errors.append(msg)
-        logger.error(msg)
-        return 0, errors
-
-    if stalled:
-        msg = (
-            f"{job.name} sync stalled: no progress for "
-            f"{STALL_TIMEOUT_SECONDS}s (drive not accepting writes). "
-            "Try re-inserting the drive, a different USB port/cable, or a "
-            "different drive."
-        )
         errors.append(msg)
         logger.error(msg)
         return 0, errors
@@ -1107,7 +1293,58 @@ def sync_payload(
         logger.error("rsync %s failed (exit %s): %s",
                      job.name, proc.returncode, (stderr or "")[:500])
 
+    # chart-manifest-sync task 3.4: prune the removed relpaths explicitly.
+    # --files-from restricts rsync's view to the transferred set, so --delete
+    # cannot prune files that are gone locally; we delete them ourselves and
+    # then remove any directories left empty. Only run on a clean transfer so a
+    # failed/partial rsync does not also start deleting from the card.
+    if manifest_driven and proc.returncode == 0 and job.removed:
+        _prune_removed(job.payload_root_drive, job.removed)
+
     return files_updated, errors
+
+
+def _prune_removed(drive_root: str, removed) -> None:
+    """Delete each removed relpath under ``drive_root`` and prune empty dirs.
+
+    chart-manifest-sync task 3.4: the ``--files-from`` transfer only adds and
+    overwrites; files that are gone in the new local manifest (``diff.removed``)
+    must be unlinked explicitly because ``--delete`` cannot prune under
+    ``--files-from``. Each ``os.unlink`` is best-effort: a path already absent
+    on the card (idempotent re-run, or never present) is fine and ignored.
+    After the unlinks, directories left empty by the removals are pruned bottom
+    up, stopping at ``drive_root`` so the family root itself is kept.
+
+    ``removed`` entries are family-root-relative POSIX relpaths (the diff keys);
+    they are joined under ``drive_root`` with the OS separator.
+    """
+    base = os.path.normpath(drive_root)
+    candidate_dirs = set()
+    for rel in removed or []:
+        target = os.path.join(base, *rel.split("/"))
+        try:
+            os.unlink(target)
+        except FileNotFoundError:
+            pass
+        except OSError as e:
+            # A directory where a file was expected, or a permission error:
+            # log and move on; convergence is re-checked by verify_family.
+            logger.warning("prune: could not remove %s: %s", target, e)
+            continue
+        candidate_dirs.add(os.path.dirname(target))
+
+    # Prune now-empty directories bottom up. Walk each candidate upward toward
+    # (but never past) drive_root, removing empty dirs as we go.
+    for start in sorted(candidate_dirs, key=len, reverse=True):
+        d = start
+        while os.path.normpath(d) != base and os.path.normpath(d).startswith(base):
+            try:
+                os.rmdir(d)
+            except OSError:
+                # Not empty (still holds other files/dirs) or already gone;
+                # stop climbing this branch.
+                break
+            d = os.path.dirname(d)
 
 
 # --- Payload verification (count + size) ------------------------------------
@@ -1480,6 +1717,61 @@ def _has_discrepancies(disc: dict) -> bool:
     return bool(disc.get("missing") or disc.get("extra") or disc.get("size_mismatch"))
 
 
+# Chart families whose top-level card-manifest cycle slot is the CHARTS cycle
+# (56-day). Everything else that reaches _run_tree_job is the plates family
+# (28-day), whose cycle lands in the PLATES slot. nav never reaches here.
+_CHARTS_CYCLE_FAMILIES = frozenset({"scanned"})
+
+
+def _write_card_manifest_for_family(mount_point, family):
+    """Update the card's ``EFIS_MANIFEST.json`` for one converged chart family.
+
+    chart-manifest-sync task 3.5 (design "Data Models: Card manifest", Req 4.4 /
+    7.2-7.5). After a family's payload is synced + verified and its commit marker
+    is written, this records the family on the card: it loads the current card
+    manifest (treating a missing/corrupt one as empty — first-sync / self-heal),
+    sets ``families[family]`` equal to the local family manifest, mirrors that
+    family's cycle into the authoritative top-level ``charts_cycle`` /
+    ``plates_cycle`` slot, stamps ``written``, and persists atomically via
+    ``Manifest_Store.save_card``.
+
+    The card manifest is the authoritative per-cycle record the next insert's
+    cycle gate trusts, so it is written ONLY after a verified family sync and the
+    commit marker (design "Per-job sequence"): a card-manifest write that lands
+    means the family is genuinely complete.
+
+    Raises on any failure so the caller can treat the family as NOT completed
+    (design Error Handling: "Card manifest write fails (after data written)").
+
+    Imports ``manifest`` lazily because ``manifest`` imports this module at load
+    time; a top-level import here would be circular.
+    """
+    from . import manifest as _manifest
+
+    local = _manifest.Manifest_Store.load_local(family)
+    if local is None:
+        # No local manifest for this family (e.g. the download-time build failed
+        # — design Error Handling "Manifest build fails at download"). There is
+        # nothing authoritative to record; record an empty family manifest so the
+        # card still reflects that the family was written, and leave the cycle
+        # slot unchanged (None) so the next insert re-diffs rather than trusting a
+        # cycle it never captured.
+        local = _manifest.FamilyManifest(family=family, cycle=None)
+
+    card = _manifest.Manifest_Store.load_card(mount_point)
+    if card is None:
+        card = _manifest.CardManifest()
+
+    card.families[family] = local
+    if family in _CHARTS_CYCLE_FAMILIES:
+        card.charts_cycle = local.cycle
+    else:
+        card.plates_cycle = local.cycle
+    card.written = _now_iso()
+
+    _manifest.Manifest_Store.save_card(mount_point, card)
+
+
 def _run_tree_job(job, mount_point, drive_id, sync_state, progress_callback, is_aborted):
     """Driver for a tree job (scanned / plates): sync -> verify -> marker.
 
@@ -1556,6 +1848,29 @@ def _run_tree_job(job, mount_point, drive_id, sync_state, progress_callback, is_
             result.status = "failed"
             _safe_update_provenance(mount_point, last_sync_result="failed")
             return result
+
+    # Step 5b: write the card manifest for this family (chart-manifest-sync
+    # task 3.5). The commit marker is now on the card; recording the card
+    # manifest is the authoritative per-cycle record the next insert's cycle gate
+    # trusts (design "Data Models: Card manifest", Req 4.4 / 7.2-7.5). The order
+    # is deliberate: marker THEN card manifest THEN complete_family. Per the
+    # design Error Handling row "Card manifest write fails (after data written)",
+    # a card-manifest write failure means the family is NOT truly complete — so
+    # we do NOT clear the interrupted marker (no complete_family), do NOT relabel,
+    # and log at ERROR. The next insert then finds the card manifest stale/missing
+    # for this family and re-diffs to converge (idempotent; worst case it
+    # re-writes unchanged files).
+    try:
+        _write_card_manifest_for_family(mount_point, job.name)
+    except (OSError, ValueError) as e:
+        msg = f"{job.name} failed writing card manifest: {e}"
+        result.errors.append(msg)
+        logger.error(msg)
+        result.status = "failed"
+        _safe_update_provenance(mount_point, last_sync_result="failed")
+        # Family left pending (no complete_family); old card manifest intact for
+        # this family or absent — next insert re-converges.
+        return result
 
     # Step 6: clear the interrupted marker for this family (success only).
     sync_state.complete_family(drive_id, job.name)
@@ -1834,16 +2149,35 @@ def verify_drive(
     errors: list = []
 
     if repair:
+        # The read (verify) path above used build_jobs's diff-aware jobs so the
+        # discrepancy report reflects what the card manifest claims. The write
+        # (repair) path, however, must NOT trust that diff: a repair triggers
+        # precisely because the on-card state disagrees with the card manifest,
+        # so a stale-manifest diff could transfer only a partial delta and leave
+        # the discrepancy unresolved. For a discrepant CHART family, force a
+        # LEGACY FULL job (files_from=None) so the --size-only --delete whole-
+        # tree reconcile re-converges the family tree; run_sync_job's existing
+        # _write_card_manifest_for_family then rewrites that family's manifest
+        # with the real cycle. Nav is unchanged (it carries no files_from).
+        # (design Section B.4; R2.3, R10.2)
+        local_root = load_config()["usb_image_path"]
+
         for name, disc in list(per_family.items()):
             if not _has_discrepancies(disc):
                 continue
             _status(f"Repairing {name}...")
             repaired.append(name)
-            # Re-run the same job: idempotent convergence re-copies missing /
+            # Chart families repair via a legacy full job; nav keeps its own
+            # (diff-free) job.
+            if name in ("scanned", "plates"):
+                repair_job = _legacy_tree_job(name, mount_point, local_root)
+            else:
+                repair_job = jobs_by_name[name]
+            # Re-run the repair job: idempotent convergence re-copies missing /
             # changed files, deletes extras, re-verifies, and (on success)
             # writes the marker + clears the interrupted-sync record.
             result = run_sync_job(
-                jobs_by_name[name],
+                repair_job,
                 mount_point,
                 sync_state=sync_state,
                 progress_callback=progress_callback,
@@ -1852,7 +2186,7 @@ def verify_drive(
             if result.errors:
                 errors.extend(result.errors)
             # Re-verify to report the post-repair state authoritatively.
-            per_family[name] = verify_family(jobs_by_name[name], mount_point, deep=deep)
+            per_family[name] = verify_family(repair_job, mount_point, deep=deep)
 
     clean = not any(_has_discrepancies(disc) for disc in per_family.values())
 
@@ -2249,6 +2583,233 @@ def _check_nav_family(local_root, drive_root):
     return True, "checksum matches"
 
 
+# ---------------------------------------------------------------------------
+# Per-stream cycle gate (chart-manifest-sync task 3.1)
+#
+# The sync engine has three independent streams with different freshness rules
+# (design "Cycle gate"):
+#   - charts (the "scanned" family, 56-day cycle): skip wholesale when the
+#     local charts cycle equals the card's recorded charts cycle; otherwise
+#     diff the manifest and write the delta.
+#   - plates (28-day cycle): same gate on the plates cycle.
+#   - nav: NO cycle gate — always evaluated by content checksum.
+# The card manifest's ``charts_cycle`` / ``plates_cycle`` are AUTHORITATIVE; the
+# volume label (``C<charts>P<plates>``) is a human-facing mirror that is only
+# cross-checked — a disagreement is logged at WARNING and the manifest wins.
+# ---------------------------------------------------------------------------
+
+# FAT volume label shape the gate cross-checks against the card manifest:
+# ``C<charts>P<plates>`` (e.g. ``C2611P2612``). Either half may be absent when a
+# single-cycle label was written (``C2611`` / ``P2612``); a non-conforming label
+# (e.g. a user rename or the ``EFIS<YYMMDD>`` fallback) parses to (None, None).
+_LABEL_CYCLE_RE = re.compile(r"^(?:C(\d{4}))?(?:P(\d{4}))?$")
+
+
+@dataclass
+class LocalCycles:
+    """The locally downloaded cycle numbers for the two chart families.
+
+    ``charts_cycle`` governs the scanned family (SEC + LO + optional HI, 56-day);
+    ``plates_cycle`` governs the plates family (28-day). Either is ``None`` when
+    the corresponding local manifest is absent. Sourced from
+    ``manifest.Manifest_Store.load_local("scanned" / "plates").cycle``.
+    """
+
+    charts_cycle: Optional[str] = None
+    plates_cycle: Optional[str] = None
+
+
+@dataclass
+class StreamDecision:
+    """The gate's decision for one stream (design "Cycle gate").
+
+    ``family`` is ``"scanned"`` | ``"plates"`` | ``"nav"``; ``action`` is
+    ``"skip-cycle"`` (family cycle unchanged, nothing to hash or write),
+    ``"diff"`` (cycle rolled or no card manifest — diff the manifest and write
+    the delta), or ``"evaluate"`` (nav — always checksum, no cycle gate).
+    ``local_cycle`` / ``card_cycle`` are the compared cycles (``None`` for nav
+    and for an absent manifest).
+    """
+
+    family: str
+    action: str
+    local_cycle: Optional[str]
+    card_cycle: Optional[str]
+    reason: str
+
+
+def _parse_label_cycles(label: Optional[str]) -> tuple:
+    """Parse ``C<charts>P<plates>`` out of a volume label.
+
+    Returns ``(charts_cycle, plates_cycle)`` as 4-char strings, each ``None``
+    when that half is absent or the label does not conform (a user rename or the
+    ``EFIS<YYMMDD>`` fallback yields ``(None, None)``). Used only for the
+    human-facing cross-check — never for the gate decision itself.
+    """
+    if not label:
+        return (None, None)
+    match = _LABEL_CYCLE_RE.match(label.strip())
+    if not match:
+        return (None, None)
+    return (match.group(1), match.group(2))
+
+
+def _cross_check_label(mount_point: str, card) -> None:
+    """Log a WARNING if the volume label disagrees with the card manifest.
+
+    The card manifest's cycles are authoritative; the ``C<charts>P<plates>``
+    label is a human-facing mirror. If the label carries a cycle for a family
+    and it differs from the manifest's, that disagreement is surfaced at WARNING
+    and the manifest wins. A missing/non-conforming label, or a label half that
+    is simply absent, is not a disagreement (no warning). Best-effort: a
+    diskutil failure reading the label never raises.
+    """
+    if card is None:
+        return
+    try:
+        label = _volume_name(mount_point)
+    except Exception:  # label read is best-effort — never block the gate
+        return
+    label_charts, label_plates = _parse_label_cycles(label)
+    if label_charts is not None and label_charts != card.charts_cycle:
+        logger.warning(
+            "Volume label charts cycle %s disagrees with card manifest %s; "
+            "manifest wins",
+            label_charts,
+            card.charts_cycle,
+        )
+    if label_plates is not None and label_plates != card.plates_cycle:
+        logger.warning(
+            "Volume label plates cycle %s disagrees with card manifest %s; "
+            "manifest wins",
+            label_plates,
+            card.plates_cycle,
+        )
+
+
+def decide_streams(
+    mount_point: str, local: "LocalCycles", card
+) -> list:
+    """Decide the per-stream action for a card insert (design "Cycle gate").
+
+    For each chart family, compares the locally downloaded cycle against the
+    card manifest's authoritative recorded cycle:
+
+      * ``scanned`` / ``plates``: ``"skip-cycle"`` when the local cycle equals
+        the card's recorded cycle (equal cycles imply equal content, because a
+        cycle is only recorded after a verified full-convergence sync — Property
+        3); otherwise ``"diff"``.
+      * ``nav``: always ``"evaluate"`` (checksum NAV.DB / NAV-proc.DB, no cycle
+        gate).
+
+    When there is NO card manifest (``card is None`` — first sync, wiped, or a
+    corrupt/unparseable manifest), every chart family is forced to ``"diff"``
+    against an EMPTY card manifest (a full, self-healing write); nav still
+    evaluates normally (Req 6.1).
+
+    The card manifest's ``charts_cycle`` / ``plates_cycle`` are authoritative;
+    the volume label is cross-checked and any disagreement is logged at WARNING
+    (manifest wins).
+
+    Args:
+        mount_point: The mounted card volume root (for the label cross-check).
+        local: The locally downloaded :class:`LocalCycles`.
+        card: The loaded ``manifest.CardManifest`` or ``None`` when absent.
+
+    Returns:
+        A list of three :class:`StreamDecision` (scanned, plates, nav).
+    """
+    _cross_check_label(mount_point, card)
+
+    card_charts = card.charts_cycle if card is not None else None
+    card_plates = card.plates_cycle if card is not None else None
+
+    decisions = []
+
+    # charts / scanned — gated on the charts cycle.
+    if card is None:
+        decisions.append(
+            StreamDecision(
+                family="scanned",
+                action="diff",
+                local_cycle=local.charts_cycle,
+                card_cycle=None,
+                reason="no card manifest — full write against empty manifest",
+            )
+        )
+    elif local.charts_cycle is not None and local.charts_cycle == card_charts:
+        decisions.append(
+            StreamDecision(
+                family="scanned",
+                action="skip-cycle",
+                local_cycle=local.charts_cycle,
+                card_cycle=card_charts,
+                reason=f"charts cycle {local.charts_cycle} unchanged",
+            )
+        )
+    else:
+        decisions.append(
+            StreamDecision(
+                family="scanned",
+                action="diff",
+                local_cycle=local.charts_cycle,
+                card_cycle=card_charts,
+                reason=(
+                    f"charts cycle rolled (local={local.charts_cycle}, "
+                    f"card={card_charts})"
+                ),
+            )
+        )
+
+    # plates — gated on the plates cycle.
+    if card is None:
+        decisions.append(
+            StreamDecision(
+                family="plates",
+                action="diff",
+                local_cycle=local.plates_cycle,
+                card_cycle=None,
+                reason="no card manifest — full write against empty manifest",
+            )
+        )
+    elif local.plates_cycle is not None and local.plates_cycle == card_plates:
+        decisions.append(
+            StreamDecision(
+                family="plates",
+                action="skip-cycle",
+                local_cycle=local.plates_cycle,
+                card_cycle=card_plates,
+                reason=f"plates cycle {local.plates_cycle} unchanged",
+            )
+        )
+    else:
+        decisions.append(
+            StreamDecision(
+                family="plates",
+                action="diff",
+                local_cycle=local.plates_cycle,
+                card_cycle=card_plates,
+                reason=(
+                    f"plates cycle rolled (local={local.plates_cycle}, "
+                    f"card={card_plates})"
+                ),
+            )
+        )
+
+    # nav — no cycle gate, always evaluated by checksum.
+    decisions.append(
+        StreamDecision(
+            family="nav",
+            action="evaluate",
+            local_cycle=None,
+            card_cycle=None,
+            reason="nav always evaluated by checksum (no cycle gate)",
+        )
+    )
+
+    return decisions
+
+
 def check_drive_currency(mount_point: str) -> dict:
     """Quick, per-family currency check between the local image and the drive.
 
@@ -2346,6 +2907,7 @@ def update_drive(
     families: Optional[list] = None,
     progress_callback: Optional[Callable] = None,
     is_aborted: Optional[Callable[[], bool]] = None,
+    chart_capable: Optional[bool] = None,
 ) -> dict:
     """Sync the requested product families to the physical EFIS drive.
 
@@ -2377,6 +2939,18 @@ def update_drive(
             job — task 11), the predicate is injected into :func:`run_sync_job`
             directly and no per-job watchdog is created. Backward compatible:
             existing callers that omit it are unaffected.
+        chart_capable: Optional labeling snapshot (chart-sync-wiring-fix R8.6).
+            When not None, the resolved capability is merged into the drive's
+            identity via :func:`_safe_update_provenance` at the end of a
+            successful managed sync, just before the post-sync relabel reads it,
+            so the identity's ``chart_capable`` snapshot drives the correct
+            label form. This is a LABELING snapshot ONLY: it does NOT gate which
+            families sync (that stays config-derived in
+            ``app._device_chart_capable``). When None (the caller did not supply
+            it, e.g. a prepare/adopt populate, or a legacy caller) the
+            identity's existing ``chart_capable`` is left untouched. The merge
+            never raises into the sync path (``_safe_update_provenance``
+            guarantee).
 
     Returns:
         Dict shaped as::
@@ -2426,8 +3000,120 @@ def update_drive(
         if result.status == "aborted":
             results["aborted"] = True
 
+    # Post-sync relabel (chart-manifest-sync task 6.1, Req 3.6 / 6.4). After all
+    # jobs converge and the per-family card manifests are written, the card
+    # manifest reflects BOTH cycles (the authoritative record each tree job wrote
+    # via _write_card_manifest_for_family). Mirror those cycles into the
+    # human-facing volume label C<charts>P<plates> so a pilot can read both
+    # cycles off the Finder label. The label is NOT trusted for the cycle gate
+    # (the manifest is), so a relabel failure is logged but never fails the sync.
+    # Skipped on an aborted/failed run: the card manifest for a non-completed
+    # family is stale/absent, so there is nothing new to mirror, and the design
+    # Error Handling says a non-completed family is not relabelled.
+    #
+    # NOTE: the flush step (os.sync + unmount, task 6.2) follows AFTER this in
+    # the end-of-sync region. The relabel MUST precede the unmount — a volume
+    # cannot be renamed once it is unmounted.
+    if not results["aborted"] and not any(
+        r.status == "failed" for r in results["jobs"].values()
+    ):
+        # Refresh the identity's chart_capable labeling snapshot BEFORE the
+        # relabel reads it (chart-sync-wiring-fix R8.6). The capability is
+        # config-derived in the app and threaded in here; when the caller did
+        # not supply it (None) the identity's existing snapshot is left
+        # untouched. This is labeling-only and does NOT gate which families
+        # synced. The merge never raises into the sync path.
+        if chart_capable is not None:
+            _safe_update_provenance(mount_point, chart_capable=chart_capable)
+        _relabel_from_card_manifest(mount_point)
+
     _status("Drive update complete.")
     return results
+
+
+def _relabel_from_card_manifest(mount_point: str) -> None:
+    """Relabel the volume from the drive's own identity + authoritative records.
+
+    Nav-aware post-sync relabel (chart-sync-wiring-fix R9). The branch is chosen
+    by the ``chart_capable`` boolean read from the IDENTITY file — never the
+    aircraft config (R9.7):
+
+      * **chart-capable** (or identity missing/field absent, fail-safe True per
+        R9.7): mirror the freshly-written card manifest's authoritative
+        ``charts_cycle`` / ``plates_cycle`` into ``C<charts>P<plates>`` via
+        :func:`labels.build_volume_label` (R9.2). This path is unchanged from
+        the prior always-chart behavior.
+      * **non-chart-capable** (``chart_capable`` is False): build
+        ``<PREFIX><MMDD>`` from the identity's stored ``nav_label_prefix`` plus
+        the GRT nav valid date (``_current_data_cycle()``) via
+        :func:`labels.build_nav_volume_label` (R9.3). No aircraft-config read.
+
+    Entirely best-effort in both branches: a missing card manifest, a missing
+    identity/prefix, an unparseable date, an empty label, or a rename failure is
+    logged but never raises into the sync path (R10.3; chart-manifest-sync task
+    6.1). :func:`_rename_volume` already returns ``False`` on failure without
+    raising.
+
+    Imports ``manifest`` / ``labels`` lazily to avoid the import cycle
+    (``manifest`` imports this module at load time).
+    """
+    from . import labels
+    from . import manifest as _manifest
+
+    identity = read_identity(mount_point) or {}
+    # Fail-safe chart-capable: a missing identity or absent field keeps the
+    # existing C<charts>P<plates> behavior (R9.7).
+    chart_capable = identity.get("chart_capable", True)
+
+    if chart_capable:
+        # Chart-capable path: mirror the card manifest cycles into
+        # C<charts>P<plates> (R9.2). Unchanged from the prior behavior.
+        try:
+            card = _manifest.Manifest_Store.load_card(mount_point)
+        except Exception as exc:  # load_card is best-effort; never fail the sync
+            logger.warning("Could not read card manifest for relabel: %s", exc)
+            return
+        if card is None:
+            # No card manifest (e.g. nav-only run on a fresh card, or no chart
+            # family completed). Nothing authoritative to mirror; leave as-is.
+            logger.debug("No card manifest at %s; skipping relabel", mount_point)
+            return
+
+        if not card.charts_cycle and not card.plates_cycle:
+            # Neither cycle is known (e.g. a nav-only sync, or chart families
+            # whose download-time manifest build failed so no cycle was
+            # captured). The post-sync relabel exists to MIRROR the cycles into
+            # C<charts>P<plates>; with no cycle to mirror there is nothing to
+            # stamp, and we must NOT overwrite an existing label with
+            # build_volume_label's date fallback (that EFIS<YYMMDD> fallback is
+            # a Prepare-time initial label, not a post-sync relabel). Leave the
+            # label as-is.
+            logger.debug(
+                "Card manifest at %s has no cycles; skipping relabel",
+                mount_point,
+            )
+            return
+
+        label = labels.build_volume_label(card.charts_cycle, card.plates_cycle)
+        if not label:
+            logger.debug("Empty volume label computed; skipping relabel")
+            return
+
+        if _rename_volume(mount_point, label):
+            logger.info("Relabelled volume to %s", label)
+        return
+
+    # Non-chart-capable (nav-only) drive: <PREFIX><MMDD>, NO aircraft-config
+    # read (R9.3, R9.7). The prefix comes from the identity (stored at
+    # prepare/adopt from the config at that time); the MMDD comes from the GRT
+    # nav valid date.
+    prefix = identity.get("nav_label_prefix")
+    nav_valid_date = _current_data_cycle()
+    label = labels.build_nav_volume_label(prefix, nav_valid_date)
+    if label and _rename_volume(mount_point, label):
+        logger.info("Relabelled nav-only volume to %s", label)
+    elif not label:
+        logger.debug("Empty nav volume label computed; skipping relabel")
 
 
 def _terminal_status_from_jobs(jobs: dict, aborted: bool) -> str:
@@ -2504,45 +3190,122 @@ def _summarize_update(update_results: dict) -> tuple:
     return True, detail
 
 
+# The five known adopt content-handling actions. The main-thread adopt handler
+# (task 13.1) resolves the Adopt_Device and the A-choice / C-confirm prompts and
+# then threads one of these into the worker (design Section D.3):
+#   - "manifest_from_card" (Case A1): chart-capable, keep existing ChartData/ by
+#        building a truthful Card_Manifest_From_Card then running the normal diff
+#        sync so orphans prune via files_from / removed.
+#   - "delete_then_fresh" (Case A2): chart-capable, ChartData_Delete then behave
+#        as Case B (empty manifest -> diff-against-empty -> full fresh copy).
+#   - "fresh" (Case B): chart-capable, no existing data -> empty manifest ->
+#        diff-against-empty copy-all.
+#   - "nav_only_delete" (Case C-confirmed): non-chart-capable with existing data
+#        the user agreed to delete -> ChartData_Delete, empty manifest, nav-only
+#        populate + nav-only label.
+#   - "nav_only" (Case D): non-chart-capable, no existing data -> empty manifest,
+#        nav-only populate + nav-only label.
+_ADOPT_CONTENT_ACTIONS = frozenset(
+    {
+        "manifest_from_card",
+        "delete_then_fresh",
+        "fresh",
+        "nav_only_delete",
+        "nav_only",
+    }
+)
+
+
 def adopt_drive(
     mount_point: str,
+    *,
+    chart_capable: bool,
+    nav_label_prefix: str,
+    content_action: str,
     progress_callback: Optional[Callable] = None,
-    poller=None,
 ) -> dict:
-    """Adopt an existing (previously-used GRT) chart drive — NON-destructive.
+    """Adopt an existing (previously-used GRT) drive — NON-destructive by default.
 
-    This is the migration path for a drive from the Windows Chart Data Manager
-    (or an older version of this app) that already carries chart data but no
-    identity file (Req 10.10). It does NOT format and does NOT erase: it brings
-    the existing drive into our ecosystem in place and syncs only the delta.
+    This is the migration path for a drive that already carries chart data (from
+    the Windows Chart Data Manager or an older version of this app). It does NOT
+    format and does NOT wipe the volume root. The main-thread adopt handler
+    (task 13.1) resolves the Adopt_Device, raises any required prompt, and threads
+    the resolved plan in via ``chart_capable``, ``nav_label_prefix``, and
+    ``content_action``; this worker only executes that plan.
 
-    Steps:
-      1. Ensure a ``GRTCHARTS/`` flag directory exists (``makedirs
-         exist_ok=True``) — harmless if already present.
-      2. Write the durable identity file via :func:`_ensure_identity`, so the
-         drive becomes "managed / ours" and auto-syncs on future mounts. An
-         existing identity is left in place.
-      3. Run :func:`update_drive` to bring every family current incrementally.
-         Because the sync is size+mtime delta with ``--delete`` scoped to the
-         family roots, matching charts are reused and only the delta is copied;
-         files outside the family roots are left untouched.
+    Content-handling matrix (design Section D.3), selected by ``content_action``:
+
+      - ``"manifest_from_card"`` — Case A1 (chart-capable, keep existing data).
+        Build a truthful Card_Manifest_From_Card over the card's own
+        ``ChartData/`` (via :func:`_card_manifest_from_card`), ``save_card`` it,
+        then run the normal all-family diff sync so the current cycle transfers
+        and orphans prune through the ``files_from`` / ``removed`` path (R6.3,
+        R6.11).
+      - ``"delete_then_fresh"`` — Case A2 (chart-capable, delete then fresh).
+        :func:`_delete_chart_data_tree`, then behave as Case B (R6.4).
+      - ``"fresh"`` — Case B (chart-capable, no existing data). Save an empty
+        Card_Manifest, then the all-family populate diffs against empty so
+        ``files_from`` is every local file and ``removed`` is empty (R6.6).
+      - ``"nav_only_delete"`` — Case C-confirmed (non-chart-capable, existing
+        data the user agreed to delete). :func:`_delete_chart_data_tree`, save an
+        empty Card_Manifest, then a nav-only populate (R6.9).
+      - ``"nav_only"`` — Case D (non-chart-capable, no existing data). Save an
+        empty Card_Manifest, then a nav-only populate (R6.10).
+
+    Steps (all actions):
+      1. Ensure a ``GRTCHARTS/`` flag directory exists (non-destructive).
+      2. Write/refresh the durable identity with the resolved ``chart_capable``
+         and ``nav_label_prefix`` (R5.5). :func:`_ensure_identity` returns an
+         existing id WITHOUT updating fields, so a re-adopt also merges the
+         resolved snapshot via :func:`_safe_update_provenance`.
+      3. Content-action branch (BEFORE the populate): optional ChartData_Delete
+         and the appropriate ``save_card`` (from-card for A1, empty otherwise),
+         each best-effort — a manifest-write hiccup WARNs but does not fail the
+         adopt (mirrors prepare's task 10.1 pattern).
+      4. Populate: chart-capable actions run :func:`update_drive` over all
+         families; nav-only actions run it with ``families=["nav"]``.
+      5. Summarize via :func:`_summarize_update` (same return shape as
+         :func:`prepare_drive`).
+
+    After a successful adopt in any case, both the Identity_File and a valid
+    Card_Manifest are present at the volume root, so :func:`resolve_drive_id`
+    recognizes the drive immediately (R7.4).
 
     Args:
         mount_point: Path to the mounted drive to adopt (e.g. ``/Volumes/EFIS``).
+        chart_capable: The Adopt_Device capability snapshot written into the
+            identity for labeling (keyword-only).
+        nav_label_prefix: The sanitized device-friendly-name prefix written into
+            the identity for the nav-only volume label (keyword-only).
+        content_action: One of the five values in :data:`_ADOPT_CONTENT_ACTIONS`
+            selecting the content-handling branch (keyword-only).
         progress_callback: Optional ``callable(message)`` for status updates.
-        poller: Optional opaque poller exposing ``pause()``/``resume()``, passed
-            straight through to :func:`msdos_mount` so the swap can quiesce the
-            USB poller across the populate window. Not used otherwise.
 
     Returns:
         Dict ``{"success": bool, "message": str}`` derived from the aggregated
-        update result via :func:`_summarize_update` (the same shape/flavor as
-        :func:`prepare_drive`).
+        update result via :func:`_summarize_update`.
+
+    Raises:
+        ValueError: If ``content_action`` is not one of the five known values
+            (defensive — the main-thread handler only ever passes a known value).
     """
+    if content_action not in _ADOPT_CONTENT_ACTIONS:
+        raise ValueError(
+            f"adopt_drive: unknown content_action {content_action!r}; "
+            f"expected one of {sorted(_ADOPT_CONTENT_ACTIONS)}"
+        )
+
     def _status(msg):
         logger.info(msg)
         if progress_callback:
             progress_callback(msg)
+
+    # Lazy import: manifest imports drive_updater at module load, so importing it
+    # at module top would create a circular import.
+    from . import manifest as _manifest
+
+    nav_only = content_action in ("nav_only_delete", "nav_only")
+    delete_first = content_action in ("delete_then_fresh", "nav_only_delete")
 
     # Step 1: ensure the GRTCHARTS flag directory exists (non-destructive).
     _status("Adopting existing drive...")
@@ -2551,32 +3314,88 @@ def adopt_drive(
     except OSError as e:
         return {"success": False, "message": f"Failed to create GRTCHARTS: {e}"}
 
-    # Step 2: write the identity file so the drive is now managed.
+    # Step 2: write the identity with the resolved capability + nav prefix so the
+    # drive is now managed and the post-sync relabel picks the correct label form
+    # (R5.5). _ensure_identity returns an EXISTING id without touching fields, so
+    # a re-adopt also refreshes the snapshot via _safe_update_provenance.
     _status("Writing drive identity...")
-    _ensure_identity(mount_point)
-    # Stamp the data cycle this drive is being prepared toward, so provenance is
+    _ensure_identity(
+        mount_point,
+        chart_capable=chart_capable,
+        nav_label_prefix=nav_label_prefix,
+    )
+    _safe_update_provenance(
+        mount_point,
+        chart_capable=chart_capable,
+        nav_label_prefix=nav_label_prefix,
+    )
+    # Stamp the data cycle this drive is being brought toward, so provenance is
     # populated even if the subsequent populate is interrupted before any family
     # completes. Telemetry only — never affects currency (Req 10.8).
     _safe_update_provenance(mount_point, data_cycle=_current_data_cycle())
 
-    # Step 3: incremental sync of only the delta (reuses matching files). The
-    # populate write runs inside an in-kernel msdosfs work mount (via the mount
-    # swap), never the raw FSKit /Volumes/ path — matching app._run_drive_update.
-    # Identity/provenance above are written to the FSKit volume root first so
-    # they travel with the volume; resolve_drive_id reads them on the work mount.
-    _status("Updating drive to current data...")
-    try:
-        with msdos_mount(mount_point, poller=poller) as work_mount:
-            update_results = update_drive(
-                work_mount, progress_callback=progress_callback
-            )
-    except MountSwapError as e:
-        logger.error("adopt_drive: mount swap failed for %s: %s", mount_point, e)
-        return {
-            "success": False,
-            "message": f"Could not prepare drive for populate (mount swap failed): {e}",
-        }
+    # Step 3: content-action branch, BEFORE the populate. The ChartData_Delete
+    # (A2 / C-confirmed) is the only destructive step and is scoped to ChartData/
+    # only (R7.1-R7.3); the main-thread handler already obtained the user's
+    # consent. The card-manifest write is best-effort (WARN, never fail adopt),
+    # mirroring prepare's task 10.1 pattern — the populate's
+    # _write_card_manifest_for_family rewrites real per-family manifests on
+    # convergence for the chart-capable paths.
+    if delete_first:
+        _status("Deleting existing chart data...")
+        try:
+            _delete_chart_data_tree(mount_point)
+        except OSError as e:
+            return {
+                "success": False,
+                "message": f"Failed to delete existing chart data: {e}",
+            }
 
+    if content_action == "manifest_from_card":
+        # Case A1: build a truthful manifest from the card's own ChartData/ so
+        # the normal diff sync prunes orphans correctly (R6.3, R6.11). Hashing
+        # ~100k files is multi-minute, so _card_manifest_from_card reports
+        # progress via the callback.
+        card = _card_manifest_from_card(
+            mount_point, progress_callback=progress_callback
+        )
+    else:
+        # Cases A2 / B / C-confirmed / D: an empty manifest. A chart-capable
+        # populate then diffs against empty (copy-all, removed=[]); a nav-only
+        # populate leaves the empty manifest in place (R6.4, R6.6, R6.9, R6.10).
+        card = _manifest.CardManifest()
+
+    try:
+        _manifest.Manifest_Store.save_card(mount_point, card)
+    except Exception as e:
+        logger.warning(
+            "Could not write card manifest to %s during adopt (ignored): %s",
+            mount_point,
+            e,
+        )
+
+    # Step 4: populate. Chart-capable actions sync all families; nav-only actions
+    # sync only the nav family so a non-chart-capable drive never carries charts.
+    # The populate runs DIRECTLY against the FSKit /Volumes/ mount. chart_capable
+    # is threaded through as the labeling snapshot (R8.6) so the post-sync relabel
+    # reads the correct form; it does NOT gate families here (families does that).
+    if nav_only:
+        _status("Updating nav database to current data...")
+        update_results = update_drive(
+            mount_point,
+            families=["nav"],
+            progress_callback=progress_callback,
+            chart_capable=chart_capable,
+        )
+    else:
+        _status("Updating drive to current data...")
+        update_results = update_drive(
+            mount_point,
+            progress_callback=progress_callback,
+            chart_capable=chart_capable,
+        )
+
+    # Step 5: summarize (same shape/flavor as prepare_drive).
     success, summary = _summarize_update(update_results)
     if success:
         return {
@@ -2648,11 +3467,97 @@ def has_unarchived_flight_data(mount_point: str) -> bool:
     return False
 
 
+# Basename of the Spotlight-disable marker written at Prepare time. An empty
+# file by this name at a volume root tells macOS never to index the volume
+# (chart-manifest-sync design "Prepare: Spotlight disable + label").
+METADATA_NEVER_INDEX = ".metadata_never_index"
+
+
+def _write_metadata_never_index(mount_point: str) -> bool:
+    """Write an empty `.metadata_never_index` marker at the volume root.
+
+    Returns True on success. Best-effort: the caller treats a failure as
+    non-fatal (Spotlight churn is a performance nuisance, not a correctness
+    problem), so we swallow and log any error rather than raising.
+    """
+    marker = os.path.join(mount_point, METADATA_NEVER_INDEX)
+    try:
+        # Create (or truncate to) an empty file; the mere presence disables
+        # indexing, so no content is needed.
+        with open(marker, "wb"):
+            pass
+        return True
+    except OSError as exc:
+        logger.warning(
+            "prepare_drive: could not write %s at %s: %s",
+            METADATA_NEVER_INDEX, mount_point, exc,
+        )
+        return False
+
+
+def _apply_volume_label(mount_point: str, label: str) -> bool:
+    """Best-effort rename of the mounted volume to ``label`` via diskutil.
+
+    There is no existing volume-rename helper in the codebase; ``diskutil
+    rename <mount> <label>`` is the standard macOS mechanism. Returns True on
+    success. Any failure (empty label, diskutil error, timeout) is logged and
+    swallowed so it never fails the caller.
+    """
+    if not label:
+        return False
+    try:
+        result = subprocess.run(
+            ["diskutil", "rename", mount_point, label],
+            capture_output=True, text=True, timeout=30,
+        )
+    except Exception as exc:
+        logger.warning(
+            "prepare_drive: volume relabel to %r failed on %s: %s",
+            label, mount_point, exc,
+        )
+        return False
+    if result.returncode != 0:
+        logger.warning(
+            "prepare_drive: diskutil rename to %r failed on %s: %s",
+            label, mount_point, (result.stderr or "").strip()[:200],
+        )
+        return False
+    return True
+
+
+def _prepare_spotlight_marker_and_label(mount_point: str, status) -> None:
+    """Write the Spotlight-disable marker and set an initial volume label.
+
+    Both steps are best-effort (chart-manifest-sync design "Prepare: Spotlight
+    disable + label"): a marker or label failure must NOT fail preparation, so
+    each is wrapped and logged independently.
+
+    The initial label is derived from the CURRENT cycle metadata via the
+    relocated ``labels`` helpers: ``_cycles_from_metadata()`` yields
+    ``(charts_cycle, plates_cycle)`` and ``build_volume_label`` turns them into
+    the ``C<charts>P<plates>`` form (degrading to a single cycle or an
+    ``EFIS<YYMMDD>`` fallback when a cycle is unknown).
+    """
+    status("Disabling Spotlight indexing on card...")
+    _write_metadata_never_index(mount_point)
+
+    try:
+        from efis_data_manager import labels
+
+        charts_cycle, plates_cycle = labels._cycles_from_metadata()
+        label = labels.build_volume_label(charts_cycle, plates_cycle)
+    except Exception as exc:  # label derivation is best-effort only
+        logger.warning("prepare_drive: could not derive initial label: %s", exc)
+        return
+
+    status(f"Setting initial volume label ({label})...")
+    _apply_volume_label(mount_point, label)
+
+
 def prepare_drive(
     volume_path: str,
     label: str = "EFIS",
     progress_callback: Optional[Callable] = None,
-    poller=None,
 ) -> dict:
     """Format a USB drive for EFIS use and populate with current data.
 
@@ -2667,9 +3572,6 @@ def prepare_drive(
             ``/Volumes/<label>``; we wait for that specific path (and fall back
             to discovering the new EFIS mount if macOS disambiguates the name).
         progress_callback: Optional callable(message) for status updates.
-        poller: Optional opaque poller exposing ``pause()``/``resume()``, passed
-            straight through to :func:`msdos_mount` so the swap can quiesce the
-            USB poller across the populate window. Not used otherwise.
 
     Returns:
         Dict with: {"success": bool, "message": str}
@@ -2790,6 +3692,15 @@ def prepare_drive(
     except OSError as e:
         return {"success": False, "message": f"Failed to create GRTCHARTS: {e}"}
 
+    # Disable Spotlight indexing on the freshly-formatted card by dropping an
+    # empty `.metadata_never_index` marker at the volume root (chart-manifest-sync
+    # design "Prepare: Spotlight disable + label" — validated: mdutil reported
+    # indexing disabled after reinsert, so Spotlight does not churn the card).
+    # Also set an initial human-facing volume label (C<charts>P<plates>) from the
+    # current cycle metadata so the card is readable in Finder from the start.
+    # Both are best-effort: a marker/label failure must NOT fail preparation.
+    _prepare_spotlight_marker_and_label(mount_point, _status)
+
     # Write a durable identity file so the freshly-prepared drive has a stable
     # id from the start (Req 10.3). Best-effort: a failure here must NOT fail
     # preparation — the drive is still usable and resolve_drive_id will adopt it
@@ -2803,25 +3714,29 @@ def prepare_drive(
     # completes. Telemetry only — never affects currency (Req 10.8).
     _safe_update_provenance(mount_point, data_cycle=_current_data_cycle())
 
+    # Write an initial empty card manifest so the freshly-prepared drive
+    # satisfies the both-files recognition rule immediately (R3/R4): a blank
+    # volume has no chart files, so the first populate diffs each chart family
+    # against this empty manifest => files_from = all local files, removed = []
+    # (copy-all, nothing to prune). Best-effort: a failure here must NOT fail
+    # prepare (the populate's _write_card_manifest_for_family will still write
+    # real per-family manifests on convergence).
+    from . import manifest as _manifest
+    try:
+        _manifest.Manifest_Store.save_card(mount_point, _manifest.CardManifest())
+    except Exception as e:
+        logger.warning("Could not write initial card manifest to %s: %s", mount_point, e)
+
     # Now run the normal per-family sync to populate it (Req 9.4). A freshly
     # formatted drive has no markers, so every family is stale and copied. The
-    # heavy from-scratch populate runs inside an in-kernel msdosfs work mount
-    # (via the mount swap), never the raw FSKit /Volumes/ path — matching
-    # app._run_drive_update. Identity/provenance above are written to the FSKit
-    # volume root first so they travel with the volume; resolve_drive_id reads
-    # them on the work mount.
+    # populate runs DIRECTLY against the FSKit /Volumes/ mount (the mount-swap
+    # path was retired with chart-manifest-sync; see task 4.1's collapse of the
+    # write path). Identity/provenance above are written to the volume root
+    # first so they travel with the volume.
     _status("Populating drive with current data...")
-    try:
-        with msdos_mount(mount_point, poller=poller) as work_mount:
-            update_results = update_drive(
-                work_mount, progress_callback=progress_callback
-            )
-    except MountSwapError as e:
-        logger.error("prepare_drive: mount swap failed for %s: %s", mount_point, e)
-        return {
-            "success": False,
-            "message": f"Could not prepare drive for populate (mount swap failed): {e}",
-        }
+    update_results = update_drive(
+        mount_point, progress_callback=progress_callback
+    )
 
     success, summary = _summarize_update(update_results)
     if success:

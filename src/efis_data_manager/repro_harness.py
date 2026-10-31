@@ -34,24 +34,20 @@ verify result per family.
 
 **Acceptance gate (pass/fail, Req 1.5, 5.4).** A run PASSES iff:
 
-1. **no 120s stall** occurred (the ``sync_payload`` watchdog never latched — we
-   observe this via a :func:`fskit_diagnostics.make_stall_hook` sink);
+1. **no 120s stall** occurred. The ``sync_payload`` no-progress stall detector
+   was removed (chart-sync-wiring-fix R1), so there is no longer a watchdog to
+   latch; :func:`_detect_stall` is a permanent no-op and this condition is
+   always satisfied;
 2. **every synced family verifies clean** on count+size
    (``verify_drive(deep=False)`` reports ``clean`` with no discrepancies); and
-3. an **idempotent re-run** over the now-current drive reports **current** with
-   **no re-attempted stalled write** (``check_drive_currency`` is current and no
-   new stall event fires on the second pass).
+3. an **idempotent re-run** over the now-current drive reports **current**
+   (``check_drive_currency`` is current on the second pass).
 
 Integration seams (all reused unchanged — this module only CALLS them):
 
 * engine — :func:`drive_updater.build_jobs`, :func:`drive_updater.update_drive`,
-  :func:`drive_updater.verify_drive`, :func:`drive_updater.check_drive_currency`;
-* mount-swap — :func:`mount_swap.msdos_mount` (heavy write goes through the
-  non-stalling private mount);
-* diagnostics — :func:`fskit_diagnostics.make_stall_hook` /
-  :class:`fskit_diagnostics.StallEvent` and
-  :func:`fskit_diagnostics.parse_stall_events_from_log` (task 8's helpers) to
-  observe the watchdog's own stall onset without adding a second detector.
+  :func:`drive_updater.verify_drive`, :func:`drive_updater.check_drive_currency`
+  (the heavy write runs directly against the FSKit ``/Volumes/`` mount).
 
 The pure logic (gate evaluation, throughput calc, report formatting) is factored
 out of the side-effecting drive path so it is testable with no drive present;
@@ -78,14 +74,9 @@ logger = logging.getLogger(__name__)
 # on the CLI so a dry-run self-test can drop its artifact under ./temp/.
 REPORTS_DIR = os.path.expanduser("~/EFIS/Reports")
 
-# The DataManager log the menu-bar tool writes; used as a fallback source of
-# stall onsets when no live stall_hook was wired (delegated to task 8's parser).
-DATAMANAGER_LOG = os.path.expanduser("~/EFIS/DataManagerLogs/datamanager.log")
-
 # diskutil, used ONLY for the guarded from-scratch reformat path. Pinned
 # absolute path; this is the one privileged/destructive call the harness can
-# make and it is gated behind --reformat --yes. mount_msdos itself is reached
-# only indirectly, through mount_swap.msdos_mount / mount_swap.run_privileged.
+# make and it is gated behind --reformat --yes.
 DISKUTIL_BIN = "/usr/sbin/diskutil"
 
 # FAT32 filesystem type token diskutil eraseVolume expects for a FAT32 volume.
@@ -337,8 +328,8 @@ def summarize_verify(verify_result: dict) -> List[FamilyVerify]:
 class GateInputs:
     """The three measured facts the acceptance gate is computed from.
 
-    * ``stall_occurred`` — did the ``sync_payload`` 120s no-progress watchdog
-      latch at any point during the write window? (from a stall_hook sink.)
+    * ``stall_occurred`` — always False: the ``sync_payload`` no-progress stall
+      detector was removed (chart-sync-wiring-fix R1), so nothing can latch.
     * ``family_verifies`` — the per-family count+size verify outcomes of the
       synced families.
     * ``rerun_current`` — did the idempotent re-run report the drive current?
@@ -605,6 +596,37 @@ def write_report(
 # ---------------------------------------------------------------------------
 
 
+def resolve_device_node(mount_point: str) -> Optional[str]:
+    """Return the ``DeviceNode`` backing ``mount_point``, or None.
+
+    Minimal, read-only ``diskutil info -plist`` query used only by the guarded
+    ``--reformat`` path to resolve the device node to erase. Inlined here after
+    the mount-swap module (its former home) was retired with chart-manifest-sync.
+    Best-effort and None-safe: any non-zero exit, unparseable plist, missing
+    key, OSError, or SubprocessError yields None rather than raising.
+    """
+    import plistlib
+
+    try:
+        result = subprocess.run(
+            [DISKUTIL_BIN, "info", "-plist", mount_point],
+            capture_output=True,
+            timeout=10,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return None
+    if result.returncode != 0:
+        return None
+    try:
+        info = plistlib.loads(result.stdout)
+    except Exception:
+        return None
+    device_node = info.get("DeviceNode")
+    if not isinstance(device_node, str) or not device_node:
+        return None
+    return device_node
+
+
 def reformat_drive_fat32(
     device_node: str, label: str, confirm: bool
 ) -> None:
@@ -635,34 +657,16 @@ def reformat_drive_fat32(
 # ---------------------------------------------------------------------------
 
 
-def _detect_stall(stall_sink: list, log_path: str) -> tuple:
-    """Return (stall_occurred, detail) from a live sink, log fallback second.
+def _detect_stall(*_args, **_kwargs) -> tuple:
+    """Return ``(False, "stall detector removed")`` — the watchdog is gone.
 
-    Prefers the live ``stall_hook`` sink (a list of
-    :class:`fskit_diagnostics.StallEvent`); if it is empty, falls back to
-    scanning the DataManager log for the watchdog's stall lines (task 8's
-    ``parse_stall_events_from_log``). Either source being non-empty means the
-    120s watchdog latched during the window.
+    The ``sync_payload`` 120s no-progress stall detector that this step used to
+    observe was removed (chart-sync-wiring-fix R1). There is no longer anything
+    to detect, so this is a permanent no-op that always reports "no stall". The
+    acceptance gate's ``no_stall`` condition is therefore always True. The
+    signature stays permissive so existing callers do not break.
     """
-    if stall_sink:
-        first = stall_sink[0]
-        detail = (
-            f"watchdog latched for family {getattr(first, 'family', '?')!r} "
-            f"at {getattr(first, 'onset_wall', '?')} "
-            f"({len(stall_sink)} stall event(s))"
-        )
-        return True, detail
-
-    # Fallback: after-the-fact log scan (only meaningful for a live run).
-    try:
-        from efis_data_manager.fskit_diagnostics import parse_stall_events_from_log
-
-        events = parse_stall_events_from_log(log_path)
-    except Exception:
-        events = []
-    if events:
-        return True, f"recovered {len(events)} stall event(s) from {log_path}"
-    return False, "no stall latched (live hook + log both clean)"
+    return False, "stall detector removed"
 
 
 def run_acceptance(
@@ -682,36 +686,29 @@ def run_acceptance(
     ``sudoers.d`` grant installed. Sequence:
 
       1. (full-populate only, guarded) if ``reformat`` — resolve the device node
-         via :func:`mount_swap.resolve_device_node` and
-         :func:`reformat_drive_fat32` (which itself requires ``confirm``).
-      2. Wire a live ``stall_hook`` sink via
-         :func:`fskit_diagnostics.make_stall_hook` and monkeypatch it onto the
-         engine's ``sync_payload`` for the window (so the EXISTING watchdog
-         reports onset to us without changing its behaviour).
-      3. Enter :func:`mount_swap.msdos_mount` so the heavy write goes through the
-         non-stalling private mount; start the :class:`ProgressSampler`.
-      4. Run the engine unchanged against the private work mount:
+         via :func:`resolve_device_node` and :func:`reformat_drive_fat32`
+         (which itself requires ``confirm``).
+      2. Run the engine DIRECTLY against the FSKit ``/Volumes/`` mount; start
+         the :class:`ProgressSampler`.
+      3. Run the engine unchanged against that mount:
          :func:`drive_updater.check_drive_currency` then
          :func:`drive_updater.update_drive` on the stale families.
-      5. Verify count+size via :func:`drive_updater.verify_drive` and distil
+      4. Verify count+size via :func:`drive_updater.verify_drive` and distil
          per-family outcomes.
-      6. Idempotent re-run: :func:`drive_updater.check_drive_currency` again and
-         watch for any NEW stall event.
-      7. Score :func:`evaluate_gate` and write the report artifact.
+      5. Idempotent re-run: :func:`drive_updater.check_drive_currency` again.
+      6. Score :func:`evaluate_gate` and write the report artifact.
+
+    The 120s no-progress stall detector that earlier revisions observed via a
+    ``stall_hook`` sink has been removed (chart-sync-wiring-fix R1), so the gate's
+    ``no_stall`` condition is always satisfied (:func:`_detect_stall` is a no-op).
 
     Returns the :class:`RunRecord` (also written to ``reports_dir``).
 
-    NOTE: importing the engine + mount-swap modules is deferred to call time so
-    this module imports cleanly (and the self-test runs) even where those side
-    effects are undesirable at import.
+    NOTE: importing the engine module is deferred to call time so this module
+    imports cleanly (and the self-test runs) even where those side effects are
+    undesirable at import.
     """
     from efis_data_manager import drive_updater
-    from efis_data_manager.fskit_diagnostics import make_stall_hook
-    from efis_data_manager.mount_swap import (
-        MountSwapError,
-        msdos_mount,
-        resolve_device_node,
-    )
 
     families = list(families) if families else list(ALL_FAMILIES)
     errors: List[str] = []
@@ -728,75 +725,54 @@ def run_acceptance(
         label = os.path.basename(os.path.normpath(mount_point))
         reformat_drive_fat32(device_node, label, confirm=confirm)
 
-    # Step 2: wire a live stall_hook sink onto sync_payload for the window.
-    stall_sink: list = []
-    hook = make_stall_hook(stall_sink)
-    original_sync_payload = drive_updater.sync_payload
-
-    def _sync_payload_with_hook(job, is_aborted=None, stall_hook=None):
-        # Prefer the harness hook; if a caller ever passes its own, chain both.
-        def _chained(record):
-            hook(record)
-            if stall_hook is not None:
-                try:
-                    stall_hook(record)
-                except Exception:  # pragma: no cover
-                    pass
-
-        return original_sync_payload(job, is_aborted=is_aborted, stall_hook=_chained)
-
+    # The stall detector is gone (chart-sync-wiring-fix R1), so there is no
+    # stall_hook to wire and no sync_payload to monkeypatch. The engine is
+    # called directly against the FSKit /Volumes/ mount.
     sampler = ProgressSampler(mount_point, interval=sample_interval)
     throughput: Dict[str, float] = compute_throughput([])
     family_verifies: List[FamilyVerify] = []
 
-    drive_updater.sync_payload = _sync_payload_with_hook
+    # Step 3-4: run the engine DIRECTLY against the FSKit /Volumes/ mount.
+    # The mount-swap "private work mount" was retired with chart-manifest-sync
+    # (task 4.1 collapsed the write path onto the FSKit mount), so the heavy
+    # write now goes straight to mount_point.
+    sampler.mount_point = mount_point
+    sampler.start()
     try:
-        # Step 3-4: swap to the non-stalling mount and run the engine on it.
-        try:
-            with msdos_mount(mount_point) as work_mount:
-                sampler.mount_point = work_mount
-                sampler.start()
-                try:
-                    currency = drive_updater.check_drive_currency(work_mount)
-                    stale = [
-                        name
-                        for name, detail in currency["families"].items()
-                        if not detail["current"] and name in families
-                    ]
-                    if stale:
-                        results = drive_updater.update_drive(
-                            work_mount, families=stale
-                        )
-                        errors.extend(results.get("errors", []))
-                        aborted = bool(results.get("aborted"))
-                    # Step 5: count+size verify of the requested families.
-                    verify_result = drive_updater.verify_drive(
-                        work_mount, families=families, deep=False
-                    )
-                    family_verifies = summarize_verify(verify_result)
-                finally:
-                    sampler.stop()
-                    throughput = compute_throughput(sampler.samples)
-        except MountSwapError as e:
-            errors.append(f"mount swap failed: {e}")
-            logger.error("acceptance run: mount swap failed: %s", e)
-
-        # Step 6: idempotent re-run over the now-restored FSKit mount. A second
-        # currency check must report current and must NOT trigger a new stall.
-        rerun_stall_before = len(stall_sink)
-        rerun_current = False
-        try:
-            rerun_currency = drive_updater.check_drive_currency(mount_point)
-            rerun_current = bool(rerun_currency.get("is_current"))
-        except Exception as e:  # pragma: no cover - defensive
-            errors.append(f"re-run currency check failed: {e}")
-        rerun_stall_occurred = len(stall_sink) > rerun_stall_before
-
+        currency = drive_updater.check_drive_currency(mount_point)
+        stale = [
+            name
+            for name, detail in currency["families"].items()
+            if not detail["current"] and name in families
+        ]
+        if stale:
+            results = drive_updater.update_drive(
+                mount_point, families=stale
+            )
+            errors.extend(results.get("errors", []))
+            aborted = bool(results.get("aborted"))
+        # Step 5: count+size verify of the requested families.
+        verify_result = drive_updater.verify_drive(
+            mount_point, families=families, deep=False
+        )
+        family_verifies = summarize_verify(verify_result)
     finally:
-        # Always restore the real engine function, even on error.
-        drive_updater.sync_payload = original_sync_payload
+        sampler.stop()
+        throughput = compute_throughput(sampler.samples)
 
-    stall_occurred, stall_detail = _detect_stall(stall_sink, DATAMANAGER_LOG)
+    # Step 6: idempotent re-run over the FSKit mount. A second currency check
+    # must report current. With the stall detector removed there is no longer a
+    # per-run stall to re-attempt, so a re-run can never re-stall.
+    rerun_current = False
+    try:
+        rerun_currency = drive_updater.check_drive_currency(mount_point)
+        rerun_current = bool(rerun_currency.get("is_current"))
+    except Exception as e:  # pragma: no cover - defensive
+        errors.append(f"re-run currency check failed: {e}")
+    rerun_stall_occurred = False
+
+    # The stall detector is removed; this is a permanent no-op (always no stall).
+    stall_occurred, stall_detail = _detect_stall()
 
     gate = evaluate_gate(
         GateInputs(
