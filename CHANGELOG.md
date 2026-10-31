@@ -74,6 +74,74 @@ fixes.
   device now stores its device link id, so it is recognized on re-insert instead
   of reporting the device as undetermined.
 
+## v1.6.0
+
+Release version 1.6.0 · menu bar 0.14.0 · dashboard 1.2.3
+
+Image-based drive write (later superseded).
+
+- **Image-compose + raw `dd` drive write.** Composed the entire FAT32 drive
+  filesystem locally and wrote it to the drive's raw partition in one pass, with
+  raw-readback hash verification and no mounted write. This replaced the
+  mount-swap write path. NOTE: this subsystem and the mount-swap layer were both
+  removed in v1.6.3 after the write mechanism was reworked around a direct rsync
+  to the mounted volume; the stall premise that motivated them was never
+  confirmed.
+
+## v1.5.6
+
+Release version 1.5.6 · menu bar 0.13.0 · dashboard 1.2.0
+
+- **FDL operation segmentation fix.** The importer treated one FDL CSV as
+  exactly one operation (one engine start/stop cycle). Files containing multiple
+  start/stop cycles were mis-segmented; imports are now split into distinct
+  operations by the gaps between recording sessions, so each engine run becomes
+  its own operation.
+
+## v1.5.1
+
+Release version 1.5.1 · menu bar 0.12.1 · dashboard 1.2.0
+
+- **Mount-swap also applied to Prepare Drive (later superseded).** The v1.5.0
+  write-stall mitigation was wired only into the managed-drive auto-sync path;
+  the explicit Prepare Drive flow still wrote through the stalling mount. This
+  extended the mitigation to Prepare. NOTE: the mount-swap layer was removed in
+  v1.6.3.
+
+## v1.5.0
+
+Release version 1.5.0 · menu bar 0.12.0 · dashboard 1.2.0
+
+- **Chart-sync write-stall mitigation (later superseded).** Large or heavy write
+  sessions to the FAT32 USB drive could stall. This release unmounted the FSKit
+  volume and remounted it via `/sbin/mount_msdos` for the write window. NOTE:
+  this mount-swap approach was removed in v1.6.3 in favor of a direct rsync to
+  the mounted volume plus removal of the false-aborting stall detector.
+
+## v1.4.0
+
+Release version 1.4.0 · menu bar 0.11.0 · dashboard 1.2.0
+
+Dashboard and menu-bar feature work.
+
+- **Notification history.** Menu-bar notifications auto-dismissed before they
+  could be read, with no way to review them. Added a persisted, reviewable
+  notification history.
+- **Oil-age warning.** Surfaces engine oil hours (from the EFIS `STID_OIL_HOURS`
+  state value) so oil age no longer has to be tracked by hand.
+- **Percent power.** Computes percent power — absent from the GRT HXr FDL feed —
+  from the aircraft's engine power map so it is available for leaning and cruise
+  analysis.
+- **EFIS settings import (begun).** Reads the GRT HXr settings backup
+  (Settings.bak / Settings.dat) to populate the dashboard's alert thresholds
+  from the values configured in the aircraft instead of hand-entering them.
+- **Multi-device settings foundation (begun).** Aircraft-keyed configuration and
+  per-device drive resolution by Link_ID, developed incrementally through the
+  v1.6 series.
+
+> Note: entries for v1.5.2–v1.5.5, v1.6.1, and v1.6.2 are not reconstructed here
+> — no spec maps confidently to them, and they are omitted rather than guessed.
+
 ## v1.3.0
 
 Release version 1.3.0 · menu bar 0.9.0 · dashboard 1.1.0
