@@ -69,12 +69,14 @@ def _is_safe_component(name: str) -> bool:
     return True
 
 
+# Uppercase alphanumeric only. The EFIS drive is FAT32 — case-insensitive
+# (case-preserving) — so two names differing only in case (e.g. "Q" vs "q")
+# cannot coexist as distinct entries on the real medium, and the ancestor-
+# collision guard below would not catch such a pair (it compares case-
+# sensitively). Restricting the alphabet to a single case models the target
+# filesystem and keeps generated trees materializable without case collisions.
 _COMPONENT = st.text(
-    alphabet=st.characters(
-        min_codepoint=32,
-        max_codepoint=126,
-        blacklist_characters="/\\\x00",
-    ),
+    alphabet="ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789",
     min_size=1,
     max_size=8,
 ).filter(_is_safe_component)
