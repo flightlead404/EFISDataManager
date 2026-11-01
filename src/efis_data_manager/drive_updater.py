@@ -2094,10 +2094,15 @@ def run_sync_job(
     # safely. The fallback is logged once at WARNING (Req 10.7).
     drive_id = resolve_sync_state_key(mount_point)
     if drive_id is None:
-        drive_id = mount_point
+        # Canonicalize the mount-path fallback so begin_family/complete_family/
+        # pending_families always agree on the key even when the mount is reached
+        # via a symlinked path (e.g. macOS /var -> /private/var on temp mounts):
+        # an un-canonical fallback keyed begin under one form and complete under
+        # the other, so a completed family was never cleared.
+        drive_id = os.path.realpath(mount_point)
         logger.warning(
             "run_sync_job: could not resolve a stable sync-state key for %s; "
-            "keying sync-state by mount path as a fail-safe fallback",
+            "keying sync-state by canonical mount path as a fail-safe fallback",
             mount_point,
         )
 
@@ -2596,6 +2601,73 @@ def _check_tree_family(local_root, drive_root, marker_rel, structure_dirs):
     return True, "marker matches"
 
 
+# Per-chart-family drive roots and payload excludes for the cheap count tier.
+# These MUST mirror ``_legacy_tree_job`` exactly so the manifest-eligible set we
+# count on the drive matches the set the local manifest records (and the set the
+# sync actually transfers). scanned is rooted at ``ChartData`` and additionally
+# excludes the ``Plates/`` subtree (owned by the plates family) and the scanned
+# commit marker; plates is rooted at ``ChartData/Plates`` and excludes the
+# plates commit marker. Both inherit COMMON_TREE_EXCLUDES (macOS ``.DS_Store`` /
+# ``._*`` metadata and the stray ``E:ChartData`` legacy dir).
+_CHART_FAMILY_TREE = {
+    "scanned": {
+        "subpath": ("ChartData",),
+        "excludes": list(COMMON_TREE_EXCLUDES) + ["Plates/", "ScannedCharts.sqlite"],
+    },
+    "plates": {
+        "subpath": ("ChartData", "Plates"),
+        "excludes": list(COMMON_TREE_EXCLUDES) + ["Plates.sqlite"],
+    },
+}
+
+
+def _chart_family_count_matches_local(drive_root, family):
+    """Cheap/fast-negative count cross-check for a chart family (scanned/plates).
+
+    Counts the DRIVE's manifest-eligible files under the family's tree — applying
+    the SAME rsync-style excludes the sync/manifest use (the family commit
+    marker, macOS metadata, and for scanned the ``Plates/`` subtree) via
+    :func:`_iter_tree_relpaths` — and compares that count to the LOCAL manifest's
+    entry count for the family (bugfix 2.1/2.1a).
+
+    This tier is a NEGATIVE ONLY (bugfix 2.3): a mismatch proves the drive is not
+    current; a match proves nothing on its own (an equal count can still hide a
+    same-size content change the SHA-256 manifest exists to catch), so a match
+    simply lets the existing marker logic decide. No content hashing here — count
+    only — so it stays fast (bugfix 3.4/5).
+
+    Returns:
+        (matches: bool, reason: str | None). ``matches`` is False (with a
+        human-readable ``reason``) when the counts differ OR when the local
+        manifest is missing (fail-safe: route to sync — bugfix 2.4). ``matches``
+        is True (``reason`` None) only when both counts are known and equal.
+    """
+    spec = _CHART_FAMILY_TREE.get(family)
+    if spec is None:  # pragma: no cover - defensive; only chart families call in
+        return True, None
+
+    # Lazy import: manifest imports drive_updater at module load, so a top-level
+    # import here would be circular (same pattern as the other helpers).
+    from . import manifest as _manifest
+
+    # Fail safe: with no local manifest we cannot compute the expected count, so
+    # treat the family as not-current and let it route to sync (bugfix 2.4).
+    local = _manifest.Manifest_Store.load_local(family)
+    if local is None:
+        return False, "local manifest missing (fail-safe: route to sync)"
+
+    expected = len(local.entries)
+
+    drive_family_root = os.path.join(drive_root, *spec["subpath"])
+    matcher = _ExcludeMatcher(spec["excludes"])
+    drive_count = sum(1 for _ in _iter_tree_relpaths(drive_family_root, matcher))
+
+    if drive_count != expected:
+        return False, f"file count mismatch: drive={drive_count}, expected={expected}"
+
+    return True, None
+
+
 def _check_nav_family(local_root, drive_root):
     """Quick currency test for the nav family (per-file checksum).
 
@@ -2911,6 +2983,24 @@ def check_drive_currency(mount_point: str) -> dict:
     families["nav"] = dict(
         zip(("current", "reason"), _check_nav_family(usb_image_path, mount_point))
     )
+
+    # Cheap/fast-negative count cross-check for the chart families (bugfix
+    # quick-currency-count-size-check). The marker-based check above trusts the
+    # commit marker + a non-empty-structure sanity check, which cannot catch a
+    # drive that is grossly incomplete but whose marker still matches (observed:
+    # a drive missing 11,345 plate tiles reported current). Here we compare the
+    # drive's actual manifest-eligible file count against the local manifest's
+    # entry count and FORCE not-current on any mismatch (or a missing local
+    # manifest — fail safe). This is a NEGATIVE ONLY: a count MATCH never
+    # upgrades a family to current, it only leaves the marker result standing
+    # (bugfix 2.3). No content hashing — count only — so it stays fast.
+    for name in ("scanned", "plates"):
+        if not families[name]["current"]:
+            # Already not-current from the marker check; nothing to override.
+            continue
+        matches, reason = _chart_family_count_matches_local(mount_point, name)
+        if not matches:
+            families[name] = {"current": False, "reason": reason}
 
     # An interrupted sync forces its families not-current until verify+repair.
     # Resolve the drive id once (task 15). Task 16 completes the app-side wiring;

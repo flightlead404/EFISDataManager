@@ -63,9 +63,26 @@ def state_paths(tmp_path, monkeypatch):
 
 @pytest.fixture
 def env(tmp_path, monkeypatch, state_paths):
-    """A local image with all three families and a drive pre-synced clean."""
-    local = tmp_path / "image"
-    drive = tmp_path / "drive"
+    """A local image with all three families and a drive pre-synced clean.
+
+    Isolation: the mount path is canonicalized (``realpath``) so the sync-state
+    key is identical whether reached directly (``begin_family``) or via the
+    ``run_sync_job`` fallback — on macOS a tmp dir under ``/var`` is a symlink to
+    ``/private/var``, and an un-canonical mismatch would leave a completed family
+    uncleared. ``LOCAL_MANIFEST_DIR`` is redirected to a tmp dir so these tests
+    never read the real app-support local manifests (whose presence/absence
+    would otherwise flip build_jobs between the legacy and manifest paths and
+    perturb the discrepancy/repair assertions).
+    """
+    import pathlib
+    from efis_data_manager import manifest as _mf
+    monkeypatch.setattr(_mf, "LOCAL_MANIFEST_DIR", tmp_path / "manifests")
+
+    # Canonicalize the tmp root so every sync-state key (direct or via the
+    # run_sync_job fallback) agrees regardless of macOS /var -> /private/var.
+    root = pathlib.Path(os.path.realpath(tmp_path))
+    local = root / "image"
+    drive = root / "drive"
     base_mtime = 1_000_000
 
     # scanned family payload + marker
@@ -87,6 +104,28 @@ def env(tmp_path, monkeypatch, state_paths):
     drive.mkdir()
 
     monkeypatch.setattr(du, "load_config", lambda: {"usb_image_path": str(local)})
+
+    # The quick currency check now runs a cheap count cross-check against the
+    # LOCAL manifest (quick-currency-count-size-check bugfix): with no local
+    # manifest it fail-safes to not-current. Write local manifests whose entry
+    # counts match the drive payload so a cleanly-synced/repaired drive still
+    # reads current. scanned payload = LO/a.png + SEC/b.png (Plates/ and the
+    # marker excluded) -> 2; plates payload = p1.pdf (marker excluded) -> 1.
+    def _entry(rel):
+        return _mf.ManifestEntry(relpath=rel, sha256="0" * 64, size=1)
+
+    _mf.Manifest_Store.save_local(
+        _mf.FamilyManifest(
+            family="scanned",
+            cycle=None,
+            entries={"LO/a.png": _entry("LO/a.png"), "SEC/b.png": _entry("SEC/b.png")},
+        )
+    )
+    _mf.Manifest_Store.save_local(
+        _mf.FamilyManifest(
+            family="plates", cycle=None, entries={"p1.pdf": _entry("p1.pdf")}
+        )
+    )
 
     return {"local": local, "drive": drive, "mount": str(drive)}
 

@@ -5,6 +5,39 @@ a single release version (git tag + `__version__` + `pyproject.toml`) with
 independent display labels for the menu-bar tool (`MENUBAR_VERSION`) and the
 dashboard (`DASHBOARD_VERSION`).
 
+## v1.6.5
+
+Release version 1.6.5 · menu bar 0.14.3 · dashboard 1.2.3
+
+Currency-check hardening and a sync-state key fix, found during chart-capable
+drive testing.
+
+### Quick currency check no longer trusts the commit marker alone
+
+- **A short-filled chart family is now caught.** The quick currency check added
+  a cheap file-count cross-check against the local (SSD) manifest for the
+  scanned and plates families, applying the same exclude rules the sync uses
+  (commit marker + macOS metadata) so the comparison is exact. If the drive's
+  count does not match the expected set, the family is marked not-current and
+  re-synced — previously a matching commit marker alone could report a drive
+  "current" while it was missing thousands of tiles. The check is a fast
+  negative only: a count match does not by itself declare currency (a same-size
+  content change still requires the content-hash check), and a missing local
+  manifest fails safe to not-current.
+
+### Interrupted-sync key canonicalized
+
+- **A completed repair now reliably clears its interrupted-sync record.** When a
+  drive has no stable identity and the sync-state key falls back to the mount
+  path, that path is now canonicalized, so the record written at the start of a
+  sync and cleared at the end always use the same key even when the mount is
+  reached via a symlinked path.
+
+### Tests
+
+- Added autouse isolation of the local manifest store so unit tests never read
+  a real on-disk manifest.
+
 ## v1.6.4
 
 Release version 1.6.4 · menu bar 0.14.2 · dashboard 1.2.3

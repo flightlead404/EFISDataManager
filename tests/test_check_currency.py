@@ -19,6 +19,7 @@ import os
 import pytest
 
 from efis_data_manager import drive_updater as du
+from efis_data_manager import manifest as mf
 
 
 # ---------------------------------------------------------------------------
@@ -77,11 +78,43 @@ def env(tmp_path, monkeypatch, state_paths):
 
     monkeypatch.setattr(du, "load_config", lambda: {"usb_image_path": str(local)})
 
+    # The quick currency check now also runs a cheap count cross-check for the
+    # chart families against the LOCAL manifest (quick-currency-count-size-check
+    # bugfix): a matching commit marker is no longer sufficient on its own. Write
+    # local manifests whose entry counts match the current drive payload so these
+    # legitimately-current drives still read current. LOCAL_MANIFEST_DIR is
+    # redirected to a tmp dir so this never touches the real app-support store.
+    manifest_dir = tmp_path / "manifests"
+    monkeypatch.setattr(mf, "LOCAL_MANIFEST_DIR", manifest_dir)
+
+    def _entry(rel):
+        return mf.ManifestEntry(relpath=rel, sha256="0" * 64, size=1)
+
+    # scanned payload on the drive: ChartData/{LO/a.png, SEC/b.png} (Plates/ and
+    # the scanned marker are excluded) -> 2 manifest-eligible files.
+    mf.Manifest_Store.save_local(
+        mf.FamilyManifest(
+            family="scanned",
+            cycle=None,
+            entries={"LO/a.png": _entry("LO/a.png"), "SEC/b.png": _entry("SEC/b.png")},
+        )
+    )
+    # plates payload on the drive: ChartData/Plates/p1.pdf (the plates marker is
+    # excluded) -> 1 manifest-eligible file.
+    mf.Manifest_Store.save_local(
+        mf.FamilyManifest(
+            family="plates",
+            cycle=None,
+            entries={"p1.pdf": _entry("p1.pdf")},
+        )
+    )
+
     return {
         "local": local,
         "drive": drive,
         "mount": str(drive),
         "base_mtime": base_mtime,
+        "manifest_dir": manifest_dir,
     }
 
 

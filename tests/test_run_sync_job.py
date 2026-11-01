@@ -89,6 +89,29 @@ def env(tmp_path, monkeypatch, state_paths):
 
     monkeypatch.setattr(du, "load_config", lambda: {"usb_image_path": str(local)})
 
+    # The quick currency check now cross-checks the drive file count against the
+    # LOCAL manifest (quick-currency-count-size-check bugfix); with no local
+    # manifest it fail-safes to not-current. Write local manifests matching the
+    # payload so a cleanly-synced drive reads current. scanned = LO/a.png +
+    # SEC/b.png -> 2 (Plates/ and marker excluded); plates = p1.pdf -> 1.
+    from efis_data_manager import manifest as _mf
+
+    def _entry(rel):
+        return _mf.ManifestEntry(relpath=rel, sha256="0" * 64, size=1)
+
+    _mf.Manifest_Store.save_local(
+        _mf.FamilyManifest(
+            family="scanned",
+            cycle=None,
+            entries={"LO/a.png": _entry("LO/a.png"), "SEC/b.png": _entry("SEC/b.png")},
+        )
+    )
+    _mf.Manifest_Store.save_local(
+        _mf.FamilyManifest(
+            family="plates", cycle=None, entries={"p1.pdf": _entry("p1.pdf")}
+        )
+    )
+
     return {
         "local": local,
         "drive": drive,
