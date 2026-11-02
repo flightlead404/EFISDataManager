@@ -5,6 +5,65 @@ a single release version (git tag + `__version__` + `pyproject.toml`) with
 independent display labels for the menu-bar tool (`MENUBAR_VERSION`) and the
 dashboard (`DASHBOARD_VERSION`).
 
+## v1.6.7
+
+Release version 1.6.7 · menu bar 0.14.5 · dashboard 1.2.3
+
+Foundation for managing a 1-3 display GRT aircraft: the EFIS Data Manager now
+learns which aircraft it manages, knows each display by position, and routes an
+inserted drive to the right device automatically. This is the groundwork that
+later per-device archiving, chart/settings push, and restore build on; those
+consumer features are not in this release.
+
+### Device identity and aircraft learning
+
+- **The manager now has a per-aircraft, per-device model.** Configuration gained
+  an aircraft-keyed record: the managed aircraft is identified by its Mode_S, and
+  each display is a device keyed by its position (Link_ID 1-3) with a
+  user-declared friendly name and a chart-capable flag. A one-time, crash-safe
+  migration adds the new structure to existing configs without touching any other
+  setting.
+- **The aircraft is learned on first insert, only with your confirmation.** When
+  no aircraft is yet established, inserting a drive whose settings carry a Mode_S
+  prompts to adopt that aircraft; declining leaves the drive mounted and changes
+  nothing. A drive from a different Mode_S is reported as foreign and left alone.
+
+### Automatic drive-to-device resolution on insert
+
+- **An inserted drive is matched to the correct display automatically.** A new
+  resolution step reads the drive's settings and recorded binding and classifies
+  it: resolved (proceed as before), needs-learn, unrecognized aircraft,
+  undetermined aircraft, unconfigured device, or undetermined device. Only a
+  confidently resolved drive proceeds to the existing archive/sync behavior; every
+  other case notifies the specific reason and leaves the drive mounted with no
+  action.
+- **The settings-file position wins.** When a drive carries a settings Link_ID it
+  is authoritative for which device the drive belongs to; a differing recorded
+  binding is reported as a mismatch but resolution still follows the settings
+  file. When no settings Link_ID is present, the recorded binding is used as the
+  fallback.
+
+### Settings UI and blank-drive binding
+
+- **Device setup in Settings.** The Settings window gained a device-count control
+  (1-3), a per-device row (friendly name, chart-capable, Link_ID), and a
+  single-select analysis-data-source. Invalid edits (a count outside 1-3, a
+  duplicate Link_ID) are rejected and the previous valid values retained.
+- **Blank drives are bound at Prepare time.** Preparing a blank drive records
+  which device it is for: a single-device install binds without asking; a
+  multi-device install prompts for the device. The binding is written into the
+  drive identity file, whose schema advanced to v2 while remaining readable for
+  older v1 drives.
+
+### Tests
+
+- Added `device_resolution.py` with ten Hypothesis properties (migration
+  idempotency and key preservation, label composition, authoritative settings
+  Link_ID, recorded-binding fallback, aircraft-gated resolution, unconfigured
+  Link_ID, determinism, validation reject-and-retain, learn-only-on-confirmation)
+  plus the full eight-row resolution matrix, identity-file v1 compatibility, the
+  migration chain, and Prepare-binding integration tests.
+
 ## v1.6.6
 
 Release version 1.6.6 · menu bar 0.14.4 · dashboard 1.2.3

@@ -61,15 +61,47 @@ Cycle facts measured: ~68% chart content churns per cycle (Plates 79.7%, SEC
 whole-image dd beats rsync delta-sync here (a genuine delta would still rewrite
 most of the tree AND pay the slow sidecar-doubled walk).
 
+### Multi-device handling — identity + DM-setup foundation  [CODE COMPLETE (unreleased), 2026-10]
+STATUS: DONE (foundation increment). Full spec at
+`.kiro/specs/multi-device-settings/` — all 33 tasks complete; the full suite is
+green. Delivers the device-identity + DM-setup FOUNDATION for a 1-3 display GRT
+aircraft: the aircraft-keyed config model + migration (`config.py`), the
+one-field `device_link_id` extension to the per-drive identity file (schema v1
+still readable), the pure resolve/classify state machine
+(`device_resolution.py`: identity branch via `extract_source_key`, Mode_S
+aircraft verify/learn, device-by-Link_ID with the settings-file Link_ID
+authoritative, recorded-binding fallback), the Settings-save validation
+(reject-and-retain), the device-config Settings UI, the `_on_efis_drive_mounted`
+resolution hook (proceed / learn-prompt / warn-and-leave-mounted), and the
+Prepare-time blank-drive device binding. Properties 1-10 each covered by one
+Hypothesis test.
+
+NOT in this increment (future consumers that build ON this foundation — see
+PRIORITIZED #2 and the outbound/inbound notes under the old #1 record): per-device
+archiving, outbound chart/nav/settings push, settings explore/compare/restore,
+FDL enforcement, divergence warning, and forget-aircraft.
+
+RELEASE: code is on `master` but NOT yet cut as a release (no version bump / tag
+for this increment — the tree still shows the v1.6.6 chart-sync release). Per the
+versioning policy this is a menu-bar change: a release bumps `__version__` +
+`pyproject.toml` + `MENUBAR_VERSION` (leave `DASHBOARD_VERSION`). Cut when ready.
+
 ## ACTIVE NOW
 
 (Nothing in active development. See PRIORITIZED items below for what's next.)
 
 ## PRIORITIZED BIG-PICTURE ITEMS (parked; flesh out next)
 
-### 1. Multi-device handling  [REFINED 2026-10-17]
-Draft spec parked at `.kiro/specs/multi-device-settings/` (predates this; will be
-rewritten to match the decisions below). For an aircraft with 1-3 GRT displays
+### 1. Multi-device handling  [FOUNDATION SHIPPED (code complete) 2026-10 — see SHIPPED above]
+> **Foundation increment is CODE COMPLETE** at
+> `.kiro/specs/multi-device-settings/` (identity + DM setup + resolution +
+> Prepare binding; all 33 tasks done). The decision record below is retained for
+> the OUTBOUND/INBOUND consumers that are still OUTSTANDING (per-device
+> archiving, chart/nav/settings push, FDL->analysis import, drive<->device
+> binding at sync time) — those remain to be specced and built on top of the
+> shipped foundation.
+
+For an aircraft with 1-3 GRT displays
 (this user: an HXr at Link_ID=1 + a Mini A/P at Link_ID=2, both Mode_S A60670).
 SINGLE-AIRCRAFT assumption (multi-aircraft is a separate parked heading).
 
