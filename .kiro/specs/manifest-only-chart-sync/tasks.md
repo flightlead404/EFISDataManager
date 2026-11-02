@@ -101,7 +101,7 @@ implementation design is in `design.md`.
     a size-only transfer.
   - Requirements: 2.1, 2.4
 
-- [-] 8. Checkpoint — full suite green
+- [x] 8. Checkpoint — full suite green
   - Run `./venv/bin/python -m pytest`. Confirm the task-1 exploration test
     passes, all preservation/error tests pass, and no regressions. Bump
     `__version__` / `pyproject.toml` and `MENUBAR_VERSION` per the versioning
