@@ -150,10 +150,23 @@ def test_tree_job_success_writes_marker_and_clears_state(env):
 
 
 def test_second_run_reports_current_no_files(env):
-    scanned = _job(env, "scanned")
-    du.run_sync_job(scanned, env["mount"])
-    # Re-run: nothing changed -> no files updated, status current.
-    result = du.run_sync_job(scanned, env["mount"])
+    # First converge: the card manifest is absent, so _chart_family_job diffs
+    # the local manifest against an empty card family -> a full manifest write
+    # (files_from populated). run_sync_job transfers it and writes the card
+    # manifest as the authoritative per-cycle record (manifest-only-chart-sync
+    # design Section D).
+    first = _job(env, "scanned")
+    first_result = du.run_sync_job(first, env["mount"])
+    assert first_result.status == "updated"
+
+    # Re-build the job AFTER the first converge wrote the card manifest. Now the
+    # local manifest and the card manifest agree, so _chart_family_job diffs to
+    # an EMPTY files_from -> no-op. (The old size-only contract reused the same
+    # job object; under the manifest-only path the no-op is an empty change set,
+    # which only a fresh build_jobs can observe.)
+    second = _job(env, "scanned")
+    assert second.files_from == []  # empty change set -> nothing to transfer
+    result = du.run_sync_job(second, env["mount"])
     assert result.status == "current"
     assert result.files_updated == 0
     assert result.verified is True

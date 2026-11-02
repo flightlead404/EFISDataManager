@@ -155,14 +155,19 @@ def test_rsync_failure_errors_are_all_logged(tmp_path, caplog, monkeypatch):
     dst = tmp_path / "drive"
     dst.mkdir()
 
+    # manifest-only-chart-sync R2.1: sync_payload is manifest-only, so build a
+    # manifest-driven job (files_from set). The rsync failure (missing source)
+    # and its logging are unchanged by the manifest wiring.
     job = du.SyncJob(
         name="scanned",
         kind="tree",
-        payload_root_local=str(src),
-        payload_root_drive=str(dst),
+        payload_root_local=str(src) + os.sep,
+        payload_root_drive=str(dst) + os.sep,
         excludes=[],
         marker_src=None,
         marker_dst=None,
+        files_from=["SEC/a.png"],
+        removed=[],
     )
 
     with caplog.at_level(logging.WARNING, logger=du.logger.name):

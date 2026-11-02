@@ -3,32 +3,38 @@
 #
 # SPDX-License-Identifier: AGPL-3.0-or-later
 
-"""Property test for the absent-manifest legacy job in build_jobs (task 6.4).
+"""Property test for the absent/corrupt-card-manifest job in build_jobs.
 
-Feature: chart-sync-wiring-fix, Property 3: absent card manifest yields a legacy
-job.
+manifest-only-chart-sync R2.1/R2.3 RETIRED the legacy size-only fallback. The
+OLD contract (chart-sync-wiring-fix Property 3) was: an absent/corrupt card
+manifest yields a Legacy_Job (``files_from is None``) that runs
+``rsync --size-only --delete``. That path compared by byte size only and
+silently skipped a same-size content change — the flight-safety gap this spec
+closes — so it is gone.
 
-Design Section B / R2.3 — when ``build_jobs`` builds a chart-family job and the
-Card_Manifest (``EFIS_MANIFEST.json`` at the volume root) is ABSENT or CORRUPT,
-``Manifest_Store.load_card`` returns ``None`` and ``_chart_family_job`` must
-return a Legacy_Job: a ``kind == "tree"`` job with ``files_from is None`` and
-``removed is None`` so the legacy ``rsync --size-only --delete`` whole-tree
-reconcile runs and self-heals the family. This holds for EVERY chart family and
-regardless of whether a local manifest happens to exist (an absent card manifest
-forces legacy before the local manifest is even consulted).
+NEW contract (design Section A, R2.3): when ``build_jobs`` builds a chart-family
+job and the Card_Manifest (``EFIS_MANIFEST.json`` at the volume root) is ABSENT
+or CORRUPT, ``Manifest_Store.load_card`` returns ``None`` and
+``_chart_family_job`` builds a MANIFEST job — it diffs the local manifest
+(building it from the SSD source if missing) against an EMPTY card family, i.e.
+a full content write. The emitted job is therefore ``kind == "tree"`` with a
+populated ``files_from`` list (NEVER ``None``) and a ``removed`` list (empty when
+the card has nothing to prune). This holds for EVERY chart family and regardless
+of whether a local manifest happens to exist.
 
-Property 3 asserts, across both chart families, both "no manifest file at all"
-and "corrupt/unparseable manifest file" card states, and an arbitrary presence
-of a local manifest:
+This property asserts, across both chart families, both "no manifest file at
+all" and "corrupt/unparseable manifest file" card states, and an arbitrary
+presence of a local manifest:
 
-  * (R2.3) every chart-family job is a Legacy_Job -> ``files_from is None`` AND
-    ``removed is None``;
+  * (R2.1/R2.3) every chart-family job is a MANIFEST job -> ``files_from is not
+    None`` (a list) AND ``removed is not None`` (a list) — never the retired
+    legacy size-only job;
   * the job is ``kind == "tree"`` with the SAME payload roots, excludes, and
-    markers as ``_legacy_tree_job`` (so legacy behavior is preserved exactly);
-    and
+    markers as ``_chart_tree_job_skeleton`` (the roots/excludes/markers are
+    unchanged from the old legacy builder); and
   * the nav job is present and unchanged (``kind == "files"``, the NAV DBs,
     ``files_from``/``removed`` None), because nav carries no manifest and no
-    cycle gate (R2.5).
+    cycle gate (R3.4).
 
 Each example isolates the local manifest dir (``manifest.LOCAL_MANIFEST_DIR``),
 pins ``drive_updater.load_config`` to a throwaway temp local root and
@@ -38,7 +44,7 @@ test and torn down in a ``finally`` block so the run is Hypothesis-safe and
 never touches the real app-support dir or a real volume. The monkeypatched
 module globals are saved/restored per example for the same reason.
 
-Validates: Requirements 2.3
+Validates: Requirements 2.1, 2.3
 """
 
 import os
@@ -63,7 +69,7 @@ from efis_data_manager.manifest import (
 
 # The two card states that both make load_card return None (treating the card as
 # having no valid manifest): no manifest file at all, or a present-but-unparseable
-# one. Varying this proves absent AND corrupt both force the legacy path.
+# one. Varying this proves absent AND corrupt both yield a full-write manifest job.
 _CARD_STATE = st.sampled_from(["absent", "corrupt"])
 
 # Bodies for the corrupt-manifest case. Two classes, both of which
@@ -109,21 +115,22 @@ _CYCLE = st.integers(min_value=0, max_value=9999).map(lambda n: f"{n:04d}")
     local_present=st.booleans(),
     local_cycle=_CYCLE,
 )
-def test_absent_manifest_yields_legacy_job(
+def test_absent_manifest_yields_manifest_job(
     card_state, corrupt_body, local_present, local_cycle
 ):
-    """An absent or corrupt card manifest forces a Legacy_Job for every chart
-    family; nav is present and unchanged.
+    """An absent or corrupt card manifest yields a MANIFEST job for every chart
+    family (full write, diff vs empty); nav is present and unchanged.
 
     For a mount whose card manifest is either missing entirely or
     corrupt/unparseable, ``build_jobs`` returns, for each requested chart family,
-    a ``kind == "tree"`` job with ``files_from is None`` and ``removed is None``
-    whose payload roots / excludes / markers match ``_legacy_tree_job``. The
-    presence of a local manifest is varied and must not change the outcome,
-    because the absent card manifest forces legacy before the local manifest is
-    consulted. nav is always present and unchanged.
+    a ``kind == "tree"`` job whose ``files_from`` is a populated list (NEVER
+    ``None``) and whose ``removed`` is a list, with payload roots / excludes /
+    markers matching ``_chart_tree_job_skeleton``. The presence of a local
+    manifest is varied and must not change the shape of the job (the local
+    manifest is built from the SSD source when absent). nav is always present and
+    unchanged.
 
-    Validates: Requirements 2.3
+    Validates: Requirements 2.1, 2.3
     """
     # Fresh, isolated temp roots per example.
     local_root = tempfile.mkdtemp(prefix="efis_local_")
@@ -166,20 +173,26 @@ def test_absent_manifest_yields_legacy_job(
         jobs = du.build_jobs(mount_point, ["scanned", "plates", "nav"])
         jobs_by_name = {job.name: job for job in jobs}
 
-        # Every chart family is present as a Legacy_Job (absent manifest never
+        # Every chart family is present as a MANIFEST job (absent manifest never
         # omits a family — only skip-cycle does, which requires a valid card).
         for name in ("scanned", "plates"):
-            assert name in jobs_by_name, f"{name} job missing for a legacy family"
+            assert name in jobs_by_name, f"{name} job missing for a chart family"
             job = jobs_by_name[name]
 
-            # (R2.3) Legacy_Job: files_from AND removed are None so the
-            # --size-only --delete whole-tree reconcile runs.
-            assert job.files_from is None
-            assert job.removed is None
+            # (R2.1/R2.3) MANIFEST job: files_from AND removed are LISTS (never
+            # None). An absent/corrupt card manifest diffs the local manifest
+            # against an empty card family -> a full content write, not the
+            # retired size-only legacy job. The local image is empty here, so the
+            # change set happens to be empty — but it is a list, not None.
+            assert job.files_from is not None
+            assert isinstance(job.files_from, list)
+            assert job.removed is not None
+            assert isinstance(job.removed, list)
 
-            # A legacy tree job whose payload roots / excludes / markers match
-            # _legacy_tree_job exactly (legacy behavior preserved).
-            expected = du._legacy_tree_job(name, mount_point, local_root)
+            # A tree job whose payload roots / excludes / markers match the
+            # shared skeleton exactly (the roots/excludes/markers are unchanged
+            # from the retired legacy builder).
+            expected = du._chart_tree_job_skeleton(name, mount_point, local_root)
             assert job.kind == "tree"
             assert job.payload_root_local == expected.payload_root_local
             assert job.payload_root_drive == expected.payload_root_drive
@@ -187,7 +200,7 @@ def test_absent_manifest_yields_legacy_job(
             assert job.marker_src == expected.marker_src
             assert job.marker_dst == expected.marker_dst
 
-        # nav is always present and unchanged by the manifest wiring (R2.5).
+        # nav is always present and unchanged by the manifest wiring (R3.4).
         assert "nav" in jobs_by_name
         nav = jobs_by_name["nav"]
         assert nav.kind == "files"

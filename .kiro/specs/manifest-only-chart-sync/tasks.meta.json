@@ -1,0 +1,244 @@
+{
+  "pbtResults": {},
+  "executionHistory": {
+    "1. Exploration test — pin the current defect (bugfix 1.3, 1.4)": [
+      {
+        "executionId": "7627047b-67f5-42d5-b722-f55062fdf5a4",
+        "chatSessionId": "sess_0240f9c9-0877-4760-a3d6-153d17982dae",
+        "timestamp": 1793579687302
+      },
+      {
+        "executionId": "7627047b-67f5-42d5-b722-f55062fdf5a4",
+        "chatSessionId": "sess_0240f9c9-0877-4760-a3d6-153d17982dae",
+        "timestamp": 1793579693178
+      },
+      {
+        "executionId": "7627047b-67f5-42d5-b722-f55062fdf5a4",
+        "chatSessionId": "sess_0240f9c9-0877-4760-a3d6-153d17982dae",
+        "timestamp": 1793579875810
+      }
+    ],
+    "2.1 Add `_build_local_manifest(name, local_root)` (or reuse": [
+      {
+        "executionId": "7627047b-67f5-42d5-b722-f55062fdf5a4",
+        "chatSessionId": "sess_0240f9c9-0877-4760-a3d6-153d17982dae",
+        "timestamp": 1793579687342
+      },
+      {
+        "executionId": "7627047b-67f5-42d5-b722-f55062fdf5a4",
+        "chatSessionId": "sess_0240f9c9-0877-4760-a3d6-153d17982dae",
+        "timestamp": 1793579880688
+      },
+      {
+        "executionId": "7627047b-67f5-42d5-b722-f55062fdf5a4",
+        "chatSessionId": "sess_0240f9c9-0877-4760-a3d6-153d17982dae",
+        "timestamp": 1793579995578
+      }
+    ],
+    "2.2 Unit-test it: scanned excludes `Plates/` and the marker; plates": [
+      {
+        "executionId": "7627047b-67f5-42d5-b722-f55062fdf5a4",
+        "chatSessionId": "sess_0240f9c9-0877-4760-a3d6-153d17982dae",
+        "timestamp": 1793579687368
+      },
+      {
+        "executionId": "7627047b-67f5-42d5-b722-f55062fdf5a4",
+        "chatSessionId": "sess_0240f9c9-0877-4760-a3d6-153d17982dae",
+        "timestamp": 1793579997955
+      },
+      {
+        "executionId": "7627047b-67f5-42d5-b722-f55062fdf5a4",
+        "chatSessionId": "sess_0240f9c9-0877-4760-a3d6-153d17982dae",
+        "timestamp": 1793580107318
+      }
+    ],
+    "3.1 Extract the roots/excludes/markers portion of `_legacy_tree_job`": [
+      {
+        "executionId": "7627047b-67f5-42d5-b722-f55062fdf5a4",
+        "chatSessionId": "sess_0240f9c9-0877-4760-a3d6-153d17982dae",
+        "timestamp": 1793579687392
+      },
+      {
+        "executionId": "7627047b-67f5-42d5-b722-f55062fdf5a4",
+        "chatSessionId": "sess_0240f9c9-0877-4760-a3d6-153d17982dae",
+        "timestamp": 1793580111275
+      },
+      {
+        "executionId": "7627047b-67f5-42d5-b722-f55062fdf5a4",
+        "chatSessionId": "sess_0240f9c9-0877-4760-a3d6-153d17982dae",
+        "timestamp": 1793580292967
+      }
+    ],
+    "3.2 Rewrite `_chart_family_job(name, mount_point, local_root, card,": [
+      {
+        "executionId": "7627047b-67f5-42d5-b722-f55062fdf5a4",
+        "chatSessionId": "sess_0240f9c9-0877-4760-a3d6-153d17982dae",
+        "timestamp": 1793579687412
+      },
+      {
+        "executionId": "7627047b-67f5-42d5-b722-f55062fdf5a4",
+        "chatSessionId": "sess_0240f9c9-0877-4760-a3d6-153d17982dae",
+        "timestamp": 1793580295450
+      },
+      {
+        "executionId": "7627047b-67f5-42d5-b722-f55062fdf5a4",
+        "chatSessionId": "sess_0240f9c9-0877-4760-a3d6-153d17982dae",
+        "timestamp": 1793580590396
+      }
+    ],
+    "3.3 Update `build_jobs` callsite if the signature changed (default": [
+      {
+        "executionId": "7627047b-67f5-42d5-b722-f55062fdf5a4",
+        "chatSessionId": "sess_0240f9c9-0877-4760-a3d6-153d17982dae",
+        "timestamp": 1793579687443
+      },
+      {
+        "executionId": "7627047b-67f5-42d5-b722-f55062fdf5a4",
+        "chatSessionId": "sess_0240f9c9-0877-4760-a3d6-153d17982dae",
+        "timestamp": 1793580592733
+      },
+      {
+        "executionId": "7627047b-67f5-42d5-b722-f55062fdf5a4",
+        "chatSessionId": "sess_0240f9c9-0877-4760-a3d6-153d17982dae",
+        "timestamp": 1793580756751
+      }
+    ],
+    "4.1 In `verify_drive(..., repair=True)`, replace the forced": [
+      {
+        "executionId": "7627047b-67f5-42d5-b722-f55062fdf5a4",
+        "chatSessionId": "sess_0240f9c9-0877-4760-a3d6-153d17982dae",
+        "timestamp": 1793579687478
+      },
+      {
+        "executionId": "7627047b-67f5-42d5-b722-f55062fdf5a4",
+        "chatSessionId": "sess_0240f9c9-0877-4760-a3d6-153d17982dae",
+        "timestamp": 1793580759541
+      },
+      {
+        "executionId": "7627047b-67f5-42d5-b722-f55062fdf5a4",
+        "chatSessionId": "sess_0240f9c9-0877-4760-a3d6-153d17982dae",
+        "timestamp": 1793580979929
+      }
+    ],
+    "4.2 Verify task-1 exploration test now PASSES (repair yields a": [
+      {
+        "executionId": "7627047b-67f5-42d5-b722-f55062fdf5a4",
+        "chatSessionId": "sess_0240f9c9-0877-4760-a3d6-153d17982dae",
+        "timestamp": 1793579687501
+      },
+      {
+        "executionId": "7627047b-67f5-42d5-b722-f55062fdf5a4",
+        "chatSessionId": "sess_0240f9c9-0877-4760-a3d6-153d17982dae",
+        "timestamp": 1793580982285
+      },
+      {
+        "executionId": "7627047b-67f5-42d5-b722-f55062fdf5a4",
+        "chatSessionId": "sess_0240f9c9-0877-4760-a3d6-153d17982dae",
+        "timestamp": 1793581017610
+      }
+    ],
+    "5.1 Delete the legacy `else` branch (`rsync -r --delete": [
+      {
+        "executionId": "7627047b-67f5-42d5-b722-f55062fdf5a4",
+        "chatSessionId": "sess_0240f9c9-0877-4760-a3d6-153d17982dae",
+        "timestamp": 1793579687523
+      },
+      {
+        "executionId": "7627047b-67f5-42d5-b722-f55062fdf5a4",
+        "chatSessionId": "sess_0240f9c9-0877-4760-a3d6-153d17982dae",
+        "timestamp": 1793581020335
+      },
+      {
+        "executionId": "7627047b-67f5-42d5-b722-f55062fdf5a4",
+        "chatSessionId": "sess_0240f9c9-0877-4760-a3d6-153d17982dae",
+        "timestamp": 1793581305713
+      }
+    ],
+    "5.2 Retire `_legacy_tree_job` for charts (remove or fold into": [
+      {
+        "executionId": "7627047b-67f5-42d5-b722-f55062fdf5a4",
+        "chatSessionId": "sess_0240f9c9-0877-4760-a3d6-153d17982dae",
+        "timestamp": 1793579687545
+      },
+      {
+        "executionId": "7627047b-67f5-42d5-b722-f55062fdf5a4",
+        "chatSessionId": "sess_0240f9c9-0877-4760-a3d6-153d17982dae",
+        "timestamp": 1793581308127
+      },
+      {
+        "executionId": "7627047b-67f5-42d5-b722-f55062fdf5a4",
+        "chatSessionId": "sess_0240f9c9-0877-4760-a3d6-153d17982dae",
+        "timestamp": 1793581556999
+      }
+    ],
+    "6. Preservation tests (bugfix 3.1-3.5)": [
+      {
+        "executionId": "7627047b-67f5-42d5-b722-f55062fdf5a4",
+        "chatSessionId": "sess_0240f9c9-0877-4760-a3d6-153d17982dae",
+        "timestamp": 1793579687570
+      },
+      {
+        "executionId": "7627047b-67f5-42d5-b722-f55062fdf5a4",
+        "chatSessionId": "sess_0240f9c9-0877-4760-a3d6-153d17982dae",
+        "timestamp": 1793581560098
+      }
+    ],
+    "7. Error-path tests (design Error handling)": [
+      {
+        "executionId": "7627047b-67f5-42d5-b722-f55062fdf5a4",
+        "chatSessionId": "sess_0240f9c9-0877-4760-a3d6-153d17982dae",
+        "timestamp": 1793579687593
+      },
+      {
+        "executionId": "7627047b-67f5-42d5-b722-f55062fdf5a4",
+        "chatSessionId": "sess_0240f9c9-0877-4760-a3d6-153d17982dae",
+        "timestamp": 1793582359793
+      },
+      {
+        "executionId": "7627047b-67f5-42d5-b722-f55062fdf5a4",
+        "chatSessionId": "sess_0240f9c9-0877-4760-a3d6-153d17982dae",
+        "timestamp": 1793582703069
+      }
+    ],
+    "8. Checkpoint — full suite green": [
+      {
+        "executionId": "7627047b-67f5-42d5-b722-f55062fdf5a4",
+        "chatSessionId": "sess_0240f9c9-0877-4760-a3d6-153d17982dae",
+        "timestamp": 1793579687612
+      },
+      {
+        "executionId": "7627047b-67f5-42d5-b722-f55062fdf5a4",
+        "chatSessionId": "sess_0240f9c9-0877-4760-a3d6-153d17982dae",
+        "timestamp": 1793582711920
+      }
+    ],
+    "2. Build-if-missing manifest helpers (bugfix 2.2, 2.3)": [
+      {
+        "executionId": "7627047b-67f5-42d5-b722-f55062fdf5a4",
+        "chatSessionId": "sess_0240f9c9-0877-4760-a3d6-153d17982dae",
+        "timestamp": 1793580107398
+      }
+    ],
+    "3. Rework `_chart_family_job` to be manifest-only (bugfix 2.1, 2.2, 2.3)": [
+      {
+        "executionId": "7627047b-67f5-42d5-b722-f55062fdf5a4",
+        "chatSessionId": "sess_0240f9c9-0877-4760-a3d6-153d17982dae",
+        "timestamp": 1793580756791
+      }
+    ],
+    "4. Interrupted-sync repair via fresh card rescan (bugfix 2.4)": [
+      {
+        "executionId": "7627047b-67f5-42d5-b722-f55062fdf5a4",
+        "chatSessionId": "sess_0240f9c9-0877-4760-a3d6-153d17982dae",
+        "timestamp": 1793581017656
+      }
+    ],
+    "5. Remove the size-only branch from `sync_payload` (bugfix 2.1, 2.5)": [
+      {
+        "executionId": "7627047b-67f5-42d5-b722-f55062fdf5a4",
+        "chatSessionId": "sess_0240f9c9-0877-4760-a3d6-153d17982dae",
+        "timestamp": 1793581557042
+      }
+    ]
+  }
+}

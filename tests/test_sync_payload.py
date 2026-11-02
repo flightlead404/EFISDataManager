@@ -58,9 +58,19 @@ def _rel_files(root):
 
 
 # --- convergence + idempotency ---------------------------------------------
+#
+# manifest-only-chart-sync R2.1 retired the legacy ``--size-only`` whole-tree
+# job: sync_payload is now manifest-only and a ``files_from is None`` tree job is
+# rejected loudly. These invariants (convergence, no-op, marker/metadata
+# exclusion) are re-expressed against the manifest ``--files-from`` path: the
+# change set is the authoritative list of relpaths to transfer, nothing outside
+# it is sent or deleted, and removals go through ``_prune_removed(job.removed)``.
+# The helper for building such jobs (``_files_from_job``) is defined lower in
+# this file alongside the newer manifest-path tests.
 
 
 def test_sync_converges_source_to_dest(tmp_path):
+    """The relpaths listed in files_from are transferred to the drive."""
     src = tmp_path / "local"
     dst = tmp_path / "drive"
     _write(src / "SEC" / "a.tif", "aaa")
@@ -68,7 +78,9 @@ def test_sync_converges_source_to_dest(tmp_path):
     _write(src / "top.txt", "c")
     dst.mkdir()
 
-    job = _tree_job(src, dst)
+    job = _files_from_job(
+        src, dst, files_from=["SEC/a.tif", "LO/b.tif", "top.txt"]
+    )
     files_updated, errors = du.sync_payload(job)
 
     assert errors == []
@@ -78,32 +90,48 @@ def test_sync_converges_source_to_dest(tmp_path):
 
 
 def test_second_run_is_noop(tmp_path):
+    """Under the manifest path the no-op is an EMPTY files_from change set.
+
+    The old size-only contract reused the same job and relied on rsync's
+    size/mtime quick-check to transfer nothing the second time. Under
+    manifest-only the converged state is modeled as an empty change set: a
+    diff that found nothing to add/change yields ``files_from == []``, which
+    transfers nothing and leaves the drive untouched.
+    """
     src = tmp_path / "local"
     dst = tmp_path / "drive"
     _write(src / "SEC" / "a.tif", "aaa")
     _write(src / "LO" / "b.tif", "bbbb")
     dst.mkdir()
 
-    job = _tree_job(src, dst)
-    first_updated, first_errors = du.sync_payload(job)
+    # First converge: the full change set is listed and transferred.
+    first = _files_from_job(src, dst, files_from=["SEC/a.tif", "LO/b.tif"])
+    first_updated, first_errors = du.sync_payload(first)
     assert first_errors == []
     assert first_updated == 2
 
-    # Nothing changed on the source; the delta strategy must transfer nothing.
-    second_updated, second_errors = du.sync_payload(job)
+    # Second run: nothing changed, so the diff yields an EMPTY change set and
+    # the transfer is a no-op.
+    second = _files_from_job(src, dst, files_from=[])
+    second_updated, second_errors = du.sync_payload(second)
     assert second_errors == []
     assert second_updated == 0
     assert _rel_files(dst) == {"SEC/a.tif", "LO/b.tif"}
 
 
-def test_delete_removes_extra_dest_files(tmp_path):
+def test_removed_relpaths_are_pruned_from_dest(tmp_path):
+    """Extra dest files gone from the local manifest are pruned via removed.
+
+    ``--delete`` is retired (it cannot run under ``--files-from``); removals now
+    flow through the explicit ``_prune_removed(job.removed)`` pass (R2.5).
+    """
     src = tmp_path / "local"
     dst = tmp_path / "drive"
     _write(src / "keep.txt", "keep")
     _write(dst / "keep.txt", "keep")
-    _write(dst / "stale.txt", "stale")  # not in source -> should be deleted
+    _write(dst / "stale.txt", "stale")  # gone locally -> in diff.removed
 
-    job = _tree_job(src, dst)
+    job = _files_from_job(src, dst, files_from=[], removed=["stale.txt"])
     _updated, errors = du.sync_payload(job)
 
     assert errors == []
@@ -114,14 +142,23 @@ def test_delete_removes_extra_dest_files(tmp_path):
 
 
 def test_marker_is_excluded_from_payload(tmp_path):
+    """The commit marker is never listed in the manifest change set.
+
+    Under ``--files-from`` only the listed relpaths are transferred; the marker
+    is written separately as the atomic commit step, so it is never part of
+    files_from and never pushed by the payload sync. (The marker basename also
+    stays in ``excludes`` as defense in depth.)
+    """
     src = tmp_path / "local"
     dst = tmp_path / "drive"
     _write(src / "SEC" / "a.tif", "aaa")
     _write(src / "ScannedCharts.sqlite", "MARKER")  # must NOT be copied
     dst.mkdir()
 
-    # build_jobs puts the marker basename in excludes for the scanned family.
-    job = _tree_job(src, dst, excludes=["ScannedCharts.sqlite"])
+    # The manifest diff never lists the marker; it is not in files_from.
+    job = _files_from_job(
+        src, dst, files_from=["SEC/a.tif"], excludes=["ScannedCharts.sqlite"]
+    )
     _updated, errors = du.sync_payload(job)
 
     assert errors == []
@@ -133,12 +170,14 @@ def test_marker_is_excluded_from_payload(tmp_path):
 
 
 def test_rsync_failure_captured_and_logged(tmp_path, caplog):
-    # Source directory does not exist -> rsync exits non-zero.
+    # Source directory does not exist -> rsync exits non-zero. Build a
+    # manifest-driven job (files_from set) so the failure is captured on the
+    # manifest path, not the retired size-only one.
     src = tmp_path / "missing"
     dst = tmp_path / "drive"
     dst.mkdir()
 
-    job = _tree_job(src, dst)
+    job = _files_from_job(src, dst, files_from=["SEC/a.tif"])
     with caplog.at_level(logging.ERROR, logger=du.logger.name):
         files_updated, errors = du.sync_payload(job)
 
@@ -155,6 +194,25 @@ def test_non_tree_job_rejected():
         du.sync_payload(nav)
 
 
+def test_files_from_none_tree_job_rejected(tmp_path):
+    """A tree job with files_from=None is rejected (legacy size-only retired).
+
+    manifest-only-chart-sync R2.1: the only chart-transfer mechanism is the
+    manifest ``--files-from`` diff. A tree job without a change set would mean a
+    size-only transfer slipped back in — the silent-wrong-tile hazard — so
+    sync_payload raises rather than running it.
+    """
+    src = tmp_path / "local"
+    dst = tmp_path / "drive"
+    _write(src / "SEC" / "a.tif", "aaa")
+    dst.mkdir()
+
+    legacy = _tree_job(src, dst)  # files_from left None by construction
+    assert legacy.files_from is None
+    with pytest.raises(ValueError):
+        du.sync_payload(legacy)
+
+
 # --- abort path -------------------------------------------------------------
 
 
@@ -162,11 +220,13 @@ def test_is_aborted_terminates_and_records_error(tmp_path, caplog):
     src = tmp_path / "local"
     dst = tmp_path / "drive"
     # Enough files that rsync doesn't finish in the very first poll tick.
+    rels = []
     for i in range(200):
         _write(src / f"f{i}.bin", "x" * 4096)
+        rels.append(f"f{i}.bin")
     dst.mkdir()
 
-    job = _tree_job(src, dst)
+    job = _files_from_job(src, dst, files_from=rels)
 
     # Abort on the first poll.
     with caplog.at_level(logging.ERROR, logger=du.logger.name):
@@ -178,38 +238,24 @@ def test_is_aborted_terminates_and_records_error(tmp_path, caplog):
     assert any(rec.levelno >= logging.ERROR for rec in caplog.records)
 
 
-# --- metadata purge + structural protection (two-tier excludes) -------------
+# --- metadata excludes on the manifest path ---------------------------------
 #
-# rsync's default --delete PROTECTS excluded files, so macOS "._*" sidecars
-# accumulated on the drive. sync_payload now uses --delete-excluded for the
-# metadata patterns (.DS_Store, ._*) while PROTECTING structural excludes
-# (the sibling family's subtree, the legacy dir, the commit marker).
-
-
-def test_metadata_sidecars_on_dest_are_purged(tmp_path):
-    """Pre-existing ._* / .DS_Store files on the drive are deleted by a sync."""
-    src = tmp_path / "local"
-    dst = tmp_path / "drive"
-    _write(src / "SEC" / "a.png", "aaa")
-    # Junk metadata already sitting on the drive (as it does in the field).
-    _write(dst / "._a.png", "junk")
-    _write(dst / "SEC" / "._a.png", "junk")
-    _write(dst / ".DS_Store", "junk")
-    _write(dst / "SEC" / ".DS_Store", "junk")
-
-    job = _tree_job(src, dst)
-    _updated, errors = du.sync_payload(job)
-
-    assert errors == []
-    files = _rel_files(dst)
-    # Real payload present, all metadata purged.
-    assert "SEC/a.png" in files
-    assert not any(f.rsplit("/", 1)[-1].startswith("._") for f in files)
-    assert not any(f.rsplit("/", 1)[-1] == ".DS_Store" for f in files)
+# The retired ``--size-only --delete --delete-excluded`` machinery (which
+# purged pre-existing ._* / .DS_Store on the drive and protected structural
+# excludes from --delete) is gone with the legacy branch. Under ``--files-from``
+# nothing outside the listed relpaths is sent or deleted, so there is no
+# whole-tree delete pass to purge drive-side junk or to threaten a sibling
+# family's subtree. What remains and still matters is the SOURCE-side metadata
+# exclude: macOS ``._*`` / ``.DS_Store`` sidecars must never be pushed to the
+# drive even if a relpath names one. COPYFILE_DISABLE=1 is also kept.
 
 
 def test_metadata_sidecars_are_never_copied_from_source(tmp_path):
-    """._* / .DS_Store on the SOURCE are not pushed to the drive."""
+    """._* / .DS_Store relpaths are not pushed even if listed in files_from.
+
+    The metadata excludes are passed to rsync as ``--exclude`` patterns, so a
+    stray sidecar named in the change set is filtered out of the transfer.
+    """
     src = tmp_path / "local"
     dst = tmp_path / "drive"
     _write(src / "SEC" / "a.png", "aaa")
@@ -218,7 +264,13 @@ def test_metadata_sidecars_are_never_copied_from_source(tmp_path):
     _write(src / ".DS_Store", "junk")
     dst.mkdir()
 
-    job = _tree_job(src, dst)
+    # Even if the sidecars are (perversely) listed, the metadata --exclude
+    # patterns keep them off the drive.
+    job = _files_from_job(
+        src,
+        dst,
+        files_from=["SEC/a.png", "._a.png", "SEC/._a.png", ".DS_Store"],
+    )
     _updated, errors = du.sync_payload(job)
 
     assert errors == []
@@ -228,49 +280,37 @@ def test_metadata_sidecars_are_never_copied_from_source(tmp_path):
     assert ".DS_Store" not in files
 
 
-def test_structural_exclude_subtree_is_protected_from_delete(tmp_path):
-    """A structural exclude (sibling family's subtree) is NOT deleted.
+def test_files_outside_changeset_on_dest_are_left_alone(tmp_path):
+    """Under --files-from nothing outside files_from/removed is touched.
 
-    The scanned job excludes ``Plates/``; --delete-excluded must not remove the
-    Plates subtree the plates family owns, even though it matches an exclude.
+    This is the manifest-path replacement for the retired "structural exclude /
+    sibling subtree / commit marker protected from --delete" assertions: there
+    is no --delete pass at all, so a drive-side file the change set does not name
+    (a sibling family's subtree, an existing commit marker, drive-side junk) is
+    simply never considered — it survives untouched.
     """
     src = tmp_path / "local"
     dst = tmp_path / "drive"
     _write(src / "SEC" / "a.png", "aaa")
-    # Plates data lives only on the drive (owned by the plates family).
-    _write(dst / "Plates" / "KABC.pdf", "plate-bytes")
-    # And a metadata file inside the protected subtree — still purged? rsync
-    # protects the whole subtree, so it is left untouched here. Assert the
-    # payload/pdf survives (the key invariant: no cross-family data loss).
+    # Pre-existing drive-side files OUTSIDE the change set:
+    _write(dst / "Plates" / "KABC.pdf", "plate-bytes")   # sibling family subtree
+    _write(dst / "ScannedCharts.sqlite", "existing-marker")  # commit marker
+    _write(dst / "._junk.png", "junk")                    # stray metadata
 
-    job = _tree_job(src, dst, excludes=["Plates/", "ScannedCharts.sqlite"])
+    job = _files_from_job(
+        src, dst, files_from=["SEC/a.png"], excludes=["Plates/", "ScannedCharts.sqlite"]
+    )
     _updated, errors = du.sync_payload(job)
 
     assert errors == []
     files = _rel_files(dst)
+    # The listed file landed.
     assert "SEC/a.png" in files
-    # The sibling family's subtree must survive the scanned job's delete pass.
+    # Everything outside the change set is left exactly as it was: no --delete
+    # pass can remove the sibling subtree or the commit marker.
     assert "Plates/KABC.pdf" in files
-
-
-def test_commit_marker_on_dest_is_protected_from_delete(tmp_path):
-    """The commit marker is a structural exclude and is not deleted.
-
-    (It is written separately as the atomic commit step; a sync of the payload
-    must never remove an existing marker.)
-    """
-    src = tmp_path / "local"
-    dst = tmp_path / "drive"
-    _write(src / "SEC" / "a.png", "aaa")
-    _write(dst / "ScannedCharts.sqlite", "existing-marker")
-
-    job = _tree_job(src, dst, excludes=["ScannedCharts.sqlite"])
-    _updated, errors = du.sync_payload(job)
-
-    assert errors == []
-    files = _rel_files(dst)
-    assert "SEC/a.png" in files
-    assert "ScannedCharts.sqlite" in files  # protected, not deleted
+    assert "ScannedCharts.sqlite" in files
+    assert "._junk.png" in files
 
 
 # --- files_updated parsing robustness (defensive noise filter) --------------
@@ -311,14 +351,18 @@ def test_is_progress2_noise_classification():
 
 
 def test_files_updated_ignores_progress2_lines(tmp_path, monkeypatch):
-    """End-to-end: a progress2-laden stdout yields only real filenames counted."""
+    """End-to-end: a progress2-laden stdout yields only real filenames counted.
+
+    Built as a manifest ``--files-from`` job (the only transfer mode now); the
+    stdout parsing / noise filtering is unchanged by the manifest wiring.
+    """
     import subprocess
 
     src = tmp_path / "local"
     dst = tmp_path / "drive"
     _write(src / "a.png", "a")
     dst.mkdir()
-    job = _tree_job(src, dst)
+    job = _files_from_job(src, dst, files_from=["a.png"])
 
     # Simulated rsync stdout: two real filenames interleaved with progress2
     # progress rewrites (carriage returns) and a trailing summary block.
@@ -339,6 +383,10 @@ def test_files_updated_ignores_progress2_lines(tmp_path, monkeypatch):
             self._polls = 0
             self.returncode = None
             self.pid = 5555
+            # sync_payload feeds the files_from change set over stdin.
+            import io
+
+            self.stdin = io.StringIO()
 
         def poll(self):
             self._polls += 1
@@ -359,7 +407,7 @@ def test_files_updated_ignores_progress2_lines(tmp_path, monkeypatch):
         def kill(self):
             self.returncode = -9
 
-    def fake_popen(cmd, stdout=None, stderr=None, **k):
+    def fake_popen(cmd, stdin=None, stdout=None, stderr=None, **k):
         return _WritingProc(stdout)
 
     monkeypatch.setattr(subprocess, "Popen", fake_popen)
@@ -379,6 +427,9 @@ def test_rsync_command_has_no_info_progress2_flag(tmp_path, monkeypatch):
     2.6.9), which rejects ``--info`` with "unrecognized option" and aborts the
     whole transfer, so the flag must stay out of the command.
     ``--out-format=%n`` (the file-count stdout signal) must remain.
+
+    Built as a manifest ``--files-from`` job (the only transfer mode now); the
+    ``--info=progress2`` exclusion is unchanged by the manifest wiring.
     """
     import subprocess
 
@@ -386,11 +437,11 @@ def test_rsync_command_has_no_info_progress2_flag(tmp_path, monkeypatch):
     dst = tmp_path / "drive"
     _write(src / "a.png", "a")
     dst.mkdir()
-    job = _tree_job(src, dst)
+    job = _files_from_job(src, dst, files_from=["a.png"])
 
     captured = {}
 
-    def fake_popen(cmd, stdout=None, stderr=None, **k):
+    def fake_popen(cmd, stdin=None, stdout=None, stderr=None, **k):
         captured["cmd"] = list(cmd)
         raise OSError("stop here — we only want the command line")
 

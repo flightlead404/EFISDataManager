@@ -1003,13 +1003,22 @@ def _tree_root(*parts: str) -> str:
     return os.path.join(*parts) + os.sep
 
 
-def _legacy_tree_job(name: str, mount_point: str, local_root: str) -> SyncJob:
-    """Build the legacy whole-tree :class:`SyncJob` for a chart family.
+def _chart_tree_job_skeleton(name: str, mount_point: str, local_root: str) -> SyncJob:
+    """Build the roots/excludes/markers skeleton of a chart-family tree job.
 
-    ``files_from`` is ``None``, so this runs the legacy ``--size-only --delete``
-    whole-tree reconcile. The payload roots, excludes, and markers are identical
-    to the pre-manifest builders so legacy behavior is preserved exactly (design
-    Section B).
+    This is the shared base for every chart-family transfer. It carries the
+    payload roots, the macOS metadata and structural excludes, and the commit
+    markers — identical to the pre-manifest builders — with ``files_from`` left
+    ``None`` *by construction*. Callers that emit a real job (``_chart_family_job``
+    and the repair loop) always populate ``files_from`` / ``removed`` from the
+    SHA-256 manifest diff before returning it, so a ``files_from=None`` job never
+    escapes to ``sync_payload`` on the manifest-only path (design Section A/E,
+    R2.1/R2.2/R2.3/R3.5).
+
+    The excludes and roots MUST stay in lock-step with the cheap count tier
+    (see ``_COUNT_TIER_ROOTS`` / comments below) so the manifest-eligible set
+    counted on the drive matches the set the local manifest records and the
+    set rsync actually transfers.
     """
     if name == "scanned":
         return SyncJob(
@@ -1033,7 +1042,7 @@ def _legacy_tree_job(name: str, mount_point: str, local_root: str) -> SyncJob:
             marker_src=os.path.join(local_root, PLATES_MARKER),
             marker_dst=os.path.join(mount_point, PLATES_MARKER),
         )
-    raise ValueError(f"_legacy_tree_job: unknown chart family {name!r}")
+    raise ValueError(f"_chart_tree_job_skeleton: unknown chart family {name!r}")
 
 
 def _nav_files_job() -> SyncJob:
@@ -1047,35 +1056,92 @@ def _nav_files_job() -> SyncJob:
     )
 
 
+def _build_local_manifest(name: str, local_root: str):
+    """Build the SSD-side :class:`FamilyManifest` for a chart family.
+
+    Hashes the family's source tree on the local SSD image and applies the same
+    scanned ``Plates/`` prune the download-time builder uses, so the result
+    matches ``Manifest_Builder.build`` plus the prune exactly (design Section A,
+    R2.2/R2.3). This is the build-if-missing source the sync path uses when the
+    persisted local manifest is absent or corrupt, instead of falling back to a
+    size-only transfer.
+
+    Implementation reuses :func:`currency._build_family_manifest`, which already
+    (a) roots the scanned family at ``ChartData`` and the plates family at
+    ``ChartData/Plates`` and (b) prunes the ``Plates/`` subtree out of the
+    scanned manifest. Reusing it keeps a single definition of "what a family
+    manifest is" rather than replicating the root mapping and prune here.
+
+    Import direction: ``manifest`` imports ``drive_updater`` at module load and
+    ``currency`` imports ``manifest`` at module load, so importing ``currency``
+    at the top of this module would form a cycle
+    (``drive_updater -> currency -> manifest -> drive_updater``). It is imported
+    lazily inside the function instead — the same pattern already used for the
+    ``currency``/``manifest`` imports elsewhere in this module.
+
+    The stamped cycle is best-effort and left ``None`` here: this helper has no
+    Seattle Avionics entry to harvest a cycle from, and the manifest diff does
+    not depend on the cycle (``_card_manifest_from_card`` likewise stamps null).
+    """
+    from efis_data_manager import currency
+
+    return currency._build_family_manifest(name, local_root, cycle=None)
+
+
 def _chart_family_job(
-    name: str, mount_point: str, local_root: str, card
+    name: str, mount_point: str, local_root: str, card, card_ground_truth=None
 ) -> Optional[SyncJob]:
-    """Return the :class:`SyncJob` for a chart family, or ``None`` to omit it.
+    """Return the manifest-driven :class:`SyncJob` for a chart family, or
+    ``None`` to omit it (skip-cycle only).
 
-    Wires the SHA-256 manifest diff into the job (design Section B):
+    This builder is manifest-only: it NEVER returns a ``files_from=None``
+    (size-only legacy) job. The emitted job always carries a ``files_from`` list
+    computed from the SHA-256 ``diff_family`` (possibly empty for a no-op),
+    closing the retired ``--size-only`` content-correctness gap (design
+    Section A, R2.1).
 
-      * ``card is None`` (absent/corrupt card manifest) -> legacy job so the
-        ``--size-only --delete`` whole-tree reconcile self-heals (R2.3).
-      * local manifest missing -> legacy job (cannot diff without the local
-        content hashes; strictly safer than an empty diff).
-      * ``decide_streams`` returns ``skip-cycle`` -> ``None`` (omit the transfer
-        job; local cycle equals the card's recorded cycle, R2.2).
-      * otherwise -> ``files_from`` / ``removed`` populated from
-        ``diff_family`` (R2.1). The diff relpaths are family-root-relative and
-        align with the legacy job's payload roots, so no remapping is needed
-        (R2.4).
+    Flow:
+
+      1. Start from ``_chart_tree_job_skeleton`` (roots/excludes/markers only).
+      2. Ensure the LOCAL manifest exists. ``Manifest_Store.load_local`` returns
+         ``None`` on a missing, unreadable, or malformed file (never raises), so
+         a ``None`` result means missing *or* corrupt — in both cases we rebuild
+         it from the SSD source tree via ``_build_local_manifest`` and persist
+         it with ``save_local`` (R2.2/R2.3). We never fall back to size-only.
+      3. Cycle gate (unchanged, R3.5): ``decide_streams`` -> ``skip-cycle``
+         returns ``None`` (omit the transfer job) when the local cycle equals
+         the card's recorded cycle.
+      4. Choose the card-side ground-truth entries to diff against:
+           * ``card_ground_truth`` provided (interrupted-sync repair) ->
+             ``card_ground_truth[name]`` — a FRESH content-hash rescan of the
+             card (R2.4).
+           * ``card is None`` (absent/corrupt card manifest) -> ``{}`` — a full
+             content write against an empty card family (R2.3). This replaces
+             the retired "card is None -> legacy" leak.
+           * otherwise -> the card family's stored entries (normal insert /
+             adopt populate).
+      5. Populate ``files_from`` / ``removed`` from ``diff_family`` (R2.1). The
+         diff relpaths are family-root-relative and align with the skeleton's
+         payload roots, so no remapping is needed.
+
+    ``card_ground_truth`` defaults to ``None`` so the normal insert/adopt path
+    (``build_jobs``) is unchanged — the repair loop (task 4) passes a fresh card
+    rescan's ``families`` dict.
     """
     from . import manifest as _manifest
 
-    base = _legacy_tree_job(name, mount_point, local_root)  # files_from=None
+    base = _chart_tree_job_skeleton(name, mount_point, local_root)
 
-    if card is None:
-        return base  # absent/corrupt card manifest -> legacy --delete self-heal (R2.3)
-
+    # 1. Ensure the LOCAL manifest exists (build from the SSD source if the
+    #    persisted one is missing or corrupt). load_local returns None for both
+    #    conditions and never raises, so this single branch covers both.
     local_fam = _manifest.Manifest_Store.load_local(name)
     if local_fam is None:
-        return base  # no local manifest -> cannot diff -> legacy fallback
+        local_fam = _build_local_manifest(name, local_root)
+        _manifest.Manifest_Store.save_local(local_fam)
 
+    # 2. Cycle gate (unchanged, R3.5). decide_streams forces "diff" when
+    #    card is None, so a repair / absent-manifest sync is never skipped here.
     cycles = LocalCycles(
         charts_cycle=(local_fam.cycle if name == "scanned" else None),
         plates_cycle=(local_fam.cycle if name == "plates" else None),
@@ -1084,9 +1150,18 @@ def _chart_family_job(
     if decisions[name].action == "skip-cycle":
         return None  # OMIT the job entirely (R2.2)
 
-    card_entries = (
-        card.families[name].entries if name in card.families else {}
-    )
+    # 3. Determine the card-side ground-truth entries to diff against.
+    if card_ground_truth is not None:
+        card_entries = card_ground_truth.get(name)
+        card_entries = card_entries.entries if card_entries is not None else {}
+    elif card is None:
+        card_entries = {}  # no card manifest -> full write (diff vs empty)
+    else:
+        card_entries = (
+            card.families[name].entries if name in card.families else {}
+        )
+
+    # 4. Diff and populate the manifest change set — never a size-only job.
     diff = _manifest.diff_family(local_fam, card_entries)
     base.files_from = list(diff.files_from)
     base.removed = list(diff.removed)
@@ -1102,34 +1177,35 @@ def sync_payload(
 ):
     """Sync a tree job's payload to the drive via rsync.
 
-    Two transfer modes, selected by whether the job carries a manifest-driven
-    change set (chart-manifest-sync task 3.4):
+    Single transfer mode — manifest-driven (manifest-only-chart-sync). Every
+    tree job carries a manifest change set: transfer EXACTLY the
+    family-root-relative relpaths in ``job.files_from`` (the added + changed set
+    from a SHA-256 ``ManifestDiff``) via ``rsync --files-from=-`` fed over
+    stdin, then prune every path in ``job.removed`` with an explicit
+    ``os.unlink`` and remove the directories they leave empty. This closes the
+    retired ``--size-only`` correctness gap: a same-byte-size content change is
+    still detected (by the diff) and transferred, and we tell rsync the correct
+    change set rather than letting it guess. No ``--delete`` / ``--size-only`` /
+    ``--modify-window`` is used — the change set is already authoritative and
+    removals are pruned explicitly. An empty ``files_from`` yields an empty
+    payload (transfers nothing), the correct no-op.
 
-    1. **Manifest-driven (``job.files_from is not None``).** Transfer EXACTLY
-       the family-root-relative relpaths in ``job.files_from`` (the added +
-       changed set from a SHA-256 ``ManifestDiff``) via ``rsync --files-from=-``
-       fed over stdin, then prune every path in ``job.removed`` with an explicit
-       ``os.unlink`` and remove the directories they leave empty. This closes
-       the retired ``--size-only`` correctness gap: a same-byte-size content
-       change is still detected (by the diff) and transferred, and we tell rsync
-       the correct change set rather than letting it guess. No ``--delete`` /
-       ``--size-only`` / ``--modify-window`` is used in this mode — the change
-       set is already authoritative and removals are pruned explicitly.
+    The legacy ``--size-only --delete`` whole-tree mode has been RETIRED as a
+    chart-sync mechanism (manifest-only-chart-sync R2.1): it compared by size
+    only and silently skipped a same-size content change, an unacceptable
+    flight-safety gap for chart data. A ``tree`` job with ``files_from is None``
+    is therefore impossible on this path and is rejected with a clear error.
 
-    2. **Legacy ``--size-only`` (``job.files_from is None``).** The prior
-       efficient size+mtime whole-tree delta, kept live while the manifest path
-       is proven on real hardware (design Retirement plan). Flags below.
+    The mode keeps the temp-file stdout/stderr draining, the metadata excludes,
+    and ``COPYFILE_DISABLE=1``.
 
-    Both modes keep the temp-file stdout/stderr draining, the metadata
-    excludes, and ``COPYFILE_DISABLE=1``.
-
-    Legacy-mode rsync flags:
+    rsync flags:
       - ``-r``               recurse into the tree.
-      - ``--delete``         remove drive files no longer present locally so the
-                             payload converges exactly to the source.
-      - ``--size-only``      compare by size only; combined with...
-      - ``--modify-window=2`` ...a 2-second mtime tolerance to absorb FAT/exFAT
-                             timestamp granularity (Req 4.1).
+      - ``--ignore-times``   the manifest diff has already decided (by SHA-256)
+                             these relpaths changed; force the transfer so the
+                             diff is authoritative and the same-size-content
+                             case is never skipped by rsync's quick-check.
+      - ``--files-from=-``   read the exact relpath list from stdin.
       - ``--out-format=%n``  emit one line per transferred file (the file-count
                              signal + the transfer-phase stdout-growth liveness
                              signal). NOTE: we deliberately do NOT pass
@@ -1137,13 +1213,8 @@ def sync_payload(
                              whose minimal PATH resolves bare ``rsync`` to the
                              system ``/usr/bin/rsync`` (openrsync 2.6.9), which
                              rejects ``--info`` outright ("unrecognized option").
-                             During the silent file-list/``--delete`` scan on a
-                             large existing tree there is therefore no stdout at
-                             all; the rsync CPU-advance signal (below) is what
-                             proves liveness through that phase.
-      - one ``--exclude`` per entry in ``job.excludes`` (common metadata excludes
-        plus the family's commit marker, which is written separately as the
-        final atomic step).
+      - one ``--exclude`` per metadata pattern so stray ``._*`` / ``.DS_Store``
+        relpaths are never pushed even if a relpath somehow names one.
 
     There is deliberately NO fixed wall-clock timeout: a large-but-healthy
     transfer must not be failed as an error (Req 4.2). Liveness/abort is handled
@@ -1168,66 +1239,50 @@ def sync_payload(
     if job.kind != "tree":
         raise ValueError(f"sync_payload expects a tree job, got kind={job.kind!r}")
 
+    # manifest-only-chart-sync R2.1: the legacy ``--size-only`` whole-tree mode
+    # is retired. Every tree job on this path is manifest-driven and MUST carry
+    # a change set. A ``files_from is None`` job would mean a size-only transfer
+    # slipped back in (the retired silent-wrong-tile hazard) — reject it loudly.
+    if job.files_from is None:
+        raise ValueError(
+            f"sync_payload requires a manifest-driven tree job (files_from set); "
+            f"got files_from=None for job {job.name!r}. The legacy size-only "
+            f"transfer has been retired."
+        )
+
     errors: list = []
 
-    # Two-tier exclude handling (see METADATA_EXCLUDES). rsync's default
-    # --delete PROTECTS excluded files from deletion, which is why macOS "._*"
-    # sidecars piled up on the drive. We split job.excludes into:
-    #   - metadata patterns -> plain --exclude, and we add --delete-excluded so
-    #     any that already exist on the drive are purged; and
-    #   - structural patterns (the sibling family's subtree, the legacy
-    #     E:ChartData dir, the commit marker) -> a PROTECT filter rule ("P ...")
-    #     so --delete-excluded does NOT delete them from the receiver.
-    # Filter rules are evaluated in order; protect rules must precede the
-    # excludes so a structural path is shielded before the exclude/delete pass.
+    # Metadata excludes (see METADATA_EXCLUDES): never push macOS "._*" /
+    # ".DS_Store" sidecars even if a relpath somehow names one. The structural
+    # excludes + protect filter rules that only served the retired --delete /
+    # --delete-excluded size-only branch are gone; --files-from already scopes
+    # the transfer to exactly the diffed relpaths, so nothing outside the change
+    # set is ever sent or deleted.
     metadata = set(METADATA_EXCLUDES)
-    structural = [p for p in job.excludes if p not in metadata]
     metadata_used = [p for p in job.excludes if p in metadata]
 
-    # chart-manifest-sync task 3.4: when the job carries a manifest-driven
-    # change set (job.files_from is not None), transfer EXACTLY those relpaths
-    # via ``rsync --files-from=-`` (fed over stdin) instead of the retired
-    # ``--size-only`` whole-tree delta. We stop asking rsync WHAT changed (its
-    # --size-only guess silently skips same-size content changes) and tell it
-    # the correct set computed from the SHA-256 manifest diff. Removals are
-    # pruned explicitly below (--delete cannot prune under --files-from, which
-    # restricts the transfer list), so neither --delete nor --delete-excluded is
-    # used here. The metadata excludes and COPYFILE_DISABLE=1 are kept so stray
-    # ``._*`` / ``.DS_Store`` relpaths are never pushed; --size-only is removed.
-    manifest_driven = job.files_from is not None
-    stdin_payload: Optional[str] = None
-
-    if manifest_driven:
-        # --ignore-times (-I): the manifest diff has ALREADY decided these
-        # relpaths changed (by SHA-256). rsync's default quick-check skips a
-        # file whose size + mtime match the receiver — which is exactly the
-        # same-size-content-change case the manifest exists to catch. Forcing
-        # the transfer of every listed file makes the diff authoritative and
-        # closes the --size-only gap end to end. (We never list unchanged files,
-        # so -I never causes spurious work.)
-        cmd = ["rsync", "-r", "--ignore-times", "--files-from=-",
-               "--out-format=%n"]
-        # Never send macOS metadata even if a relpath somehow names one.
-        for pattern in metadata_used:
-            cmd += ["--exclude", pattern]
-        cmd += [job.payload_root_local, job.payload_root_drive]
-        # One relpath per line, NUL-free; rsync reads these from stdin. An empty
-        # change set yields an empty payload (rsync transfers nothing).
-        stdin_payload = "".join(f"{rel}\n" for rel in (job.files_from or []))
-    else:
-        cmd = ["rsync", "-r", "--delete", "--delete-excluded",
-               "--size-only", "--modify-window=2",
-               "--out-format=%n"]
-        # Protect structural excludes from --delete-excluded.
-        for pattern in structural:
-            cmd += ["--filter", f"P {pattern}"]
-        # Exclude structural paths from the transfer (don't send them either).
-        for pattern in structural:
-            cmd += ["--exclude", pattern]
-        # Purge metadata from the receiver and never send it.
-        for pattern in metadata_used:
-            cmd += ["--exclude", pattern]
-        cmd += [job.payload_root_local, job.payload_root_drive]
+    # manifest-only-chart-sync R2.1: transfer EXACTLY the manifest change set
+    # (job.files_from) via ``rsync --files-from=-`` fed over stdin. We tell
+    # rsync the correct set computed from the SHA-256 manifest diff rather than
+    # letting a --size-only guess silently skip same-size content changes.
+    # Removals are pruned explicitly below (--delete cannot prune under
+    # --files-from, which restricts the transfer list). The metadata excludes
+    # and COPYFILE_DISABLE=1 are kept.
+    #
+    # --ignore-times (-I): the manifest diff has ALREADY decided these relpaths
+    # changed (by SHA-256). rsync's default quick-check skips a file whose size
+    # + mtime match the receiver — exactly the same-size-content-change case the
+    # manifest exists to catch. Forcing the transfer of every listed file makes
+    # the diff authoritative and closes the --size-only gap end to end. (We
+    # never list unchanged files, so -I never causes spurious work.)
+    cmd = ["rsync", "-r", "--ignore-times", "--files-from=-",
+           "--out-format=%n"]
+    for pattern in metadata_used:
+        cmd += ["--exclude", pattern]
+    cmd += [job.payload_root_local, job.payload_root_drive]
+    # One relpath per line, NUL-free; rsync reads these from stdin. An empty
+    # change set yields an empty payload (rsync transfers nothing) — a no-op.
+    stdin_payload: str = "".join(f"{rel}\n" for rel in job.files_from)
 
     env = dict(os.environ)
     env["COPYFILE_DISABLE"] = "1"
@@ -1252,7 +1307,7 @@ def sync_payload(
     try:
         proc = subprocess.Popen(
             cmd,
-            stdin=subprocess.PIPE if manifest_driven else None,
+            stdin=subprocess.PIPE,
             stdout=out_f, stderr=err_f, text=True, env=env,
         )
     except OSError as e:
@@ -1269,9 +1324,9 @@ def sync_payload(
     # stdout/stderr are temp files (never pipes), so rsync cannot block on
     # stdout while we write stdin — we can safely push the whole list and close
     # stdin before entering the poll loop. Closing stdin signals end-of-list.
-    if manifest_driven and proc.stdin is not None:
+    if proc.stdin is not None:
         try:
-            proc.stdin.write(stdin_payload or "")
+            proc.stdin.write(stdin_payload)
             proc.stdin.close()
         except (BrokenPipeError, OSError):
             # rsync exited before reading the full list (e.g. a bad root). The
@@ -1340,12 +1395,12 @@ def sync_payload(
         logger.error("rsync %s failed (exit %s): %s",
                      job.name, proc.returncode, (stderr or "")[:500])
 
-    # chart-manifest-sync task 3.4: prune the removed relpaths explicitly.
+    # manifest-only-chart-sync R2.5: prune the removed relpaths explicitly.
     # --files-from restricts rsync's view to the transferred set, so --delete
     # cannot prune files that are gone locally; we delete them ourselves and
     # then remove any directories left empty. Only run on a clean transfer so a
     # failed/partial rsync does not also start deleting from the card.
-    if manifest_driven and proc.returncode == 0 and job.removed:
+    if proc.returncode == 0 and job.removed:
         _prune_removed(job.payload_root_drive, job.removed)
 
     return files_updated, errors
@@ -2189,7 +2244,37 @@ def verify_drive(
         if progress_callback:
             progress_callback(msg)
 
-    jobs = build_jobs(mount_point, families)
+    # build_jobs -> _chart_family_job rebuilds the LOCAL manifest from the SSD
+    # source when the persisted one is missing/corrupt. If the SSD is unreadable
+    # that hash raises OSError. Per design "Error handling", the verify/repair
+    # cannot proceed content-correctly: surface the failure, report every
+    # requested family as NOT clean, and leave any interrupted-sync markers
+    # intact (we never reach run_sync_job, so complete_family is never called).
+    # We never fall back to the retired size-only transfer — it no longer
+    # exists.
+    try:
+        jobs = build_jobs(mount_point, families)
+    except OSError as e:
+        msg = (
+            f"verify/repair aborted: local manifest build failed ({e}); "
+            f"families left pending (no size-only fallback)"
+        )
+        logger.error(msg)
+        requested = (
+            families if families is not None else ["scanned", "plates", "nav"]
+        )
+        return {
+            # No per-family discrepancy detail is available (the build never
+            # completed); report each requested family as unverified/pending via
+            # an explicit marker so `clean` is False.
+            "families": {
+                name: {"missing": [], "extra": [], "size_mismatch": [], "error": msg}
+                for name in requested
+            },
+            "repaired": [],
+            "clean": False,
+            "errors": [msg],
+        }
     jobs_by_name = {job.name: job for job in jobs}
 
     per_family: dict = {}
@@ -2206,27 +2291,103 @@ def verify_drive(
         # (repair) path, however, must NOT trust that diff: a repair triggers
         # precisely because the on-card state disagrees with the card manifest,
         # so a stale-manifest diff could transfer only a partial delta and leave
-        # the discrepancy unresolved. For a discrepant CHART family, force a
-        # LEGACY FULL job (files_from=None) so the --size-only --delete whole-
-        # tree reconcile re-converges the family tree; run_sync_job's existing
-        # _write_card_manifest_for_family then rewrites that family's manifest
-        # with the real cycle. Nav is unchanged (it carries no files_from).
-        # (design Section B.4; R2.3, R10.2)
+        # the discrepancy unresolved. The retired fix here was to force a
+        # LEGACY FULL (--size-only --delete) job for chart families; that path
+        # is content-UNSAFE (a same-byte-size tile change is silently skipped).
+        #
+        # Instead, for a discrepant CHART family we build a manifest
+        # (--files-from) job whose ground truth is a FRESH content-hash rescan
+        # of the card's actual bytes — NOT the possibly-stale card manifest
+        # file. _card_manifest_from_card hashes ChartData/ (scanned, Plates
+        # pruned) and ChartData/Plates/ (plates) right now, so the repair diff
+        # is local_manifest vs rescanned-card and transfers exactly the
+        # differing files. The rescan is computed ONCE here and reused for every
+        # discrepant chart family (it already carries both families' entries).
+        # run_sync_job -> _run_tree_job then writes the marker, the card
+        # manifest, and complete_family on a clean pass (preserved ordering,
+        # R3.1). Nav is unchanged (it carries no files_from, no cycle gate —
+        # R3.4). (design Section B; R2.4, R3.1, R3.4)
         local_root = load_config()["usb_image_path"]
+
+        # Build the card-side ground truth once (fresh content-hash rescan of
+        # the card) if any discrepant family is a chart family — avoids
+        # rescanning the card per family.
+        #
+        # Error handling (design "Error handling"): if the card rescan fails
+        # (card unreadable), the repair cannot proceed content-correctly. We do
+        # NOT fall back to the retired size-only mechanism — it is gone. Instead
+        # we surface the failure in the returned ``errors`` list and leave every
+        # discrepant chart family pending (no run_sync_job, so no
+        # complete_family, so the interrupted-sync marker stays intact and the
+        # next insert retries). ``card_truth`` stays None, which disables chart
+        # repair below; nav repair is unaffected.
+        card_truth = None
+        card_rescan_failed = False
+        if any(
+            name in ("scanned", "plates") and _has_discrepancies(disc)
+            for name, disc in per_family.items()
+        ):
+            try:
+                card_truth = _card_manifest_from_card(
+                    mount_point, progress_callback=progress_callback
+                )
+            except OSError as e:
+                card_rescan_failed = True
+                msg = (
+                    f"chart repair aborted: card rescan failed ({e}); families "
+                    f"left pending (no size-only fallback)"
+                )
+                logger.error(msg)
+                errors.append(msg)
 
         for name, disc in list(per_family.items()):
             if not _has_discrepancies(disc):
                 continue
-            _status(f"Repairing {name}...")
-            repaired.append(name)
-            # Chart families repair via a legacy full job; nav keeps its own
-            # (diff-free) job.
+            # Chart families repair via a manifest (--files-from) job diffed
+            # against the fresh card rescan; nav keeps its own (diff-free) job.
             if name in ("scanned", "plates"):
-                repair_job = _legacy_tree_job(name, mount_point, local_root)
+                # The card rescan (ground truth for the manifest diff) failed:
+                # skip chart repair entirely. The family is left pending so the
+                # next insert retries — never a size-only transfer.
+                if card_rescan_failed:
+                    continue
+                _status(f"Repairing {name}...")
+                repaired.append(name)
+                # Building the repair job rebuilds the LOCAL manifest if it is
+                # missing/corrupt (hashing the SSD source). If the SSD is
+                # unreadable that raises; surface it and leave the family
+                # pending rather than crashing the verify pass or falling back
+                # to size-only (design "Error handling").
+                try:
+                    repair_job = _chart_family_job(
+                        name,
+                        mount_point,
+                        local_root,
+                        card=None,
+                        card_ground_truth=card_truth.families,
+                    )
+                except OSError as e:
+                    msg = (
+                        f"{name} repair aborted: local manifest build failed "
+                        f"({e}); family left pending (no size-only fallback)"
+                    )
+                    logger.error(msg)
+                    errors.append(msg)
+                    continue
+                # _chart_family_job returns None only on a skip-cycle gate;
+                # handle it the same way the normal build_jobs path does by
+                # skipping the transfer for this family.
+                if repair_job is None:
+                    per_family[name] = verify_family(
+                        jobs_by_name[name], mount_point, deep=deep
+                    )
+                    continue
             else:
+                _status(f"Repairing {name}...")
+                repaired.append(name)
                 repair_job = jobs_by_name[name]
             # Re-run the repair job: idempotent convergence re-copies missing /
-            # changed files, deletes extras, re-verifies, and (on success)
+            # changed files, prunes removals, re-verifies, and (on success)
             # writes the marker + clears the interrupted-sync record.
             result = run_sync_job(
                 repair_job,
@@ -2602,8 +2763,8 @@ def _check_tree_family(local_root, drive_root, marker_rel, structure_dirs):
 
 
 # Per-chart-family drive roots and payload excludes for the cheap count tier.
-# These MUST mirror ``_legacy_tree_job`` exactly so the manifest-eligible set we
-# count on the drive matches the set the local manifest records (and the set the
+# These MUST mirror ``_chart_tree_job_skeleton`` exactly so the manifest-eligible
+# set we count on the drive matches the set the local manifest records (and the set the
 # sync actually transfers). scanned is rooted at ``ChartData`` and additionally
 # excludes the ``Plates/`` subtree (owned by the plates family) and the scanned
 # commit marker; plates is rooted at ``ChartData/Plates`` and excludes the

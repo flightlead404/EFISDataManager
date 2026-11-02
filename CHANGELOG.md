@@ -5,6 +5,48 @@ a single release version (git tag + `__version__` + `pyproject.toml`) with
 independent display labels for the menu-bar tool (`MENUBAR_VERSION`) and the
 dashboard (`DASHBOARD_VERSION`).
 
+## v1.6.6
+
+Release version 1.6.6 · menu bar 0.14.4 · dashboard 1.2.3
+
+The legacy `rsync --size-only --delete` whole-tree chart-sync mechanism is
+retired. Every chart-family transfer now runs the SHA-256 manifest
+content-hash diff, closing a silent wrong-tile flight-safety gap.
+
+### Chart sync is now manifest-only on every path
+
+- **Normal insert, adopt populate, and interrupted-sync repair all use the
+  content-hash manifest diff.** Previously an interrupted-sync repair forced a
+  whole-tree `rsync --size-only --delete` job, and a corrupt or missing manifest
+  fell back to the same size-only transfer. Now `_chart_family_job` always
+  drives transfers from a `--files-from` list derived from the SHA-256 manifest
+  diff, and a missing or corrupt local manifest is rebuilt (hashed from the SSD
+  family tree, with the scanned `Plates/` prune applied) rather than triggering
+  a size-only fallback.
+
+- **Interrupted-sync repair diffs against a fresh rescan of the card.** Repair
+  now builds the local manifest against a fresh content-hash rescan of the card
+  (not the possibly-stale on-disk card manifest), so the transferred set equals
+  the true local-vs-card difference.
+
+- **A same-byte-size content change is now detected and transferred.** Because
+  `--size-only` compared file sizes only, a tile edited to an identical byte
+  size could be left stale on the card — the wrong chart tile with no signal.
+  The content-hash diff catches it and transfers it.
+
+- **Build/rescan failures fail safe.** If the local manifest build or the card
+  rescan fails, the family is left pending (interrupted marker intact) and an
+  error is surfaced; there is no size-only fallback. A clean, already-current
+  insert still performs no card rescan.
+
+### Tests
+
+- Added `tests/test_manifest_only_chart_sync.py` (exploration test pinning the
+  old size-only repair defect and the same-size change case),
+  `tests/test_build_local_manifest.py`, `tests/test_manifest_only_preservation.py`,
+  and `tests/test_manifest_only_error_paths.py`; updated the existing sync,
+  repair, and invariant suites to match the manifest-only behavior.
+
 ## v1.6.5
 
 Release version 1.6.5 · menu bar 0.14.3 · dashboard 1.2.3

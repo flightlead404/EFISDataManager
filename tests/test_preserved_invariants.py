@@ -151,6 +151,9 @@ def test_abort_path_terminates_and_reports_aborted(tmp_path, monkeypatch, caplog
         def __init__(self):
             self.returncode = None
             self.pid = 9999
+            # sync_payload feeds the change set over stdin; a None stdin makes
+            # it skip the write (nothing to feed this fake process).
+            self.stdin = None
 
         def poll(self):
             return self.returncode  # None until terminated
@@ -175,12 +178,17 @@ def test_abort_path_terminates_and_reports_aborted(tmp_path, monkeypatch, caplog
 
     monkeypatch.setattr(subprocess, "Popen", fake_popen)
 
+    # manifest-only-chart-sync R2.1: sync_payload is manifest-only, so the job
+    # carries a change set (files_from). The abort path is unchanged by the
+    # manifest wiring — is_aborted() -> True still terminates the transfer.
     job = du.SyncJob(
         name="scanned",
         kind="tree",
         payload_root_local=str(src) + os.sep,
         payload_root_drive=str(dst) + os.sep,
         excludes=list(du.COMMON_TREE_EXCLUDES),
+        files_from=["SEC/a.png"],
+        removed=[],
     )
 
     with caplog.at_level(logging.ERROR, logger=du.logger.name):
