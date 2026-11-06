@@ -272,7 +272,7 @@ def test_new_mount_connects_unchanged():
     app = _build_app(harness)
     # _on_efis_drive_mounted consults these collaborators before connecting.
     app._is_provisioning = lambda mount_point: False
-    app._resolve_and_gate_drive = lambda mount_point: False  # stop before archive
+    app._resolve_and_gate_drive = lambda mount_point: None  # stop before archive
 
     mount = "/Volumes/MINIAP1029"
     with _ground_truth(remaining=mount):

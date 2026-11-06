@@ -73,7 +73,7 @@ _FAMILY_SET = st.lists(
 _PAYLOAD = st.dictionaries(
     keys=st.text(
         alphabet=st.characters(
-            whitelist_categories=("Ll", "Lu", "Nd"), whitelist_characters=("_", "-")
+            whitelist_categories=(), whitelist_characters="abcdefghijklmnopqrstuvwxyz0123456789" + "".join(("_", "-"))
         ),
         min_size=1,
         max_size=8,

@@ -140,6 +140,126 @@
     </div>
 </div>
 
+<div class="card" id="settings-explorer-section">
+    <h2>Settings archive explorer
+        <span class="help" tabindex="-1">?<span class="tip">Browse the dated, per-device history of GRT Settings backups the Data Manager archived from your returning cards. View a snapshot's values, compare any two versions (or a version against the card currently in the reader), and ask the Data Manager to write a chosen version back to the bound card. This view is read-only — it never edits a settings file; restoring writes an archived file's original bytes verbatim.</span></span>
+    </h2>
+
+    <div class="note">
+        Read-only history of each display's archived Settings. Restoring hands
+        the selected version to the Data Manager, which writes it to the card
+        currently in the reader for that device.
+    </div>
+
+    <div class="form-row">
+        <label>Device<span class="help" tabindex="-1">?<span class="tip">Which configured display's archived settings history to browse. The list comes from the devices learned for your managed aircraft.</span></span></label>
+        <select id="explorer-device" onchange="onExplorerDeviceChange()"></select>
+    </div>
+
+    <div id="explorer-empty" class="note" style="display: none;">
+        No configured devices yet. The Data Manager learns your displays from
+        returning cards.
+    </div>
+
+    <div id="explorer-body" style="display: none;">
+        <h3 style="font-size:1rem; color:#81d4fa; margin:0.75rem 0 0.5rem;">History</h3>
+        <div id="explorer-history-status" class="note" role="status" aria-live="polite"
+             style="display:none;"></div>
+        <table id="explorer-history-table" style="display:none;">
+            <thead>
+                <tr>
+                    <th>Archive Date</th>
+                    <th>Sequence</th>
+                    <th>Family</th>
+                    <th>Snapshot</th>
+                    <th style="text-align:center;">A</th>
+                    <th style="text-align:center;">B</th>
+                    <th></th>
+                </tr>
+            </thead>
+            <tbody id="explorer-history-body"></tbody>
+        </table>
+
+        <!-- Read-only value view of a selected snapshot. -->
+        <div id="explorer-view" style="display:none; margin-top:1.25rem;">
+            <h3 style="font-size:1rem; color:#81d4fa; margin:0 0 0.5rem;">
+                Values — <span id="explorer-view-name"></span></h3>
+            <div id="explorer-view-status" class="note" role="status"
+                 aria-live="polite" style="display:none;"></div>
+            <table id="explorer-view-table" style="display:none;">
+                <thead>
+                    <tr>
+                        <th>SID</th>
+                        <th>Label</th>
+                        <th>Value</th>
+                    </tr>
+                </thead>
+                <tbody id="explorer-view-body"></tbody>
+            </table>
+        </div>
+
+        <!-- Two-version compare. A/B chosen from the history rows above. -->
+        <div id="explorer-compare" style="margin-top:1.25rem;">
+            <h3 style="font-size:1rem; color:#81d4fa; margin:0 0 0.5rem;">Compare two versions</h3>
+            <div class="note" style="margin-top:0;">
+                Tick an <strong>A</strong> and a <strong>B</strong> in the history
+                above, then compare. Choose <em>Card in reader</em> as B to diff a
+                version against the card currently in the reader for this device.
+            </div>
+            <div class="form-row">
+                <label>Version A</label>
+                <span id="explorer-cmp-a" style="color:#e0e0e0;">—</span>
+            </div>
+            <div class="form-row">
+                <label>Version B</label>
+                <span id="explorer-cmp-b" style="color:#e0e0e0;">—</span>
+                <label style="min-width:auto; margin-left:1rem;">
+                    <input type="checkbox" id="explorer-cmp-drive"
+                           onchange="onCompareDriveToggle()"> Card in reader
+                </label>
+            </div>
+            <button class="btn" id="explorer-compare-btn" type="button"
+                    onclick="runCompare()">Compare</button>
+            <span id="explorer-compare-status" style="margin-left:1rem; color:#888;"></span>
+
+            <div id="explorer-compare-result" style="display:none; margin-top:0.75rem;">
+                <div id="explorer-equivalent" class="note" style="display:none;"></div>
+                <table id="explorer-compare-table" style="display:none;">
+                    <thead>
+                        <tr>
+                            <th>SID</th>
+                            <th>Label</th>
+                            <th>Value A</th>
+                            <th>Value B</th>
+                            <th>Change</th>
+                        </tr>
+                    </thead>
+                    <tbody id="explorer-compare-body"></tbody>
+                </table>
+            </div>
+        </div>
+
+        <!-- Restore control: POSTs the selected A version to the DM writer. -->
+        <div id="explorer-restore" style="margin-top:1.25rem;">
+            <h3 style="font-size:1rem; color:#81d4fa; margin:0 0 0.5rem;">Restore a version to the card</h3>
+            <div class="note" style="color:#ffb74d; border-color:#ffb74d; margin-top:0;">
+                ⚠ Restoring asks the Data Manager to write the selected
+                <strong>A</strong> version onto the card currently in the reader
+                for this device, as the sole Settings slot. The card's existing
+                Settings slot is replaced. The archived file's original bytes are
+                written unchanged.
+            </div>
+            <div class="form-row">
+                <label>Selected version</label>
+                <span id="explorer-restore-name" style="color:#e0e0e0;">— (tick an A above)</span>
+            </div>
+            <button class="btn" id="explorer-restore-btn" type="button"
+                    onclick="restoreVersion()" disabled>Restore this version</button>
+            <span id="explorer-restore-status" style="margin-left:1rem;"></span>
+        </div>
+    </div>
+</div>
+
 <div class="card">
     <h2>Dashboard</h2>
     <div class="form-row">
@@ -788,5 +908,437 @@ function refreshEngineConfig() {
 
 // Kick off the import status check on load.
 loadImportStatus();
+
+// ---------------------------------------------------------------------------
+// Settings archive explorer: per-device history, read-only value view, two-
+// version compare (A/B, with B optionally the card in the reader), and a
+// "Restore this version" handoff that POSTs the selection to the DM writer.
+// Settings family only; no edit controls anywhere (read-only exploration;
+// restoration is SELECT here, WRITE in the Data Manager).
+// ---------------------------------------------------------------------------
+
+const EXPLORER_FAMILY = 'Settings';
+
+// Explorer selection state.
+let explorerLinkId = null;     // currently selected device Link_ID
+let explorerSnapshots = [];    // [{archive_date, sequence, family, filename}]
+let explorerSelA = null;       // filename ticked as version A
+let explorerSelB = null;       // filename ticked as version B
+let explorerCompareDrive = false;  // B is the card in the reader
+
+function explorerSetStatus(id, message, color) {
+    const el = document.getElementById(id);
+    if (!el) return;
+    if (!message) {
+        el.style.display = 'none';
+        el.textContent = '';
+        return;
+    }
+    el.style.display = '';
+    el.style.color = color || '';
+    el.textContent = message;
+}
+
+// Load configured devices into the device picker (R2.2).
+function loadExplorerDevices() {
+    fetch('/api/settings/devices')
+        .then(r => r.json())
+        .then(data => {
+            const sel = document.getElementById('explorer-device');
+            const devices = (data && data.devices) || [];
+            sel.innerHTML = '';
+            if (devices.length === 0) {
+                document.getElementById('explorer-empty').style.display = '';
+                document.getElementById('explorer-body').style.display = 'none';
+                return;
+            }
+            document.getElementById('explorer-empty').style.display = 'none';
+            devices.forEach(d => {
+                const opt = document.createElement('option');
+                opt.value = d.link_id;
+                opt.textContent = `${d.label} (Link ${d.link_id})`;
+                sel.appendChild(opt);
+            });
+            document.getElementById('explorer-body').style.display = '';
+            onExplorerDeviceChange();
+        })
+        .catch(() => {
+            document.getElementById('explorer-empty').style.display = '';
+            document.getElementById('explorer-empty').textContent =
+                'Could not load configured devices.';
+            document.getElementById('explorer-body').style.display = 'none';
+        });
+}
+
+// Device changed: reset selections and load that device's history.
+function onExplorerDeviceChange() {
+    explorerLinkId = document.getElementById('explorer-device').value || null;
+    explorerSelA = null;
+    explorerSelB = null;
+    explorerCompareDrive = false;
+    document.getElementById('explorer-cmp-drive').checked = false;
+    // Hide the downstream panels until a fresh snapshot/selection is made.
+    document.getElementById('explorer-view').style.display = 'none';
+    document.getElementById('explorer-compare-result').style.display = 'none';
+    explorerSetStatus('explorer-compare-status', '');
+    explorerSetStatus('explorer-restore-status', '');
+    updateExplorerSelectionUi();
+    loadExplorerHistory();
+}
+
+// Fetch the per-device history, newest to oldest (R2.1).
+function loadExplorerHistory() {
+    const qs = `link_id=${encodeURIComponent(explorerLinkId || '')}` +
+               `&family=${encodeURIComponent(EXPLORER_FAMILY)}`;
+    const table = document.getElementById('explorer-history-table');
+    const body = document.getElementById('explorer-history-body');
+    table.style.display = 'none';
+    body.innerHTML = '';
+    explorerSetStatus('explorer-history-status', 'Loading history…', '#888');
+    fetch('/api/settings/history?' + qs)
+        .then(r => r.json().then(data => ({ ok: r.ok, data })))
+        .then(({ ok, data }) => {
+            if (!ok) {
+                explorerSetStatus('explorer-history-status',
+                    (data && data.error) || 'Could not load history.', '#ef5350');
+                return;
+            }
+            explorerSnapshots = (data && data.snapshots) || [];
+            if (explorerSnapshots.length === 0) {
+                explorerSetStatus('explorer-history-status',
+                    'No archived Settings snapshots for this device yet.', '#888');
+                return;
+            }
+            explorerSetStatus('explorer-history-status', '');
+            renderExplorerHistory();
+            table.style.display = '';
+        })
+        .catch(() => {
+            explorerSetStatus('explorer-history-status',
+                'Could not load history.', '#ef5350');
+        });
+}
+
+function renderExplorerHistory() {
+    const body = document.getElementById('explorer-history-body');
+    body.innerHTML = '';
+    explorerSnapshots.forEach(snap => {
+        const name = snap.filename;
+        const tr = document.createElement('tr');
+
+        const dateTd = document.createElement('td');
+        dateTd.textContent = snap.archive_date;
+        tr.appendChild(dateTd);
+
+        const seqTd = document.createElement('td');
+        seqTd.textContent = snap.sequence;
+        tr.appendChild(seqTd);
+
+        const famTd = document.createElement('td');
+        famTd.textContent = snap.family;
+        tr.appendChild(famTd);
+
+        const nameTd = document.createElement('td');
+        const viewLink = document.createElement('a');
+        viewLink.href = '#';
+        viewLink.className = 'flight-link';
+        viewLink.textContent = name;
+        viewLink.title = 'View this snapshot\u2019s values (read-only)';
+        viewLink.addEventListener('click', ev => {
+            ev.preventDefault();
+            viewSnapshot(name);
+        });
+        nameTd.appendChild(viewLink);
+        tr.appendChild(nameTd);
+
+        // A radio: version A for compare + the restore target.
+        const aTd = document.createElement('td');
+        aTd.style.textAlign = 'center';
+        const aRadio = document.createElement('input');
+        aRadio.type = 'radio';
+        aRadio.name = 'explorer-sel-a';
+        aRadio.value = name;
+        aRadio.checked = explorerSelA === name;
+        aRadio.setAttribute('aria-label', 'Select ' + name + ' as version A');
+        aRadio.addEventListener('change', () => { explorerSelA = name; onExplorerSelectionChange(); });
+        aTd.appendChild(aRadio);
+        tr.appendChild(aTd);
+
+        // B radio: version B for compare (ignored when "Card in reader" is on).
+        const bTd = document.createElement('td');
+        bTd.style.textAlign = 'center';
+        const bRadio = document.createElement('input');
+        bRadio.type = 'radio';
+        bRadio.name = 'explorer-sel-b';
+        bRadio.value = name;
+        bRadio.checked = explorerSelB === name;
+        bRadio.disabled = explorerCompareDrive;
+        bRadio.setAttribute('aria-label', 'Select ' + name + ' as version B');
+        bRadio.addEventListener('change', () => { explorerSelB = name; onExplorerSelectionChange(); });
+        bTd.appendChild(bRadio);
+        tr.appendChild(bTd);
+
+        const viewTd = document.createElement('td');
+        const viewBtn = document.createElement('a');
+        viewBtn.href = '#';
+        viewBtn.className = 'flight-link';
+        viewBtn.textContent = 'View';
+        viewBtn.addEventListener('click', ev => { ev.preventDefault(); viewSnapshot(name); });
+        viewTd.appendChild(viewBtn);
+        tr.appendChild(viewTd);
+
+        body.appendChild(tr);
+    });
+}
+
+// Reflect the current A/B selection in the compare + restore controls.
+function onExplorerSelectionChange() {
+    // A fresh selection invalidates any prior compare result.
+    document.getElementById('explorer-compare-result').style.display = 'none';
+    explorerSetStatus('explorer-compare-status', '');
+    explorerSetStatus('explorer-restore-status', '');
+    updateExplorerSelectionUi();
+}
+
+function updateExplorerSelectionUi() {
+    const aLabel = document.getElementById('explorer-cmp-a');
+    const bLabel = document.getElementById('explorer-cmp-b');
+    aLabel.textContent = explorerSelA || '—';
+    if (explorerCompareDrive) {
+        bLabel.textContent = 'Card in reader';
+    } else {
+        bLabel.textContent = explorerSelB || '—';
+    }
+
+    // Restore targets the A selection.
+    const restoreName = document.getElementById('explorer-restore-name');
+    const restoreBtn = document.getElementById('explorer-restore-btn');
+    if (explorerSelA) {
+        restoreName.textContent = explorerSelA;
+        restoreBtn.disabled = false;
+    } else {
+        restoreName.textContent = '— (tick an A above)';
+        restoreBtn.disabled = true;
+    }
+}
+
+// "Card in reader" toggle for version B.
+function onCompareDriveToggle() {
+    explorerCompareDrive = document.getElementById('explorer-cmp-drive').checked;
+    if (explorerCompareDrive) explorerSelB = null;
+    // Enable/disable the B radios to match.
+    document.querySelectorAll('input[name="explorer-sel-b"]').forEach(r => {
+        r.disabled = explorerCompareDrive;
+        if (explorerCompareDrive) r.checked = false;
+    });
+    onExplorerSelectionChange();
+}
+
+// "3 — Amp" when GRT documents the value's meaning, else the raw value.
+function withMeaning(value, meaning) {
+    return meaning ? value + ' \u2014 ' + meaning : value;
+}
+
+// Read-only value view of a snapshot (R3): SID / label / value, unlabeled flagged.
+function viewSnapshot(name) {
+    const panel = document.getElementById('explorer-view');
+    const table = document.getElementById('explorer-view-table');
+    const body = document.getElementById('explorer-view-body');
+    panel.style.display = '';
+    table.style.display = 'none';
+    body.innerHTML = '';
+    document.getElementById('explorer-view-name').textContent = name;
+    explorerSetStatus('explorer-view-status', 'Loading values…', '#888');
+
+    const qs = `link_id=${encodeURIComponent(explorerLinkId || '')}` +
+               `&family=${encodeURIComponent(EXPLORER_FAMILY)}` +
+               `&name=${encodeURIComponent(name)}`;
+    fetch('/api/settings/view?' + qs)
+        .then(r => r.json().then(data => ({ ok: r.ok, data })))
+        .then(({ ok, data }) => {
+            if (!ok) {
+                explorerSetStatus('explorer-view-status',
+                    (data && data.error) || 'Could not read this snapshot.', '#ef5350');
+                return;
+            }
+            explorerSetStatus('explorer-view-status', '');
+            const sids = (data && data.sids) || [];
+            sids.forEach(row => {
+                const tr = document.createElement('tr');
+                const sidTd = document.createElement('td');
+                sidTd.textContent = row.sid;
+                tr.appendChild(sidTd);
+
+                const labelTd = document.createElement('td');
+                if (row.unlabeled) {
+                    labelTd.innerHTML = '<span class="badge badge-caution">unlabeled</span>';
+                } else {
+                    labelTd.textContent = row.label;
+                }
+                if (row.grt_name) labelTd.title = row.grt_name;
+                tr.appendChild(labelTd);
+
+                const valTd = document.createElement('td');
+                valTd.textContent = withMeaning(row.value, row.value_meaning);
+                tr.appendChild(valTd);
+
+                body.appendChild(tr);
+            });
+            table.style.display = '';
+        })
+        .catch(() => {
+            explorerSetStatus('explorer-view-status',
+                'Could not read this snapshot.', '#ef5350');
+        });
+}
+
+// Two-version compare (R4). B is a second snapshot or the literal "drive".
+function runCompare() {
+    if (!explorerSelA) {
+        explorerSetStatus('explorer-compare-status',
+            'Tick a version A first.', '#ffb74d');
+        return;
+    }
+    const b = explorerCompareDrive ? 'drive' : explorerSelB;
+    if (!b) {
+        explorerSetStatus('explorer-compare-status',
+            'Tick a version B, or choose the card in the reader.', '#ffb74d');
+        return;
+    }
+    explorerSetStatus('explorer-compare-status', 'Comparing…', '#888');
+    const qs = `link_id=${encodeURIComponent(explorerLinkId || '')}` +
+               `&family=${encodeURIComponent(EXPLORER_FAMILY)}` +
+               `&a=${encodeURIComponent(explorerSelA)}` +
+               `&b=${encodeURIComponent(b)}`;
+    fetch('/api/settings/compare?' + qs)
+        .then(r => r.json().then(data => ({ ok: r.ok, data })))
+        .then(({ ok, data }) => {
+            if (!ok) {
+                explorerSetStatus('explorer-compare-status',
+                    (data && data.error) || 'Could not compare these versions.', '#ef5350');
+                return;
+            }
+            explorerSetStatus('explorer-compare-status', '');
+            renderCompare(data);
+        })
+        .catch(() => {
+            explorerSetStatus('explorer-compare-status',
+                'Could not compare these versions.', '#ef5350');
+        });
+}
+
+function renderCompare(data) {
+    const result = document.getElementById('explorer-compare-result');
+    const equiv = document.getElementById('explorer-equivalent');
+    const table = document.getElementById('explorer-compare-table');
+    const body = document.getElementById('explorer-compare-body');
+    result.style.display = '';
+    body.innerHTML = '';
+
+    if (data.equivalent) {
+        equiv.style.display = '';
+        equiv.style.color = '#66bb6a';
+        equiv.style.borderColor = '#66bb6a';
+        equiv.textContent =
+            'These two versions are equivalent in configuration content.';
+    } else {
+        equiv.style.display = 'none';
+    }
+
+    const diffs = data.differences || [];
+    if (diffs.length === 0) {
+        table.style.display = 'none';
+        if (!data.equivalent) {
+            equiv.style.display = '';
+            equiv.style.color = '#888';
+            equiv.style.borderColor = '#0f3460';
+            equiv.textContent = 'No differing SIDs.';
+        }
+        return;
+    }
+
+    const fmtVal = (v, m) => (v === null || v === undefined) ? '—' : withMeaning(v, m);
+    diffs.forEach(d => {
+        const tr = document.createElement('tr');
+
+        const sidTd = document.createElement('td');
+        sidTd.textContent = d.sid;
+        tr.appendChild(sidTd);
+
+        const labelTd = document.createElement('td');
+        if (d.unlabeled) {
+            labelTd.innerHTML = '<span class="badge badge-caution">unlabeled</span>';
+        } else {
+            labelTd.textContent = d.label;
+        }
+        if (d.grt_name) labelTd.title = d.grt_name;
+        tr.appendChild(labelTd);
+
+        const aTd = document.createElement('td');
+        aTd.textContent = fmtVal(d.a, d.a_meaning);
+        tr.appendChild(aTd);
+
+        const bTd = document.createElement('td');
+        bTd.textContent = fmtVal(d.b, d.b_meaning);
+        tr.appendChild(bTd);
+
+        const changeTd = document.createElement('td');
+        const badgeClass = d.change === 'added' ? 'badge-ok'
+            : d.change === 'removed' ? 'badge-warning' : 'badge-caution';
+        changeTd.innerHTML = `<span class="badge ${badgeClass}">${d.change}</span>`;
+        tr.appendChild(changeTd);
+
+        body.appendChild(tr);
+    });
+    table.style.display = '';
+}
+
+// Restore the selected A version (R5): POST the handoff to the DM writer.
+function restoreVersion() {
+    if (!explorerSelA) return;
+    const proceed = window.confirm(
+        'Write the selected archived Settings version to the card currently in ' +
+        'the reader for this device?\n\n' +
+        'The card\u2019s existing Settings slot will be replaced. This is a ' +
+        'write to the card and cannot be undone from here.');
+    if (!proceed) return;
+
+    const btn = document.getElementById('explorer-restore-btn');
+    btn.disabled = true;
+    explorerSetStatus('explorer-restore-status', 'Restoring…', '#888');
+
+    fetch('/api/settings/restore', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+            link_id: explorerLinkId,
+            family: 'Settings',
+            name: explorerSelA,
+        }),
+    })
+        .then(r => r.json().then(data => ({ ok: r.ok, data })))
+        .then(({ ok, data }) => {
+            btn.disabled = false;
+            if (ok && data.status === 'written') {
+                explorerSetStatus('explorer-restore-status',
+                    `Restored. Wrote ${data.written_path || 'the selected version'}` +
+                    (data.removed_slots && data.removed_slots.length
+                        ? ` (removed ${data.removed_slots.join(', ')})` : '') + '.',
+                    '#66bb6a');
+            } else {
+                const reason = (data && (data.error || data.status)) || 'unknown error';
+                explorerSetStatus('explorer-restore-status',
+                    'Restore failed: ' + reason, '#ef5350');
+            }
+        })
+        .catch(() => {
+            btn.disabled = false;
+            explorerSetStatus('explorer-restore-status',
+                'Restore failed: could not reach the Data Manager.', '#ef5350');
+        });
+}
+
+// Load the explorer's device list on page load.
+loadExplorerDevices();
 </script>
 {% endblock %}

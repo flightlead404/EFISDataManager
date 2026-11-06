@@ -508,6 +508,9 @@ SID_FLIGHT_ID = "1062"  # Flight_ID / N-number (secondary label only)
 # Reserved key name for the bound import source inside the settings_import map.
 BOUND_IMPORT_SOURCE_KEY = "bound_import_source"
 
+# Link_ID (SID 387 / DULINK_ID) value identifying the primary display (R15.1).
+PRIMARY_LINK_ID = "1"
+
 # Lines excluded from the Content_Hash (volatile / non-configuration).
 _HASH_EXCLUDED_KEYS = {_KEY_UPDATE, _KEY_CHECKSIZE, _KEY_CHECKSUM}
 
@@ -617,6 +620,128 @@ _TIER_CONCEPTS = {
     "egt": ("egt_caution", "egt_redline"),
     "oil_temp": ("oil_temp_caution", "oil_temp_redline"),
 }
+
+# Human labels for the identity SIDs so a read-only snapshot view names them
+# rather than marking them unlabeled (they are recognized content, just not
+# dashboard thresholds). Reused by ``snapshot_view``.
+_IDENTITY_SID_LABELS = {
+    SID_MODE_S: "Mode S Address",
+    SID_LINK_ID: "Link ID",
+    SID_FLIGHT_ID: "Flight ID",
+    SID_TEMP_UNITS: "Temperature Units",
+}
+
+
+@dataclass
+class SidView:
+    """One SID row of a read-only snapshot view (Requirement 3)."""
+
+    sid: str                    # the raw SID key, e.g. "151"
+    label: Optional[str]        # human label, or None when unlabeled
+    value: str                  # the snapshot's raw value for this SID
+    unlabeled: bool             # True only when the SID is unknown to GRT's reference
+    grt_name: Optional[str] = None       # GRT macro name, e.g. "SID_LIM_MAX_RPM"
+    value_meaning: Optional[str] = None  # GRT-documented meaning of ``value``
+
+
+def recognized_sid_labels() -> dict[str, str]:
+    """Return the SID -> human-label map the snapshot view recognizes.
+
+    Built from the same mapping the import preview uses — the declarative
+    ``_SID_TABLE`` (threshold SIDs), the Vne / cylinder-count SIDs, and the
+    identity SIDs — so exploration and import agree on what a SID means and no
+    new SID vocabulary is invented (Req 3.2, R10.4). SIDs absent from this map
+    are "unlabeled" in a snapshot view (Req 3.3).
+
+    Every SID in GRT's own reference (``grt_sids``) is labeled from it; the
+    mapping-based labels below are kept only as a fallback for SIDs GRT's
+    reference does not know.
+    """
+    labels: dict[str, str] = {}
+    # Declarative threshold SIDs (oil/CHT/EGT/voltage/RPM/G-meter, etc.).
+    for sid, spec in _SID_TABLE.items():
+        labels[sid] = _THRESHOLD_LABELS.get(spec.threshold_key, spec.threshold_key)
+    # Vne (SID 22) + its TAS/IAS convert flag (SID 889).
+    labels[SID_VNE] = "Vne"
+    labels[SID_VNE_CONVERT] = "Vne Convert TAS/IAS"
+    # Cylinder-count SIDs (1055 -> 1054 -> 58 precedence).
+    labels[SID_NUM_CHT] = "Number of CHT"
+    labels[SID_NUM_EGT] = "Number of EGT"
+    labels[SID_NUM_CYL] = _THRESHOLD_LABELS["num_cylinders"]
+    # Identity SIDs + temperature-units.
+    labels.update(_IDENTITY_SID_LABELS)
+    # GRT power-map SIDs (layout from Settings.h). SID numbers come from
+    # power.py; imported here because power.py imports efis_settings lazily
+    # and we avoid any module-level cycle risk. Never override existing labels.
+    from efis_data_manager import power
+    power_labels: dict[str, str] = {power.SID_RATED_HP: "Rated HP"}
+    for columns, fmt in (
+        (power.SID_RPM_COLUMN, "Power Map RPM (row {})"),
+        (power.SID_MAP55_COLUMN, "Power Map MAP for 55% (row {})"),
+        (power.SID_MAP75_COLUMN, "Power Map MAP for 75% (row {})"),
+        (power.SID_ALTITUDE_COLUMN, "Power Map Altitude (row {})"),
+        (power.SID_DELTA_HP_COLUMN, "Power Map Delta HP (row {})"),
+    ):
+        for row, sid in enumerate(columns, start=1):
+            power_labels[sid] = fmt.format(row)
+    for sid, label in power_labels.items():
+        labels.setdefault(sid, label)
+    # GRT's own reference wins for every SID it knows.
+    from efis_data_manager import grt_sids
+    for sid, info in grt_sids.all_sids().items():
+        labels[sid] = info.label
+    return labels
+
+
+def snapshot_view(path: str) -> list[SidView]:
+    """Parse an archived settings snapshot read-only into labeled SID rows.
+
+    Reuses ``Settings_Parser`` (read-only parse, never writes the file) and the
+    ``Settings_Mapper`` SID vocabulary via ``recognized_sid_labels``. Each
+    recognized SID is returned with its human-readable label; an unrecognized
+    SID is still returned with its raw value and ``unlabeled=True`` (Req 3.1,
+    3.2, 3.3). The volatile ``UPDATE=`` / ``CHECKSIZE=`` / ``CHECKSUM=`` keys
+    are excluded (they are not configuration content).
+
+    Rows are ordered labeled-first by numeric SID (GRT groups ids by
+    function), then unlabeled SIDs by SID. Rows also carry ``grt_name`` and,
+    when GRT documents it, ``value_meaning``.
+
+    Raises:
+        SettingsParseError: when the snapshot cannot be parsed; the caller
+            reports the failure and leaves the file unchanged (Req 3.5).
+    """
+    parsed = Settings_Parser.parse(path)
+    labels = recognized_sid_labels()
+    from efis_data_manager import grt_sids
+
+    rows: list[SidView] = []
+    for sid, value in parsed.sids.items():
+        if sid in _HASH_EXCLUDED_KEYS:
+            continue  # volatile/non-configuration keys are not shown
+        if sid == "CHECKTYPE":
+            continue  # GRT file-type marker (STD/UWP/PLAN), not a setting
+        label = labels.get(sid)
+        info = grt_sids.sid_info(sid)
+        rows.append(
+            SidView(
+                sid=sid,
+                label=label,
+                value=value,
+                unlabeled=label is None,
+                grt_name=info.grt_name if info else None,
+                value_meaning=grt_sids.value_meaning(sid, value),
+            )
+        )
+
+    def _key(r: SidView):
+        n = int(r.sid) if r.sid.isdigit() else 0
+        return (r.unlabeled, n, r.sid)
+
+    # Labeled first by numeric SID; then unlabeled by SID.
+    rows.sort(key=_key)
+    return rows
+
 
 _MARKER_LAST_UPDATE = "last_update_value"
 _MARKER_CONTENT_HASH = "content_hash"
@@ -760,7 +885,7 @@ def _decide(parsed: ParsedBackup, config: dict) -> NewBackupInfo:
     # Checks ONLY SID 387 (Link_ID / DULINK_ID); never a model/class SID, so
     # eligibility is identical across any GRT hardware mix (R15.1).
     link_id = identity.link_id  # normalized SID 387 value (None if absent)
-    is_primary = (link_id == "1")
+    is_primary = (link_id == PRIMARY_LINK_ID)
     if not is_primary:
         return NewBackupInfo(
             available=False,
@@ -911,12 +1036,23 @@ def _decide(parsed: ParsedBackup, config: dict) -> NewBackupInfo:
     )
 
 
-def _select_current_archived_backup(settings_dir) -> Optional[SelectionResult]:
+def _select_current_archived_backup(
+    settings_dir, link_id: Optional[str] = None
+) -> Optional[SelectionResult]:
     """Glob, parse, and select the current archived Settings backup (Req 17).
+
+    ``link_id`` (R11.8): when not None, after parsing keep only candidates whose
+    content Link_ID (``extract_source_key(parsed).link_id``, i.e. SID 387)
+    equals it, then select exactly as below. The filter is content-based, so a
+    primary backup in ``unresolved/`` or a legacy flat file still counts, and a
+    newer non-primary backup cannot hide an older primary one. ``None`` (the
+    default) applies no filter.
 
     Shared by ``load_current_settings_sids`` and
     ``Import_Workflow.detect_new_backup`` so both route file selection through
-    the Archive_Date layer: glob ``Settings*.bak``/``*.dat``, parse each
+    the Archive_Date layer: glob ``Settings*.bak``/``*.dat`` in ``settings_dir``
+    itself (legacy flat layout) AND in each immediate subdirectory (per-device
+    layout: ``link*/``, ``unresolved/``; no deeper recursion), parse each
     (skipping parse failures), wrap every ``ParsedBackup`` in an
     ``ArchivedBackup`` with its ``parse_archive_date`` (dropping files with no
     parseable datestamp), group by Archive_Date, take the latest date, and pick
@@ -930,9 +1066,21 @@ def _select_current_archived_backup(settings_dir) -> Optional[SelectionResult]:
     if not settings_dir.is_dir():
         return None
 
+    # Legacy flat files directly in settings_dir plus one level of
+    # subdirectories (per-device layout: link1/, link2/, unresolved/, ...).
+    search_dirs = [str(settings_dir)]
+    try:
+        search_dirs += sorted(
+            str(p) for p in settings_dir.iterdir() if p.is_dir()
+        )
+    except OSError:
+        pass
     candidate_paths = sorted(
-        glob.glob(os.path.join(str(settings_dir), "Settings*.bak"))
-        + glob.glob(os.path.join(str(settings_dir), "Settings*.dat"))
+        p
+        for d in search_dirs
+        for pattern in ("Settings*.bak", "Settings*.dat")
+        for p in glob.glob(os.path.join(d, pattern))
+        if os.path.isfile(p)
     )
     if not candidate_paths:
         return None
@@ -943,6 +1091,8 @@ def _select_current_archived_backup(settings_dir) -> Optional[SelectionResult]:
         try:
             parsed = Settings_Parser.parse(path)
         except SettingsParseError:
+            continue
+        if link_id is not None and extract_source_key(parsed).link_id != link_id:
             continue
         adate = parse_archive_date(path)
         if adate is None:
@@ -971,19 +1121,24 @@ class Import_Workflow:
     def detect_new_backup(config: dict, archive_root) -> Optional[NewBackupInfo]:
         """Detect whether a newer backup should be offered for import.
 
-        Does the archive I/O — discovers the newest archived Settings backup,
-        selects the current one from the .bak/.dat pair, parses it — then
+        Does the archive I/O — discovers the newest archived *primary-display*
+        (Link_ID == ``PRIMARY_LINK_ID``) Settings backup, so a newer
+        non-primary backup never hides the primary's (R11.8), selects the
+        current one from the .bak/.dat pair, parses it — then
         delegates the primary-gated, source-keyed decision to the pure
         ``_decide`` helper (Requirements 14, 15).
 
-        Returns None only when no Settings backup exists or selection failed.
+        Returns None when no primary-display Settings backup exists (including
+        an archive holding only non-primary backups) or selection failed.
         In every "do not offer" case (stale n-1, undetermined-no-regress,
-        non-primary, bound-source mismatch) it returns
+        bound-source mismatch) it returns
         ``NewBackupInfo(available=False)`` with a reason so the caller can
         suppress the prompt.
         """
         settings_dir = Path(archive_root) / "Settings"
-        result = _select_current_archived_backup(settings_dir)
+        result = _select_current_archived_backup(
+            settings_dir, link_id=PRIMARY_LINK_ID
+        )
         if result is None or result.current is None:
             return None
 
@@ -1279,7 +1434,9 @@ def load_current_settings_sids() -> Optional[tuple[dict[str, str], bool]]:
     backup, or ``None``.
 
     ``archive_root = Path(load_config()["archive_path"])``. Globs
-    ``<archive_root>/Settings/Settings*.bak`` and ``*.dat``, parses each via
+    ``Settings*.bak`` and ``*.dat`` in ``<archive_root>/Settings/`` (legacy
+    flat files) and in each immediate per-device subdirectory
+    (``<archive_root>/Settings/link1/``, ``link2/``, ``unresolved/``), parses each via
     ``Settings_Parser`` (skipping parse failures), and selects the current one
     through the Archive_Date layer (``select_current_backup``: latest
     Archive_Date, then ``Settings_Selector`` for the same-date pair — Req 17).

@@ -46,14 +46,18 @@ from hypothesis import assume, given, settings, strategies as st
 from efis_data_manager.manifest import Manifest_Builder
 
 
-# Relative-path segments: keep them simple, filesystem-safe, and free of the
-# excluded patterns (no ".DS_Store", no "._" prefix, no path separators). A
-# leading alphabetic character guarantees we never collide with an excluded
-# basename and never produce "." / "..".
+# Relative-path segments: FAT32 is the target filesystem (the EFIS cards) and is
+# case-INSENSITIVE, so the generator alphabet is restricted to a SINGLE case of
+# FAT32-legal ASCII (lowercase letters, digits, and "_"/"-"). This keeps every
+# generated name a legal FAT32 long-name component AND unambiguous under
+# case-folding, so two distinct Python strings can never resolve to the same
+# file on a case-insensitive host (the macOS/APFS collision that an unrestricted
+# Unicode alphabet produced, e.g. "fŽ" vs "fž"). A leading "f" keeps names clear
+# of excluded basenames (".DS_Store", "._*") and of "." / "..".
 _SEGMENT = st.text(
     alphabet=st.characters(
-        whitelist_categories=("Ll", "Lu", "Nd"),
-        whitelist_characters=("_", "-"),
+        whitelist_categories=(),
+        whitelist_characters="abcdefghijklmnopqrstuvwxyz0123456789_-",
     ),
     min_size=1,
     max_size=8,

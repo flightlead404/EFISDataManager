@@ -188,8 +188,9 @@ def test_learn_confirm_persists_aircraft_and_proceeds():
         ):
         result = standin._resolve_and_gate_drive(MOUNT)
 
-    # Proceed to archive.
-    assert result is True
+    # Proceed to archive; the resolved Link_ID is returned (settings-management
+    # R1.1 threads it into _run_archive).
+    assert result == "1"
     # The modal prompt was shown exactly once.
     assert len(standin.alert_calls) == 1
     # Managed aircraft persisted under the REAL Mode_S (not the pending key).
@@ -207,7 +208,7 @@ def test_learn_confirm_persists_aircraft_and_proceeds():
 
 
 def test_learn_decline_writes_no_aircraft_and_leaves_mounted():
-    """Declining a LEARN_PROMPT writes no real Mode_S key, returns False (leave
+    """Declining a LEARN_PROMPT writes no real Mode_S key, returns None (leave
     mounted, no archive), posts a notification, and never calls save_config."""
     parsed = _parsed(mode_s=REAL_MODE_S, link_id="1")
     standin = _make_standin(parsed)
@@ -222,8 +223,8 @@ def test_learn_decline_writes_no_aircraft_and_leaves_mounted():
         ):
         result = standin._resolve_and_gate_drive(MOUNT)
 
-    # Do not proceed; drive left mounted.
-    assert result is False
+    # Do not proceed; drive left mounted (None = take no action).
+    assert result is None
     # The prompt was shown.
     assert len(standin.alert_calls) == 1
     # No aircraft adopted: no save_config, no real Mode_S key.
@@ -241,7 +242,7 @@ def test_learn_decline_writes_no_aircraft_and_leaves_mounted():
 
 def test_aircraft_unrecognized_returns_false_and_notifies():
     """A drive from a DIFFERENT aircraft (Mode_S present but != managed) yields
-    AIRCRAFT_UNRECOGNIZED: _resolve_and_gate_drive returns False, no prompt is
+    AIRCRAFT_UNRECOGNIZED: _resolve_and_gate_drive returns None, no prompt is
     shown, no archive is started, and _handle_terminal_outcome notified."""
     # Settings report a different Mode_S than the already-managed aircraft.
     parsed = _parsed(mode_s="DIFFERENT", link_id="1")
@@ -273,7 +274,7 @@ def test_aircraft_unrecognized_returns_false_and_notifies():
         ):
         result = standin._resolve_and_gate_drive(MOUNT)
 
-    assert result is False
+    assert result is None
     # No learn prompt for a terminal outcome.
     assert standin.alert_calls == []
     # No config persisted.
@@ -285,7 +286,7 @@ def test_aircraft_unrecognized_returns_false_and_notifies():
 
 def test_device_undetermined_returns_false_and_notifies():
     """No settings file and no usable recorded binding yields
-    DEVICE_UNDETERMINED: returns False, no prompt, no archive, notifies."""
+    DEVICE_UNDETERMINED: returns None, no prompt, no archive, notifies."""
     standin = _make_standin(parsed=None)  # no readable settings file
 
     # Managed aircraft exists, but there is no settings Link_ID and no recorded
@@ -315,7 +316,7 @@ def test_device_undetermined_returns_false_and_notifies():
         ):
         result = standin._resolve_and_gate_drive(MOUNT)
 
-    assert result is False
+    assert result is None
     assert standin.alert_calls == []
     assert store.saved == []
     assert len(standin.notify_calls) == 1

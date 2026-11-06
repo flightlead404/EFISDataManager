@@ -5,6 +5,63 @@ a single release version (git tag + `__version__` + `pyproject.toml`) with
 independent display labels for the menu-bar tool (`MENUBAR_VERSION`) and the
 dashboard (`DASHBOARD_VERSION`).
 
+## v1.7.0
+
+Release version 1.7.0 · menu bar 0.15.0 · dashboard 1.3.0
+
+Settings management: each display now has its own dated settings history, a
+returning card is checked against it before archiving, and the dashboard can
+browse, compare, and restore archived settings.
+
+### Per-device settings archive
+
+- **Settings, WP, and Plan are archived per display.** A resolved drive archives
+  into `Settings/link{N}/`; an unresolved drive into `Settings/unresolved/`.
+  Archiving stays content-aware (no new snapshot when content is unchanged) and
+  same-day changes are sequenced, never overwritten.
+- **Existing archives are adopted automatically.** On first launch a one-time
+  migration moves flat `Settings/` snapshots into the per-device layout, routing
+  each by the Link_ID in its own content. Legacy Plan/WP files carry no identity
+  and land in `unresolved/` (documented in the design).
+
+### Confirm before archiving a differing card
+
+- **The menu-bar tool asks before archiving settings that differ from the latest
+  known-good version.** The prompt names the display and the latest archive
+  date, and says whether the card matches an older archived version (out of
+  sequence, or changed and changed back) or is new content. "Skip settings"
+  leaves the settings archive and card unchanged; flight data, logbook, and the
+  rest still archive. No prompt when the card matches, or there is no history.
+
+### Writing settings to a card
+
+- **Populate Settings (menu bar)** writes the display's latest archived Settings
+  to the card, or reports that the card is already current.
+- **Restore (dashboard)** writes any archived version from the display's history
+  to the card bound to that display.
+- Both copy the archived file's bytes unchanged (checksum lines stay valid),
+  verify the write by SHA-256, and only then remove the other `.bak`/`.dat` slot,
+  so the card is left with exactly one Settings slot.
+
+### Dashboard settings explorer
+
+- **Browse, view, and compare archived settings per display**, including
+  comparing a version against the card in the reader.
+- **Settings are labeled from GRT's own reference.** GRT's `Settings.h` and
+  settings-format document ship with the app; every SID in a Settings file now
+  has a label, about 60 show what their value means (e.g. Aux1 Function
+  `3 — Amp`), and GRT's internal name is shown on hover.
+
+### Fixes
+
+- **Settings import and percent-power find backups again after migration.** Both
+  now read the per-device folders.
+- **Import considers only the primary display (Link_ID 1).** A newer backup from
+  another display no longer hides the primary's latest backup.
+- **Property tests no longer flake on macOS.** Generated file names are limited to
+  single-case FAT32-safe characters, matching the EFIS cards, so case-insensitive
+  collisions no longer break them.
+
 ## v1.6.7
 
 Release version 1.6.7 · menu bar 0.14.5 · dashboard 1.2.3

@@ -107,8 +107,8 @@ def _snapshot(root):
 # so a generated name never collides with a metadata exclude or the family root.
 _SEGMENT = st.text(
     alphabet=st.characters(
-        whitelist_categories=("Ll", "Lu", "Nd"),
-        whitelist_characters=("_", "-"),
+        whitelist_categories=(),
+        whitelist_characters="abcdefghijklmnopqrstuvwxyz0123456789" + "".join(("_", "-")),
     ),
     min_size=1,
     max_size=6,

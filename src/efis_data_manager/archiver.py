@@ -46,6 +46,8 @@ def archive_efis_drive(
     mount_point: str,
     progress_callback: Optional[Callable] = None,
     today: Optional[str] = None,
+    link_id: Optional[str] = None,
+    archive_settings: bool = True,
 ) -> dict:
     """Archive all EFIS data from a mounted USB drive.
 
@@ -57,6 +59,21 @@ def archive_efis_drive(
         today: Optional ``YYYY-MM-DD`` date string to stamp into archived
             settings snapshots. Defaults to the current date. Tests inject this
             to drive Archive_Date ordering deterministically.
+        link_id: Optional owning-device Link_ID for the returning drive. When
+            supplied, settings families are archived into that device's
+            per-device location (``archive_root/Settings/link{N}/``) so one
+            display's history never mixes with another's (Req 1.1). When
+            ``None`` (the backward-compatible default, and the pre-provisioning
+            path), settings archive into ``archive_root/Settings/unresolved/``.
+            Only the settings families are per-device; FDL/logbook/DEMO/
+            snapshots/cleanup are unaffected.
+        archive_settings: When ``True`` (default, preserving existing caller
+            behavior) the Settings/WP/Plan families are archived. When
+            ``False`` that loop is skipped entirely: no settings snapshots are
+            written and nothing is counted in ``settings_copied``/``skipped``
+            for them. FDL, logbook, DEMO, snapshot archiving and cleanup run
+            exactly as before. Used when the caller has deferred settings
+            archiving pending user confirmation of a divergence.
 
     Returns:
         Dict with results: {
@@ -156,8 +173,18 @@ def archive_efis_drive(
     # family's Most_Recent_Archive, and write a new dated snapshot only when the
     # content changed (or no archive exists). Source files are never modified or
     # deleted (Req 3.2).
-    settings_dest = archive_root / "Settings"
-    for family in _ARCHIVED_SETTINGS_FAMILIES:
+    #
+    # The settings archive is per-device: a returning drive resolved to a
+    # configured device archives under that Link_ID's location, so dedup
+    # against the "most recent archive" is scoped to that device's history
+    # (Req 1.1/1.4/1.5). A None link_id (pre-provisioning / unresolved) writes
+    # to Settings/unresolved/ — preserving the pre-per-device shape without
+    # losing data (Req 1.10). Imported lazily to avoid a circular import, since
+    # settings_archive imports helpers from this module.
+    from efis_data_manager.settings_archive import device_settings_dir
+
+    settings_dest = device_settings_dir(archive_root, link_id)
+    for family in (_ARCHIVED_SETTINGS_FAMILIES if archive_settings else ()):
         try:
             result = _archive_settings_family(
                 mount_point, settings_dest, family, today

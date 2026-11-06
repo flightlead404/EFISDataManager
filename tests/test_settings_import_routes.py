@@ -105,7 +105,11 @@ def test_status_offers_first_for_source_primary(env):
 
 
 def test_status_suppresses_non_primary(env):
-    """A non-primary display (Link_ID != 1) is not offered (Req 15.2)."""
+    """A non-primary display (Link_ID != 1) is not offered (Req 15.2).
+
+    Since R11.8 detection only considers primary backups, so an archive holding
+    only a non-primary backup reports "no settings backup found".
+    """
     client, archive_root, _ = env
     _write_backup(archive_root, "Settings-2026-01-01.dat",
                   _primary_sids(link_id="2", extra={"123": "2700"}), update_value=100)
@@ -113,7 +117,7 @@ def test_status_suppresses_non_primary(env):
     resp = client.get("/api/settings-import/status")
     data = resp.get_json()
     assert data["available"] is False
-    assert data["reason"] == "not the primary display"
+    assert data["reason"] == "no settings backup found"
 
 
 def test_status_suppresses_unchanged_content(env):

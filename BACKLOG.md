@@ -329,6 +329,72 @@ consumption, fuel-flow trends, leaning events) -> SQL -> formatted result, surfa
 in the menu-bar UI. Open design question: local LLM vs API vs structured NLQ.
 (TO FLESH OUT.)
 
+### 6. Cadence-agnostic FDL ingest — support any EFIS logging rate transparently  [LOGGED 2026-11-02]
+GOAL: whatever FDL recording frequency the user selects on the EFIS (today 1 Hz /
+1000 ms; GRT also offers faster rates down to ~200 ms / 5 Hz), the DM should
+import it and the dashboard should analyze it CORRECTLY and AUTOMATICALLY — no
+per-rate config, no user action, no silent wrong answers. The rate should be
+inferred from the data, not assumed.
+
+WHY (investigation `.agents/tasks/fdl-sample-rate-impact.md`, 2026-11-02, read-only):
+the pipeline is architecturally timestamp-driven in the right places (durations,
+episode hysteresis, CHT cooling rate, operation segmentation all key off real
+elapsed seconds), so it is CLOSER to rate-agnostic than a naive "1 row = 1 second"
+design — BUT it is blocked by one assumption: the whole pipeline keys and renders
+on a WHOLE-SECOND timestamp (`fdl_parser._parse_row` parses `Time` with
+`"%H:%M:%S"`, no sub-second component). At any rate faster than 1 Hz this BREAKS
+(not just slows):
+  1. **Silent import loss.** Record identity is `(timestamp, content_hash)` with
+     `INSERT OR IGNORE` (`database.py`). Multiple same-second samples with
+     identical sensor values (routine in steady cruise at 200 ms) collide and are
+     silently dropped — biased toward discarding exactly the calm cruise data
+     trends/GAMI need. If GRT emits fractional seconds, `strptime` raises and the
+     row is skipped on import instead.
+  2. **Degenerate chart axis.** `dashboard.api_flight_data` plots the
+     second-resolution timestamp string as X, so surviving sub-second points stack
+     on one X value; "jump to timestamp" and episode markers resolve to a whole
+     second only.
+
+WHAT STAYS CORRECT (don't touch): scalar max/min/avg + spreads, percent-power,
+trends/anomalies/oil (per-flight + engine-hour based), duration fields, CHT
+cooling rate, episode hysteresis (all timestamp/second based — correct, just
+quantized to 1 s resolution today).
+
+WHAT ELSE MUST CHANGE (silently wrong at higher rates):
+  - **GAMI windows (`gami.py`)**: `MIN_STROKE_SECONDS` and `SMOOTH_WINDOW` are
+    NAMED seconds but USED as sample counts (index/`len(rows)` comparisons). At
+    5 Hz they cover 5× less time → mis-detected strokes + 5× weaker smoothing.
+    Convert to true time-based windows (derive cadence from timestamp spacing, or
+    express in seconds and translate to indices per flight).
+
+IMPLEMENTATION SKETCH (fix in this order; #1 is the crux, nothing else matters
+without it):
+  1. **Sub-second timestamps.** First CONFIRM the actual GRT faster-rate FDL
+     format (does it emit `HH:MM:SS.s`, a separate millisecond/column, or reuse
+     the already-parsed-but-ignored `Tick` field?). Then parse preserving
+     sub-second (e.g. `%H:%M:%S.%f`, or fold `Tick`/ms into the datetime).
+  2. **Record identity.** Unique sub-second timestamps dissolve the collision;
+     verify both the unique index AND the `seen_keys` de-dup operate on the
+     sub-second value. If GRT can still emit identical sub-second rows, fold
+     `Tick`/row-ordinal into the identity key.
+  3. **GAMI**: time-based windows (above).
+  4. **Dashboard volume + downsampling.** ~5× rows/flight (a 5 hr flight goes
+     ~18k → ~90k points/series, past the stated ~18k "renders fine, no
+     downsampling" headroom in `api_flight_data`). Add server- or client-side
+     LTTB decimation / resolution cap so pan/zoom stays responsive. Unique
+     sub-second X also fixes the axis degeneracy for free.
+  5. **Tests.** Current tests bake in 1 Hz (`tests/test_airspeed_g_episodes.py`
+     uses `timedelta(seconds=i)`, "N samples == N seconds"); add sub-second /
+     multi-rate fixtures and decouple GAMI expectations from the 1-Hz shortcut so
+     a future cadence change can't silently regress.
+  6. **Storage.** ~5× `fdl_data` growth/flight; note for retention/VACUUM.
+
+CAVEAT: if a given EFIS/firmware genuinely cannot emit sub-second time in the FDL
+at all, faster logging is NOT safely supportable for that device — the import
+layer would discard most extra samples with no error surfaced. In that case the
+DM should DETECT the collision (multiple distinct rows sharing a whole second)
+and warn, rather than silently drop. (TO FLESH OUT — confirm GRT format first.)
+
 ## SOMEDAY / UNPRIORITIZED (await "customer demand" — so far ~nobody has used a release)
 
 ### Multi-aircraft support

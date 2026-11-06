@@ -60,8 +60,8 @@ _NAV_LABEL_PREFIX = st.text(min_size=0, max_size=40)
 # A filesystem-safe mount-point basename so the path varies per example.
 _BASENAME = st.text(
     alphabet=st.characters(
-        whitelist_categories=("Ll", "Lu", "Nd"),
-        whitelist_characters=("_", "-", " "),
+        whitelist_categories=(),
+        whitelist_characters="abcdefghijklmnopqrstuvwxyz0123456789" + "".join(("_", "-", " ")),
     ),
     min_size=1,
     max_size=20,

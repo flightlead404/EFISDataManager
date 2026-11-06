@@ -62,8 +62,8 @@ _SIZE = st.integers(min_value=0, max_value=2**31)
 # guarantees we never produce "." / ".." nor collide with an excluded basename.
 _SEGMENT = st.text(
     alphabet=st.characters(
-        whitelist_categories=("Ll", "Lu", "Nd"),
-        whitelist_characters=("_", "-"),
+        whitelist_categories=(),
+        whitelist_characters="abcdefghijklmnopqrstuvwxyz0123456789" + "".join(("_", "-")),
     ),
     min_size=1,
     max_size=8,

@@ -50,12 +50,16 @@ from efis_data_manager import drive_updater
 # Generators
 # ---------------------------------------------------------------------------
 
-# A filesystem-safe path segment (file or dir name). A leading "f" guarantees
-# we never produce "." / ".." and never collide with a reserved survivor name.
+# A filesystem-safe path segment (file or dir name). FAT32 (the EFIS cards) is
+# case-INSENSITIVE, so the alphabet is a SINGLE case of FAT32-legal ASCII
+# (lowercase letters, digits, "_" and "-"). Names then cannot differ only by
+# case, so two distinct generated names never resolve to the same file or
+# directory on a case-insensitive host. A leading "f" guarantees we never
+# produce "." / ".." and never collide with a reserved survivor name.
 _SEGMENT = st.text(
     alphabet=st.characters(
-        whitelist_categories=("Ll", "Lu", "Nd"),
-        whitelist_characters=("_", "-"),
+        whitelist_categories=(),
+        whitelist_characters="abcdefghijklmnopqrstuvwxyz0123456789_-",
     ),
     min_size=1,
     max_size=10,

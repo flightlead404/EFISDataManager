@@ -1,0 +1,484 @@
+The data field for source data type 7 (Settings) contains key-value pairs as
+ASCII strings in the format "key=value".  There is one pair in each packet.
+The value can be almost any string, excluding newline sequences.  It must be
+interpreted with each setting.
+
+This example recorded the Serial Port 1 Baud Rate at 19200.
+The setting-identifier (SID) for Serial Port 1 Baud Rate is 1.
+
+07 - The packet source is 7 for Settings.
+00 00 00 00 - packet timestamp
+00 00 00 07 - The length of the packet data field is 7.
+31 3d 31 39 32 30 30 - The ASCII string "1=19200".
+
+The HXr product added a 2nd engine monitor input and uses extra settings
+for it.
+
+EIS setting-identifiers:
+321 - EIS Model
+345 - EIS Temperature Units
+346 - EIS Fuel Flow Units
+347 - EIS Baroset Units
+58 - Number of Cylinders (older versions)
+1054 - Number of EGT's (newer versions)
+1055 - Number of CHT's (newer versions)
+64 - Aux1 Function
+65 - Aux1 Integer/Decimal
+70 - Aux2 Function
+71 - Aux2 Integer/Decimal
+76 - Aux3 Function
+77 - Aux3 Integer/Decimal
+82 - Aux4 Function
+83 - Aux4 Integer/Decimal
+88 - Aux5 Function
+89 - Aux5 Integer/Decimal
+94 - Aux6 Function
+95 - Aux6 Integer/Decimal
+1100 - EIS2 Aux1 Function (2nd engine monitor)
+1102 - EIS2 Aux1 Integer/Decimal (2nd engine monitor)
+1105 - EIS2 Aux2 Function (2nd engine monitor)
+1107 - EIS2 Aux2 Integer/Decimal (2nd engine monitor)
+1110 - EIS2 Aux3 Function (2nd engine monitor)
+1112 - EIS2 Aux3 Integer/Decimal (2nd engine monitor)
+1115 - EIS2 Aux4 Function (2nd engine monitor)
+1117 - EIS2 Aux4 Integer/Decimal (2nd engine monitor)
+1120 - EIS2 Aux5 Function (2nd engine monitor)
+1122 - EIS2 Aux5 Integer/Decimal (2nd engine monitor)
+1125 - EIS2 Aux6 Function (2nd engine monitor)
+1127 - EIS2 Aux6 Integer/Decimal (2nd engine monitor)
+
+EIS Model values:
+0 - 4000/6000/9000/R66
+1 - 2000/2004
+2 - GRT-Chelton
+3 - 2002
+
+EIS Temperature Units values:
+0 - Degrees Fahrenheit
+1 - Degrees Celsius
+2 - Degrees Celsius except CHT
+3 - Degrees F except OAT
+4 - Degrees C except FADEC
+
+EIS Fuel Flow Units values:
+0 - Gallons
+1 - Liters
+2 - Liters with extra conversion
+
+EIS Baroset Units values:
+0 - inches Hg
+1 - millibars
+
+Aux Function values:
+0 - None
+1 - Manifold Pressure (MAP)
+2 - Fuel Pressure
+3 - Amp
+4 - Aux (user-defined input)
+5 - Volt Bus 2
+6 - Left Fuel Level
+7 - Right Fuel Level
+8 - Center Fuel Level
+9 - Gear Box Temperature
+10 - Amp 2
+11 - TIT 1
+12 - TIT 2
+13 - Hydraulic Pressure 1
+14 - Hydraulic Pressure 2
+15 - Water Pressure
+16 - Air Pressure
+17 - Torque
+18 - Flaps
+19 - Aileron Trim
+20 - Elevator Trim
+21 - Rudder Trim
+22 - Manifold Pressure 2
+23 - Fuel Pressure 2
+24 - Gear Box Temperature 2
+25 - EIS2 TIT 1 (2nd engine monitor)
+26 - EIS2 TIT 2 (2nd engine monitor)
+27 - Water Pressure 2
+28 - Air Pressure 2
+29 - Torque 2
+30 - Throttle Position
+
+Aux Integer/Decimal values:
+0 - Integer
+1 - Decimal (divide the value received from the EIS by 10)
+
+Remote EIS R66 setting-identifiers:
+1348 - EIS1 Aux1 Scale Factor
+1349 - EIS1 Aux1 Offset
+1350 - EIS1 Aux1 Sensing (+/-)
+1351 - EIS1 Aux2 Scale Factor
+1352 - EIS1 Aux2 Offset
+1353 - EIS1 Aux2 Sensing (+/-)
+1354 - EIS1 Aux3 Scale Factor
+1355 - EIS1 Aux3 Offset
+1356 - EIS1 Aux3 Sensing (+/-)
+1357 - EIS1 Aux4 Scale Factor
+1358 - EIS1 Aux4 Offset
+1359 - EIS1 Aux4 Sensing (+/-)
+1360 - EIS1 Aux5 Scale Factor
+1361 - EIS1 Aux5 Offset
+1362 - EIS1 Aux5 Sensing (+/-)
+1363 - EIS1 Aux6 Scale Factor
+1364 - EIS1 Aux6 Offset
+1365 - EIS1 Aux6 Sensing (+/-)
+1366 - EIS1 Fuel Flow Calibration (FloCal)
+1368 - Tach 1 Pulses Per Revolution
+1369 - Tach 2 Pulses Per Revolution
+1372 - Oil Pressure Sensor
+1375 - N1 100%
+1376 - N2 100%
+1379 - EIS2 Aux1 Scale Factor
+1380 - EIS2 Aux1 Offset
+1381 - EIS2 Aux1 Sensing (+/-)
+1382 - EIS2 Aux2 Scale Factor
+1383 - EIS2 Aux2 Offset
+1384 - EIS2 Aux2 Sensing (+/-)
+1385 - EIS2 Aux3 Scale Factor
+1386 - EIS2 Aux3 Offset
+1387 - EIS2 Aux3 Sensing (+/-)
+1388 - EIS2 Aux4 Scale Factor
+1389 - EIS2 Aux4 Offset
+1390 - EIS2 Aux4 Sensing (+/-)
+1391 - EIS2 Aux5 Scale Factor
+1392 - EIS2 Aux5 Offset
+1393 - EIS2 Aux5 Sensing (+/-)
+1394 - EIS2 Aux6 Scale Factor
+1395 - EIS2 Aux6 Offset
+1396 - EIS2 Aux6 Sensing (+/-)
+1397 - EIS2 Fuel Flow Calibration (FloCal)
+
+Aux Sensing values:
+0 - Forward (+)
+1 - Reverse (-)
+
+Oil Pressure Sensor values:
+0 - VDO 10 bar (150 psi)
+1 - VDO 5 bar (80 psi) (rescale input by 80/150)
+
+Limits setting-identifiers:
+115 - Max Flight Time
+116 - Interval
+353 - Min EFIS Voltage Bus 1
+354 - Max EFIS Voltage Bus 1
+355 - Min EFIS Voltage Bus 2
+356 - Max EFIS Voltage Bus 2
+357 - Min EFIS Voltage Bus 3
+358 - Max EFIS Voltage Bus 3
+117 - Max Fuel Flow
+119 - Min Oil Pressure
+118 - Max Oil Pressure
+120 - Min Cruise Oil Pressure
+122 - Min Oil Temperature
+121 - Max Oil Temperature
+1463 - Min Fuel Pressure
+1464 - Max Fuel Pressure
+124 - Min RPM
+123 - Max RPM
+725 - Min RPM2
+724 - Max RPM2
+1040 - Min RPM3
+1039 - Max RPM3
+727 - Min N1
+726 - Max N1
+729 - Min N2
+728 - Max N2
+1042 - Min N3
+1041 - Max N3
+1377 - RPM Range TachLo
+1378 - RPM Range TachHi
+125 - Min Fuel
+1373 - Min Manifold Pressure (R66 internal MAP)
+1374 - Max Manifold Pressure (R66 internal MAP)
+127 - EIS1 Min Aux1
+126 - EIS1 Max Aux1
+129 - EIS1 Min Aux2
+128 - EIS1 Max Aux2
+131 - EIS1 Min Aux3
+130 - EIS1 Max Aux3
+133 - EIS1 Min Aux4
+132 - EIS1 Max Aux4
+135 - EIS1 Min Aux5
+134 - EIS1 Max Aux5
+137 - EIS1 Min Aux6
+136 - EIS1 Max Aux6
+1131 - EIS2 Min Aux1
+1130 - EIS2 Max Aux1
+1133 - EIS2 Min Aux2
+1132 - EIS2 Max Aux2
+1135 - EIS2 Min Aux3
+1134 - EIS2 Max Aux3
+1137 - EIS2 Min Aux4
+1136 - EIS2 Max Aux4
+1139 - EIS2 Min Aux5
+1138 - EIS2 Max Aux5
+1141 - EIS2 Min Aux6
+1140 - EIS2 Max Aux6
+449 - Min Analog 1
+457 - Max Analog 1
+450 - Min Analog 2
+458 - Max Analog 2
+451 - Min Analog 3
+459 - Max Analog 3
+452 - Min Analog 4
+460 - Max Analog 4
+453 - Min Analog 5
+461 - Max Analog 5
+454 - Min Analog 6
+462 - Max Analog 6
+455 - Min Analog 7
+463 - Max Analog 7
+456 - Min Analog 8
+464 - Max Analog 8
+139 - Min Coolant Temperature
+138 - Max Coolant Temperature
+141 - Min EIS Voltage
+140 - Max EIS Voltage
+143 - Min Carb Temperature
+142 - Max Carb Temperature
+145 - Min EGT
+144 - Max EGT
+520 - Min TIT
+521 - Max TIT
+146 - Lim-RPM
+147 - Max EGT Span
+148 - Max EGT Increase
+149 - Max EGT Decrease
+150 - Max CHT Cooling Rate
+152 - Min CHT
+151 - Max CHT
+
+Dial setting-identifiers:
+573 - Dial #1 Source
+574 - Dial #1 Scale
+576 - Dial #1 Start
+577 - Dial #1 End
+580 - Dial #1 Green Start
+581 - Dial #1 Green End
+582 - Dial #1 Yellow Start
+583 - Dial #1 Yellow End
+584 - Dial #1 Red Start
+585 - Dial #1 Red End
+598 - Dial #2 Source
+599 - Dial #2 Scale
+601 - Dial #2 Start
+602 - Dial #2 End
+605 - Dial #2 Green Start
+606 - Dial #2 Green End
+607 - Dial #2 Yellow Start
+608 - Dial #2 Yellow End
+609 - Dial #2 Red Start
+610 - Dial #2 Red End
+673 - Dial #3 Source
+674 - Dial #3 Scale
+676 - Dial #3 Start
+677 - Dial #3 End
+680 - Dial #3 Green Start
+681 - Dial #3 Green End
+682 - Dial #3 Yellow Start
+683 - Dial #3 Yellow End
+684 - Dial #3 Red Start
+685 - Dial #3 Red End
+698 - Dial #4 Source
+699 - Dial #4 Scale
+701 - Dial #4 Start
+702 - Dial #4 End
+705 - Dial #4 Green Start
+706 - Dial #4 Green End
+707 - Dial #4 Yellow Start
+708 - Dial #4 Yellow End
+709 - Dial #4 Red Start
+710 - Dial #4 Red End
+1142 - EIS2 Dial #5 Source
+1143 - EIS2 Dial #5 Scale
+1144 - EIS2 Dial #5 Start
+1145 - EIS2 Dial #5 End
+1146 - EIS2 Dial #5 Green Start
+1147 - EIS2 Dial #5 Green End
+1148 - EIS2 Dial #5 Yellow Start
+1149 - EIS2 Dial #5 Yellow End
+1150 - EIS2 Dial #5 Red Start
+1151 - EIS2 Dial #5 Red End
+1152 - EIS2 Dial #6 Source
+1153 - EIS2 Dial #6 Scale
+1154 - EIS2 Dial #6 Start
+1155 - EIS2 Dial #6 End
+1156 - EIS2 Dial #6 Green Start
+1157 - EIS2 Dial #6 Green End
+1158 - EIS2 Dial #6 Yellow Start
+1159 - EIS2 Dial #6 Yellow End
+1160 - EIS2 Dial #6 Red Start
+1161 - EIS2 Dial #6 Red End
+1162 - EIS2 Dial #7 Source
+1163 - EIS2 Dial #7 Scale
+1164 - EIS2 Dial #7 Start
+1165 - EIS2 Dial #7 End
+1166 - EIS2 Dial #7 Green Start
+1167 - EIS2 Dial #7 Green End
+1168 - EIS2 Dial #7 Yellow Start
+1169 - EIS2 Dial #7 Yellow End
+1170 - EIS2 Dial #7 Red Start
+1171 - EIS2 Dial #7 Red End
+1172 - EIS2 Dial #8 Source
+1173 - EIS2 Dial #8 Scale
+1174 - EIS2 Dial #8 Start
+1175 - EIS2 Dial #8 End
+1176 - EIS2 Dial #8 Green Start
+1177 - EIS2 Dial #8 Green End
+1178 - EIS2 Dial #8 Yellow Start
+1179 - EIS2 Dial #8 Yellow End
+1180 - EIS2 Dial #8 Red Start
+1181 - EIS2 Dial #8 Red End
+
+Dial Source values:
+0 - Off
+93 - Auto Symmetric (configure EIS2 dial same as EIS1)
+1 - EIS1 RPM1
+2 - EIS1 RPM2
+52 - EIS1 RPM3
+55 - EIS2 RPM1
+56 - EIS2 RPM2
+57 - EIS2 RPM3
+3 - MAP1
+58 - MAP2
+4 - EIS1 Fuel Flow
+59 - EIS2 Fuel Flow
+92 - Overall Fuel Flow
+5 - Percent Power 1
+60 - Percent Power 2
+6 - EIS1 N1
+7 - EIS1 N2
+53 - EIS1 N3
+61 - EIS2 N1
+62 - EIS2 N2
+63 - EIS2 N3
+8 - Fuel Pressure 1
+64 - Fuel Pressure 2
+9 - EIS1 CHT1
+10 - EIS1 CHT2
+65 - EIS2 CHT1
+66 - EIS2 CHT2
+11 - EIS1 EGT1
+12 - EIS1 EGT2
+67 - EIS2 EGT1
+68 - EIS2 EGT2
+13 - EIS1 TIT1
+14 - EIS1 TIT2
+69 - EIS2 TIT1
+70 - EIS2 TIT2
+15 - EIS1 Highest CHT
+71 - EIS2 Highest CHT
+89 - Overall Highest CHT
+16 - EIS1 Highest EGT
+72 - EIS2 Highest EGT
+90 - Overall Highest EGT
+17 - EIS1 Highest TIT
+73 - EIS2 Highest TIT
+91 - Overall Highest TIT
+18 - EIS1 Oil Temperature
+74 - EIS2 Oil Temperature
+19 - EIS1 Oil Pressure
+75 - EIS2 Oil Pressure
+20 - Torque 1
+76 - Torque 2
+21 - Left Fuel
+22 - Center Fuel
+23 - Right Fuel
+24 - Fuel Flow Fuel Remaining
+54 - Fuel (Combined)
+25 - EIS1 Volts
+77 - EIS2 Volts
+26 - EFIS Power Bus 1 Volts
+27 - EFIS Power Bus 2 Volts
+28 - EFIS Power Bus 3 Volts
+29 - Amp 1
+30 - Amp 2
+31 - EIS1 Coolant Temperature
+78 - EIS2 Coolant Temperature
+32 - EIS1 Carb Temperature
+79 - EIS2 Carb Temperature
+33 - Gear Box Temperature 1
+80 - Gear Box Temperature 2
+34 - Hydraulic Pressure 1
+35 - Hydraulic Pressure 2
+36 - Water Pressure 1
+81 - Water Pressure 2
+37 - Air Pressure 1
+82 - Air Pressure 2
+38 - EIS1 Aux1
+39 - EIS1 Aux2
+40 - EIS1 Aux3
+41 - EIS1 Aux4
+42 - EIS1 Aux5
+43 - EIS1 Aux6
+83 - EIS2 Aux1
+84 - EIS2 Aux2
+85 - EIS2 Aux3
+86 - EIS2 Aux4
+87 - EIS2 Aux5
+88 - EIS2 Aux6
+44 - Analog Input 1 Aux
+45 - Analog Input 2 Aux
+46 - Analog Input 3 Aux
+47 - Analog Input 4 Aux
+48 - Analog Input 5 Aux
+49 - Analog Input 6 Aux
+50 - Analog Input 7 Aux
+51 - Analog Input 8 Aux
+94 - CAN Coolant Temp 2
+111 - Throttle Position
+95 - Analog Aux Remote Ch1
+96 - Analog Aux Remote Ch2
+97 - Analog Aux Remote Ch3
+98 - Analog Aux Remote Ch4
+99 - Analog Aux Remote Ch5
+100 - Analog Aux Remote Ch6
+101 - Analog Aux Remote Ch7
+102 - Analog Aux Remote Ch8
+103 - Analog Aux Remote Ch9
+104 - Analog Aux Remote Ch10
+105 - Analog Aux Remote Ch11
+106 - Analog Aux Remote Ch12
+107 - Analog Aux Remote Ch13
+108 - Analog Aux Remote Ch14
+109 - Analog Aux Remote Ch15
+110 - Analog Aux Remote Ch16
+
+Dial Scale values:
+0 - 1
+1 - 10
+2 - 100
+3 - 0.1
+4 - 0.01
+
+Airspeed setting-identifiers:
+888 - Stall speed, landing config (Vso)
+19 - Stall speed, clean config (Vs1)
+20 - Max flap extension speed (Vfe)
+21 - Max structural cruise spd (Vno)
+22 - Never exceed speed (Vne)
+889 - Convert Vne from TAS to IAS (0=No, 1=Yes)
+23 - Speed bug 1 (X)
+24 - Speed bug 2 (Y)
+25 - Speed bug 3 (G)
+
+G-Meter setting-identifiers:
+746 - G-Meter Mode (3=Off, 0=Auto, 1=On, 2=On with Min/Max)
+329 - G-Meter Maximum
+330 - G-Meter Minimum
+331 - G-Meter Caution Max
+332 - G-Meter Caution Min
+333 - Auto G-Meter High Threshold
+334 - Auto G-Meter Low Threshold
+
+ADS-B identity setting-identifiers:
+1062 - Flight ID, usually the aircraft registration (N-Number)
+1063 - Mode S Address (hex format), also known as ICAO Address
+1069 - VFR ID, the aircraft registration (N-number)
+
+Per-display unit setting-identifiers:
+387 - Inter-Display Link ID (0=Auto, 1=Primary, or 2-254) (the automatic ID is not saved)
+1346 - A/P Servo Controller Number (0=Auto [Use Link ID], or 1-3)

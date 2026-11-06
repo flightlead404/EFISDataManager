@@ -171,6 +171,7 @@ class EFISDataManagerApp(rumps.App):
             "Drive: Not connected",
             "Eject Drive",
             "Verify Drive",
+            "Populate Settings",
             None,
             "Alerts (0)",
             None,
@@ -203,16 +204,22 @@ class EFISDataManagerApp(rumps.App):
         # Sanity-check configured paths at startup (logs warnings)
         self._check_paths()
 
+        # One-time, idempotent adoption of any pre-existing flat settings
+        # archives into the per-device layout (settings-management R11). Guarded
+        # so a migration failure is logged and never blocks launch.
+        self._run_startup_migration()
+
         # Start USB monitoring
         self._start_usb_monitor()
 
         # Register system sleep/wake observers (task 11)
         self._register_sleep_wake_observers()
 
-        # Initial state: disable eject + verify if no drive
+        # Initial state: disable eject + verify + populate if no drive
         if not getattr(self, '_drive_connected', False):
             self.menu["Eject Drive"].set_callback(None)
             self.menu["Verify Drive"].set_callback(None)
+            self.menu["Populate Settings"].set_callback(None)
 
     def _check_paths(self):
         """Validate configured paths at startup, logging any concerns.
@@ -238,6 +245,34 @@ class EFISDataManagerApp(rumps.App):
                     logger.warning(f"Config '{key}' path is not writable: {path}")
             except OSError as e:
                 logger.warning(f"Config '{key}' path unusable ({path}): {e}")
+
+    def _run_startup_migration(self):
+        """Adopt pre-existing flat settings archives into the per-device layout.
+
+        Runs the one-time, idempotent ``migrate_flat_archives`` once at startup
+        against the configured archive root (settings-management R11.1). The
+        migration is guarded by its own sentinel so reruns are no-ops; this
+        call is additionally wrapped so any failure is logged and never blocks
+        the menu-bar app launch (R11.6).
+        """
+        from pathlib import Path
+
+        try:
+            from efis_data_manager.settings_archive import migrate_flat_archives
+
+            archive_root = Path(load_config()["archive_path"])
+            result = migrate_flat_archives(archive_root)
+            if result.adopted or result.unresolved or result.errors:
+                logger.info(
+                    "Flat-archive migration: adopted %d, unresolved %d, "
+                    "collisions %d, errors %d.",
+                    result.adopted,
+                    result.unresolved,
+                    result.collisions,
+                    len(result.errors),
+                )
+        except Exception as e:  # best-effort; never block launch
+            logger.warning(f"Flat-archive migration skipped (non-fatal): {e}")
 
     def _short_path(self, path_str: str) -> str:
         from pathlib import Path
@@ -525,7 +560,9 @@ class EFISDataManagerApp(rumps.App):
                 )
         return None
 
-    def _run_alert_on_main_thread(self, title: str, message: str) -> int:
+    def _run_alert_on_main_thread(
+        self, title: str, message: str, *, ok: str = "OK", cancel: str = "Cancel"
+    ) -> int:
         """Show a modal rumps alert on the main thread and return its result.
 
         The USB monitor invokes ``_on_efis_drive_mounted`` from its background
@@ -543,7 +580,7 @@ class EFISDataManagerApp(rumps.App):
         def _do_alert():
             try:
                 result["value"] = rumps.alert(
-                    title=title, message=message, ok="OK", cancel="Cancel"
+                    title=title, message=message, ok=ok, cancel=cancel
                 )
             except Exception as e:  # pragma: no cover - UI failure fallback
                 logger.error(f"Learn-aircraft prompt failed: {e}")
@@ -611,13 +648,19 @@ class EFISDataManagerApp(rumps.App):
                 "analysis_data_source": "1",
             }
 
-    def _resolve_and_gate_drive(self, mount_point: str) -> bool:
+    def _resolve_and_gate_drive(self, mount_point: str):
         """Resolve the inserted drive and decide whether to proceed to archive.
 
-        Returns True to proceed to the existing archive/sync path, or False to
-        leave the drive mounted untouched (terminal/declined outcome). On a
-        RESOLVED binding mismatch, posts a best-effort mismatch notification but
-        still proceeds (the settings-file Link_ID is authoritative, R4.6).
+        Returns the resolved device Link_ID (a string) to proceed to the
+        existing archive/sync path, or ``None`` to leave the drive mounted
+        untouched (terminal/declined outcome). On a RESOLVED binding mismatch,
+        posts a best-effort mismatch notification but still proceeds (the
+        settings-file Link_ID is authoritative, R4.6).
+
+        The returned Link_ID is threaded into ``_run_archive`` so the archive
+        routes Settings into the per-device ``Settings/link{N}/`` location and
+        the post-archive divergence check is scoped to the right device (R1.1,
+        R1.10, R7.2).
         """
         from efis_data_manager.drive_updater import read_identity
 
@@ -638,10 +681,14 @@ class EFISDataManagerApp(rumps.App):
 
         # Terminal non-confident outcomes: notify + leave mounted, no action.
         self._handle_terminal_outcome(outcome, mount_point)
-        return False
+        return None
 
-    def _proceed_resolved(self, outcome) -> bool:
-        """Handle a RESOLVED outcome: optionally warn on mismatch, then proceed."""
+    def _proceed_resolved(self, outcome):
+        """Handle a RESOLVED outcome: optionally warn on mismatch, then proceed.
+
+        Returns the resolved device Link_ID (string) so the caller can thread it
+        into the archive path (R1.1).
+        """
         if outcome.binding_mismatch:
             try:
                 self._notify("Drive binding mismatch", outcome.message)
@@ -651,17 +698,19 @@ class EFISDataManagerApp(rumps.App):
             f"Drive resolved to {outcome.display_label or outcome.link_id}; "
             "proceeding to archive."
         )
-        return True
+        return outcome.link_id
 
     def _handle_learn_prompt(
         self, outcome, parsed, recorded_identity, current_config, mount_point: str
-    ) -> bool:
+    ):
         """Prompt to adopt the derived Mode_S, then persist and re-resolve.
 
         On confirm: establish the managed aircraft, ``save_config``, and
-        re-run resolution; proceed only if the re-resolve is RESOLVED, else
-        notify + leave mounted per the new outcome. On decline: bind nothing,
-        notify, and leave the drive mounted (no archive/sync action).
+        re-run resolution; proceed only if the re-resolve is RESOLVED (returning
+        the resolved Link_ID), else notify + leave mounted per the new outcome.
+        On decline: bind nothing, notify, and leave the drive mounted (no
+        archive/sync action). Returns the resolved Link_ID to proceed, or
+        ``None`` to leave the drive untouched.
         """
         response = self._run_alert_on_main_thread(
             "Adopt managed aircraft?", outcome.message
@@ -679,7 +728,7 @@ class EFISDataManagerApp(rumps.App):
                 )
             except Exception as e:
                 logger.debug(f"Decline notification failed: {e}")
-            return False
+            return None
 
         # Confirmed: establish the managed aircraft and persist.
         self._establish_managed_aircraft(current_config, outcome.mode_s)
@@ -698,7 +747,7 @@ class EFISDataManagerApp(rumps.App):
 
         # Any other re-resolve outcome: notify + leave mounted, no action.
         self._handle_terminal_outcome(new_outcome, mount_point)
-        return False
+        return None
 
     def _on_efis_drive_mounted(self, mount_point: str):
         """Called when an EFIS drive is detected."""
@@ -726,7 +775,8 @@ class EFISDataManagerApp(rumps.App):
         # thread) and re-resolves. See design.md "Where this inserts into
         # _on_efis_drive_mounted" (R2.4, R2.6, R3.2, R3.3, R3.5, R3.6, R4.6,
         # R5.5, R5.6).
-        if not self._resolve_and_gate_drive(mount_point):
+        link_id = self._resolve_and_gate_drive(mount_point)
+        if link_id is None:
             return
 
         self._notify("EFIS Drive Detected", f"Drive mounted at {mount_point}. Starting archive...")
@@ -752,8 +802,15 @@ class EFISDataManagerApp(rumps.App):
                 "will run after archive."
             )
 
-        # Start archive in background thread
-        threading.Thread(target=self._run_archive, args=(mount_point,), daemon=True).start()
+        # Start archive in background thread. The resolved Link_ID routes
+        # Settings into Settings/link{N}/ and scopes the post-archive divergence
+        # check (settings-management R1.1, R1.10, R7.2).
+        threading.Thread(
+            target=self._run_archive,
+            args=(mount_point,),
+            kwargs={"link_id": link_id},
+            daemon=True,
+        ).start()
 
     def _on_efis_drive_ejected(self, mount_point: str):
         """Called when an EFIS drive is ejected.
@@ -939,8 +996,139 @@ class EFISDataManagerApp(rumps.App):
             self._notify("Verify Drive Failed", str(e)[:100])
             self._set_status("Verify failed")
 
-    def _run_archive(self, mount_point: str):
-        """Run the archive process on a mounted EFIS drive, then update."""
+    def _resolve_drive_outcome(self, mount_point: str):
+        """Resolve the drive at ``mount_point`` to a configured device.
+
+        Reuses the same oracle as ``_resolve_and_gate_drive`` (settings-file
+        Link_ID authoritative, else the recorded binding) but returns the full
+        :class:`device_resolution.ResolutionOutcome` so callers can read the
+        resolved ``link_id`` / ``display_label``. Pure resolution: it reads the
+        drive and config and takes no archive/sync/write action.
+        """
+        from efis_data_manager.drive_updater import read_identity
+
+        current_config = load_config()
+        parsed = self._find_drive_settings(mount_point)
+        recorded_identity = read_identity(mount_point)
+        return device_resolution.resolve_drive(
+            parsed, recorded_identity, current_config
+        )
+
+    def populate_settings_menu(self, _):
+        """User clicked "Populate Settings": write the resolved device's latest
+        archived Settings onto the currently bound drive (R6.1, R6.3, R10.1).
+
+        Finds the connected EFIS mount (same discovery as ``eject_drive`` /
+        ``verify_drive_menu``), resolves which configured device it is, and runs
+        ``settings_writer.populate_latest`` on a background thread so the slow
+        copy + byte verify never blocks the menu bar. The outcome is reported via
+        ``_notify``: written / already current / no archived settings / error.
+        A drive that does not resolve to a configured device takes no action.
+        """
+        from efis_data_manager.usb_monitor import is_managed_drive
+
+        mount_point = None
+        # Find the currently connected managed drive (identity-only detection).
+        for name in os.listdir("/Volumes"):
+            path = os.path.join("/Volumes", name)
+            if os.path.isdir(path) and is_managed_drive(path):
+                mount_point = path
+                break
+
+        if not mount_point:
+            self._notify("No Drive", "No EFIS drive is connected.")
+            return
+
+        outcome = self._resolve_drive_outcome(mount_point)
+        if outcome.status != ResolutionStatus.RESOLVED:
+            logger.info(
+                f"Populate Settings: drive at {mount_point} did not resolve to "
+                f"a configured device ({outcome.status.value}); no action."
+            )
+            self._notify(
+                "Populate Settings",
+                "This drive does not resolve to a configured device, so there "
+                "is no device history to populate from.",
+            )
+            return
+
+        threading.Thread(
+            target=self._run_populate_settings,
+            args=(mount_point, outcome.link_id, outcome.display_label),
+            daemon=True,
+        ).start()
+
+    def _run_populate_settings(self, mount_point: str, link_id, label):
+        """Run ``populate_latest`` for a resolved drive and report the outcome.
+
+        Writes the device's latest archived Settings as the sole slot when the
+        drive's current Settings differ (R6.1); reports each terminal status via
+        ``_notify``:
+
+        * ``"written"``      → wrote the latest archived settings onto the drive;
+        * ``"skipped-equal"``→ the drive is already current (idempotent no-op);
+        * ``"skipped-none"`` → the device has no archived settings to populate;
+        * ``"failed"``       → the write/verify failed (the existing slot is kept).
+        """
+        from efis_data_manager import settings_writer
+
+        who = label or f"Link {link_id}"
+        self._set_status("Populating settings...")
+        try:
+            result = settings_writer.populate_latest(
+                self.config["archive_path"], link_id, mount_point
+            )
+        except Exception as e:
+            logger.error(f"Populate Settings failed for {mount_point}: {e}")
+            self._notify("Populate Settings Failed", str(e)[:100])
+            self._set_status("Populate failed")
+            return
+
+        if result.status == "written":
+            logger.info(
+                f"Populate Settings: wrote latest archived settings for {who} "
+                f"onto {mount_point} ({result.written_path})."
+            )
+            self._notify(
+                "Settings Populated",
+                f"Wrote the latest archived settings for {who} onto the drive.",
+            )
+            self._set_status("Settings populated")
+        elif result.status == "skipped-equal":
+            logger.info(f"Populate Settings: {who} already current on {mount_point}.")
+            self._notify(
+                "Settings Already Current",
+                f"The drive already carries {who}'s latest archived settings.",
+            )
+            self._set_status("Settings current")
+        elif result.status == "skipped-none":
+            logger.info(f"Populate Settings: no archived settings for {who}.")
+            self._notify(
+                "No Archived Settings",
+                f"There are no archived settings for {who} to populate from.",
+            )
+            self._set_status("Idle")
+        else:  # "failed"
+            logger.warning(
+                f"Populate Settings failed for {who} on {mount_point}: "
+                f"{result.error}"
+            )
+            self._notify(
+                "Populate Settings Failed",
+                (result.error or "The settings write could not be verified.")[:100],
+            )
+            self._set_status("Populate failed")
+
+    def _run_archive(self, mount_point: str, link_id: str | None = None):
+        """Run the archive process on a mounted EFIS drive, then update.
+
+        ``link_id`` is the resolved device Link_ID for an auto-archive of a
+        returning drive (settings-management R1.1). It routes Settings into the
+        per-device ``Settings/link{N}/`` location and, BEFORE archiving, scopes
+        the drive-vs-archive divergence confirmation (R7). The pre-provisioning
+        archive path does not resolve a device and passes ``link_id=None``
+        (unresolved Settings bucket, no divergence prompt).
+        """
         from efis_data_manager.archiver import archive_efis_drive
 
         self._set_status("Archiving EFIS data...")
@@ -949,7 +1137,20 @@ class EFISDataManagerApp(rumps.App):
             self._set_status(msg)
 
         try:
-            results = archive_efis_drive(mount_point, progress_callback=on_progress)
+            # settings-management R7: confirm BEFORE archiving (afterwards the
+            # card's content is always the latest, so nothing would diverge).
+            archive_settings = True
+            if link_id is not None:
+                archive_settings = self._confirm_archive_settings(
+                    mount_point, link_id
+                )
+
+            results = archive_efis_drive(
+                mount_point,
+                progress_callback=on_progress,
+                link_id=link_id,
+                archive_settings=archive_settings,
+            )
 
             # Build summary
             total_moved = results["fdl_moved"] + results["demo_moved"] + results["snap_moved"]
@@ -998,6 +1199,58 @@ class EFISDataManagerApp(rumps.App):
             logger.error(f"Archive failed: {e}")
             self._notify("Archive Failed", str(e)[:100])
             self._set_status("Archive failed")
+
+    def _device_display_label(self, link_id: str) -> str:
+        """Label for a Link_ID: configured device label, else ``Link {id}``."""
+        device = configured_device(self.config, link_id)
+        return device_label(device) if device else f"Link {link_id}"
+
+    def _confirm_archive_settings(self, mount_point: str, link_id: str) -> bool:
+        """Ask the pilot whether to archive settings for a diverged card (R7).
+
+        Runs BEFORE the archive for a resolved device. Returns ``True`` to
+        archive settings (no divergence, pilot chose "Archive settings", or the
+        check itself failed) and ``False`` only when the pilot picked "Skip
+        settings". Never blocks the archive on failure.
+        """
+        try:
+            from efis_data_manager import settings_writer
+
+            archive_root = self.config["archive_path"]
+            result = settings_writer.diverges(archive_root, link_id, mount_point)
+            if not result.diverged:
+                return True
+
+            label = self._device_display_label(link_id)
+            archived = result.latest_archive_date
+            date_str = archived.isoformat() if archived is not None else "unknown"
+            if result.matched_archive_date is not None:
+                match_line = (
+                    "This card matches the version archived "
+                    f"{result.matched_archive_date.isoformat()}."
+                )
+            else:
+                match_line = "This content has not been archived before."
+            message = (
+                f"{label}'s card does not match the latest archived settings "
+                f"(archived {date_str}).\n\n"
+                f"{match_line}\n\n"
+                "Archive settings: the card's Settings, WP and Plan become the "
+                "newest archived version.\n"
+                "Skip settings: the archive and card are left unchanged for "
+                "Settings, WP and Plan. Flight data is still archived."
+            )
+            response = self._run_alert_on_main_thread(
+                "Settings differ from latest archive",
+                message,
+                ok="Archive settings",
+                cancel="Skip settings",
+            )
+            return bool(response)
+        except Exception as e:
+            # Never block the archive on a failed divergence check or prompt.
+            logger.warning(f"Settings divergence check failed for {mount_point}: {e}")
+            return True
 
     def _device_chart_capable(self, mount_point: str) -> bool:
         """Return whether the drive at ``mount_point`` belongs to a chart-capable
@@ -2507,13 +2760,15 @@ class EFISDataManagerApp(rumps.App):
 
         def _do_update():
             self.menu["Drive: Not connected"].title = f"Drive: {drive_text}"
-            # Enable/disable eject + verify buttons (both need a drive)
+            # Enable/disable eject + verify + populate buttons (all need a drive)
             if self._drive_connected:
                 self.menu["Eject Drive"].set_callback(self.eject_drive)
                 self.menu["Verify Drive"].set_callback(self.verify_drive_menu)
+                self.menu["Populate Settings"].set_callback(self.populate_settings_menu)
             else:
                 self.menu["Eject Drive"].set_callback(None)
                 self.menu["Verify Drive"].set_callback(None)
+                self.menu["Populate Settings"].set_callback(None)
             # Update title to reflect drive state
             current_status = self.menu["Status: Idle"].title.replace("Status: ", "")
             self._update_title(current_status)

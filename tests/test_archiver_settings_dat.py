@@ -84,7 +84,9 @@ def env(tmp_path, monkeypatch):
 
 
 def _settings_dir(archive_root):
-    return archive_root / "Settings"
+    # Callers that archive without a resolved Link_ID land in the per-device
+    # "unresolved" location (settings-management Req 1.10 / task 2.1).
+    return archive_root / "Settings" / "unresolved"
 
 
 # ---------------------------------------------------------------------------

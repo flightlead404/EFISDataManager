@@ -71,8 +71,8 @@ from efis_data_manager.manifest import (
 # produce "." / ".." nor a leading dot, so every relpath stays inside its root.
 _SEGMENT = st.text(
     alphabet=st.characters(
-        whitelist_categories=("Ll", "Lu", "Nd"),
-        whitelist_characters=("_", "-"),
+        whitelist_categories=(),
+        whitelist_characters="abcdefghijklmnopqrstuvwxyz0123456789" + "".join(("_", "-")),
     ),
     min_size=1,
     max_size=8,

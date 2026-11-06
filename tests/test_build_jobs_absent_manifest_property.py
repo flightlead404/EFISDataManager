@@ -87,9 +87,18 @@ _CARD_STATE = st.sampled_from(["absent", "corrupt"])
 # (see the task report). This generator stays within the corrupt inputs the
 # spec names ("corrupt/unparseable"), so the property it asserts is sound.
 _CORRUPT_BODY = st.one_of(
-    # Unparseable: non-JSON text that never begins a JSON value.
+    # Unparseable: non-JSON text that never begins a JSON value. Surrogates
+    # (category "Cs", U+D800-U+DFFF) are excluded: the corrupt body is written
+    # to the manifest path in TEXT mode, and a lone surrogate is not UTF-8
+    # encodable (it would raise UnicodeEncodeError in the test harness, not
+    # exercise load_card). Excluding them keeps the generated body a real,
+    # writable "corrupt/unparseable manifest" input, which is all this property
+    # needs.
     st.text(
-        alphabet=st.characters(blacklist_characters='{}[]"0123456789 \t\n\r'),
+        alphabet=st.characters(
+            blacklist_categories=("Cs",),
+            blacklist_characters='{}[]"0123456789 \t\n\r',
+        ),
         min_size=1,
         max_size=64,
     ).map(lambda s: "x" + s),

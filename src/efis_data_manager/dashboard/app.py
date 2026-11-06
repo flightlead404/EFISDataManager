@@ -766,6 +766,417 @@ def api_settings_import_apply():
     })
 
 
+# ---------------------------------------------------------------------------
+# Settings-management explorer endpoints (read-only: history / view)
+# ---------------------------------------------------------------------------
+#
+# These serve the dashboard settings explorer for the settings-management spec.
+# All three are READ-ONLY: they list configured devices, scan a device's
+# per-family archive history, and parse one archived snapshot into labeled
+# SID/value rows. None of them ever writes, moves, or deletes an archived file
+# or a drive file (Req 2.4, 3.4, 9.1). A parse failure is reported as an error
+# and the snapshot file is left unchanged (Req 3.5, 9.3).
+
+# Settings families the explorer can read a history for. Settings is the only
+# family the restore/populate write path touches, but the history/view are
+# read-only and therefore available for all archived families.
+_ARCHIVED_FAMILIES = ("Settings", "WP", "Plan")
+
+
+def _configured_devices(config):
+    """Return [{link_id, label}] for the managed aircraft's configured devices.
+
+    Reuses ``config.managed_aircraft`` / ``config.device_label`` (R10.4). An
+    unlearned aircraft (no devices map) yields an empty list. Ordered by
+    Link_ID so the explorer lists devices deterministically (R2.2).
+    """
+    from efis_data_manager.config import managed_aircraft, device_label
+    aircraft = managed_aircraft(config)
+    if not isinstance(aircraft, dict):
+        return []
+    devices = aircraft.get("devices")
+    if not isinstance(devices, dict):
+        return []
+    out = []
+    for link_id in sorted(devices.keys()):
+        device = devices[link_id]
+        if not isinstance(device, dict):
+            continue
+        out.append({"link_id": link_id, "label": device_label(device)})
+    return out
+
+
+@app.route("/api/settings/devices")
+def api_settings_devices():
+    """List the managed aircraft's configured devices (label + Link_ID) (R2.2).
+
+    Read-only. Drives the explorer's per-device picker. An unlearned aircraft
+    returns an empty list without error.
+    """
+    return jsonify({"devices": _configured_devices(load_config())})
+
+
+@app.route("/api/settings/history")
+def api_settings_history():
+    """Return a device-and-family's archived history, newest to oldest (R2.1).
+
+    Query params ``link_id`` (device Link_ID; blank/omitted => the unresolved
+    location) and ``family`` (default ``Settings``). Each item carries its
+    Archive_Date, sequence suffix, family, and filename (R2.2). A device/family
+    with no snapshots returns an empty list without error (R2.3). Read-only:
+    the archive directory is scanned, never modified (R2.4).
+    """
+    from efis_data_manager import settings_archive
+    link_id = request.args.get("link_id") or None
+    family = request.args.get("family", "Settings")
+    if family not in _ARCHIVED_FAMILIES:
+        return jsonify({"error": f"unknown family {family!r}"}), 400
+    try:
+        history = settings_archive.family_history(
+            _settings_archive_root(), link_id, family)
+    except Exception as exc:  # noqa: BLE001 — report, leave files unchanged
+        logger.warning("settings history scan failed: %s", exc)
+        return jsonify({"error": str(exc)}), 500
+    return jsonify({
+        "link_id": link_id,
+        "family": family,
+        "snapshots": [
+            {
+                "archive_date": snap.archive_date.isoformat(),
+                "sequence": snap.sequence,
+                "family": snap.family,
+                "filename": snap.path.name,
+            }
+            for snap in history
+        ],
+    })
+
+
+@app.route("/api/settings/view")
+def api_settings_view():
+    """Parse one archived snapshot into labeled SID/value rows (R3).
+
+    Query params ``link_id`` (device Link_ID), ``family`` (default
+    ``Settings``), and ``name`` (the archived snapshot filename within that
+    device/family directory). Returns ``[{sid, label, value, unlabeled}]`` via
+    the shared ``efis_settings`` SID vocabulary; unrecognized SIDs are returned
+    with their raw value and ``unlabeled=true`` (R3.2, R3.3). Read-only; a
+    parse failure is reported and the file is left unchanged (R3.4, R3.5).
+
+    ``name`` is validated to be a bare filename inside the resolved device
+    directory so the view cannot be pointed outside the archive.
+    """
+    from efis_data_manager import settings_archive
+    from efis_data_manager.efis_settings import snapshot_view, SettingsParseError
+    link_id = request.args.get("link_id") or None
+    family = request.args.get("family", "Settings")
+    name = request.args.get("name", "")
+    if family not in _ARCHIVED_FAMILIES:
+        return jsonify({"error": f"unknown family {family!r}"}), 400
+    if not name or os.path.basename(name) != name:
+        return jsonify({"error": "a bare snapshot filename is required"}), 400
+
+    device_dir = settings_archive.device_settings_dir(
+        _settings_archive_root(), link_id)
+    snapshot_path = device_dir / name
+    if not snapshot_path.is_file():
+        return jsonify({"error": f"snapshot {name!r} not found"}), 404
+
+    try:
+        rows = snapshot_view(str(snapshot_path))
+    except SettingsParseError as exc:
+        # Reported failure; the snapshot file is left unchanged (R3.5, R9.3).
+        logger.warning("settings snapshot parse failed: %s", exc)
+        return jsonify({"error": str(exc)}), 422
+
+    return jsonify({
+        "link_id": link_id,
+        "family": family,
+        "name": name,
+        "sids": [
+            {
+                "sid": row.sid,
+                "label": row.label,
+                "value": row.value,
+                "unlabeled": row.unlabeled,
+                "grt_name": row.grt_name,
+                "value_meaning": row.value_meaning,
+            }
+            for row in rows
+        ],
+    })
+
+
+@app.route("/api/settings/compare")
+def api_settings_compare():
+    """Compare two settings versions into a labeled per-SID diff (R4).
+
+    Query params ``link_id`` (device Link_ID), ``family`` (default
+    ``Settings``), ``a`` (the first archived snapshot filename), and ``b``.
+    ``b`` is either a second archived snapshot filename for the same device and
+    family, or the literal ``"drive"`` to diff ``a`` against the current slot of
+    the returning drive bound to this device (R4.5).
+
+    The comparison is on parsed SID/value content with the volatile ``UPDATE=``
+    / ``CHECKSIZE=`` / ``CHECKSUM=`` keys excluded (R4.2). For each differing
+    SID the response carries the human label, the value in version ``a``, and
+    the value in version ``b``; a SID present in only one version is reported as
+    added/removed via a ``null`` value on the absent side (R4.1, R4.3). When the
+    two versions share a Content_Hash the response reports them equivalent
+    (R4.4). Read-only: both sources are parsed, never modified (R9.1).
+
+    ``a`` (and ``b`` when not ``"drive"``) must be a bare filename inside the
+    resolved per-device directory so the compare cannot be pointed outside the
+    archive.
+    """
+    from efis_data_manager import grt_sids, settings_archive
+    from efis_data_manager.efis_settings import (
+        Settings_Parser,
+        SettingsParseError,
+        content_hash,
+        recognized_sid_labels,
+        _HASH_EXCLUDED_KEYS,
+    )
+
+    link_id = request.args.get("link_id") or None
+    family = request.args.get("family", "Settings")
+    a_name = request.args.get("a", "")
+    b_name = request.args.get("b", "")
+
+    if family not in _ARCHIVED_FAMILIES:
+        return jsonify({"error": f"unknown family {family!r}"}), 400
+    if not a_name or os.path.basename(a_name) != a_name:
+        return jsonify({"error": "a bare snapshot filename is required for 'a'"}), 400
+    if not b_name:
+        return jsonify({"error": "'b' must be a snapshot filename or 'drive'"}), 400
+
+    device_dir = settings_archive.device_settings_dir(
+        _settings_archive_root(), link_id)
+
+    a_path = device_dir / a_name
+    if not a_path.is_file():
+        return jsonify({"error": f"snapshot {a_name!r} not found"}), 404
+
+    # Resolve side B: either a second archived snapshot or the current slot of
+    # the returning drive bound to this device (R4.5).
+    compare_drive = b_name == "drive"
+    if not compare_drive and os.path.basename(b_name) != b_name:
+        return jsonify({"error": "a bare snapshot filename is required for 'b'"}), 400
+
+    try:
+        a_parsed = Settings_Parser.parse(str(a_path))
+    except SettingsParseError as exc:
+        logger.warning("settings compare parse failed for a=%s: %s", a_name, exc)
+        return jsonify({"error": str(exc)}), 422
+
+    if compare_drive:
+        mount_point, reason = _bound_drive_for_link_id(load_config(), link_id)
+        if mount_point is None:
+            return jsonify({"status": "no-drive", "error": reason}), 409
+        from efis_data_manager.archiver import _current_settings_slot
+        b_parsed = _current_settings_slot(mount_point, family)
+        if b_parsed is None:
+            return jsonify({
+                "error": "the bound drive carries no parseable "
+                         f"{family} slot to compare against",
+            }), 422
+    else:
+        b_path = device_dir / b_name
+        if not b_path.is_file():
+            return jsonify({"error": f"snapshot {b_name!r} not found"}), 404
+        try:
+            b_parsed = Settings_Parser.parse(str(b_path))
+        except SettingsParseError as exc:
+            logger.warning("settings compare parse failed for b=%s: %s", b_name, exc)
+            return jsonify({"error": str(exc)}), 422
+
+    # R4.4: equal Content_Hash => the two versions are equivalent in content.
+    equivalent = content_hash(a_parsed) == content_hash(b_parsed)
+
+    # R4.2: compare parsed content, excluding the volatile keys.
+    a_sids = {s: v for s, v in a_parsed.sids.items() if s not in _HASH_EXCLUDED_KEYS}
+    b_sids = {s: v for s, v in b_parsed.sids.items() if s not in _HASH_EXCLUDED_KEYS}
+    labels = recognized_sid_labels()
+
+    differences = []
+    def _sid_order(s):
+        # Numeric SIDs first in numeric order; non-numeric last, by string.
+        return (0, int(s), s) if s.isdigit() else (1, 0, s)
+
+    for sid in sorted(set(a_sids) | set(b_sids), key=_sid_order):
+        a_val = a_sids.get(sid)
+        b_val = b_sids.get(sid)
+        if a_val == b_val:
+            continue  # R4.1: report only differing SIDs
+        # R4.3: present in one, absent in the other => added/removed.
+        if a_val is None:
+            change = "added"
+        elif b_val is None:
+            change = "removed"
+        else:
+            change = "changed"
+        label = labels.get(sid)
+        info = grt_sids.sid_info(sid)
+        differences.append({
+            "sid": sid,
+            "label": label,
+            "unlabeled": label is None,
+            "grt_name": info.grt_name if info else None,
+            "a": a_val,
+            "b": b_val,
+            "a_meaning": grt_sids.value_meaning(sid, a_val),
+            "b_meaning": grt_sids.value_meaning(sid, b_val),
+            "change": change,
+        })
+
+    return jsonify({
+        "link_id": link_id,
+        "family": family,
+        "a": a_name,
+        "b": b_name,
+        "equivalent": equivalent,
+        "differences": differences,
+    })
+
+
+def _parse_drive_settings(mount_point):
+    """Parse the drive's current Settings slot for identity resolution, or None.
+
+    Mirrors the DM's ``_find_drive_settings`` / the archiver slot selection: a
+    GRT settings backup at the mount root is ``Settings.bak`` / ``Settings.dat``;
+    either slot carries the same Link_ID / Mode_S identity, so the first file
+    that parses is enough to resolve which device the drive is bound to. A
+    parse failure is treated as absent (read-only, never mutates the drive).
+    """
+    from efis_data_manager.efis_settings import Settings_Parser, SettingsParseError
+    for ext in (".bak", ".dat"):
+        path = os.path.join(mount_point, f"Settings{ext}")
+        if not os.path.isfile(path):
+            continue
+        try:
+            return Settings_Parser.parse(path)
+        except SettingsParseError as exc:
+            logger.debug("Settings%s on %s did not parse, ignoring: %s",
+                         ext, mount_point, exc)
+    return None
+
+
+def _bound_drive_for_link_id(config, link_id):
+    """Resolve the mount point of the currently inserted drive bound to a device.
+
+    Restoration writes only to a drive bound to the target device (R5.2),
+    resolving the binding via the existing drive-to-device resolution. This
+    scans ``/Volumes`` for a mounted managed drive, resolves it through
+    ``device_resolution.resolve_drive`` (the authoritative Link_ID path shared by
+    the DM), and returns its mount point only when the resolved Link_ID matches
+    the requested ``link_id``.
+
+    Returns ``(mount_point, None)`` on a confident match, or ``(None, reason)``
+    describing why no bound drive is available (no managed drive mounted, the
+    mounted drive does not resolve, or it resolves to a different device).
+    """
+    from efis_data_manager import device_resolution
+    from efis_data_manager.device_resolution import ResolutionStatus
+    from efis_data_manager.drive_updater import read_identity
+    from efis_data_manager.usb_monitor import find_mounted_managed_drive
+
+    mount_point = find_mounted_managed_drive()
+    if mount_point is None:
+        return None, "no managed EFIS drive is currently mounted"
+
+    try:
+        parsed = _parse_drive_settings(mount_point)
+        recorded_identity = read_identity(mount_point)
+        outcome = device_resolution.resolve_drive(parsed, recorded_identity, config)
+    except Exception as exc:  # noqa: BLE001 — report, write nothing
+        logger.warning("restore drive resolution failed: %s", exc)
+        return None, f"could not resolve the mounted drive: {exc}"
+
+    if outcome.status != ResolutionStatus.RESOLVED or outcome.link_id is None:
+        return None, (
+            "the mounted drive does not resolve to a configured device "
+            f"({outcome.message or outcome.status.name})"
+        )
+    if str(outcome.link_id) != str(link_id):
+        return None, (
+            f"the mounted drive is bound to device Link_ID {outcome.link_id}, "
+            f"not the requested device {link_id}"
+        )
+    return mount_point, None
+
+
+def _write_result_to_dict(result):
+    """Serialize a settings_writer.WriteResult for the restore route."""
+    return {
+        "status": result.status,
+        "written_path": result.written_path,
+        "removed_slots": result.removed_slots,
+        "error": result.error,
+    }
+
+
+@app.route("/api/settings/restore", methods=["POST"])
+def api_settings_restore():
+    """Restore a chosen archived Settings version onto the bound drive (R5).
+
+    Body ``{link_id, family:"Settings", name}``. This is the dashboard-SELECT /
+    DM-WRITE handoff: the dashboard resolves the archived file and the drive
+    bound to the target device, then the DM write path
+    (``settings_writer.restore_version``) performs the byte-verbatim sole-slot
+    write against that drive. The archived file's own bytes are written
+    unchanged (checksum wall, R8).
+
+    Restoration is Settings only (R5.9): any other family is rejected with 400.
+    The write happens only on this explicit POST, never automatically on drive
+    insert (R5.7), and is a WRITE-NOW one-shot against the currently bound drive
+    (R5.8). ``name`` must be a bare filename inside the resolved per-device
+    directory; a missing snapshot is a 404. When no drive bound to the device is
+    mounted, the request is rejected and nothing is written.
+
+    Returns the ``WriteResult`` (status, written_path, removed_slots, error).
+    """
+    from efis_data_manager import settings_archive, settings_writer
+
+    body = request.get_json(silent=True) or {}
+    link_id = body.get("link_id") or None
+    family = body.get("family", "Settings")
+    name = body.get("name", "")
+
+    # R5.9: only the Settings family is ever restored; WP/Plan are rejected.
+    if family != "Settings":
+        return jsonify({
+            "status": "rejected",
+            "error": f"restoration is Settings-only; refusing family {family!r}",
+        }), 400
+
+    if not name or os.path.basename(name) != name:
+        return jsonify({
+            "status": "rejected",
+            "error": "a bare snapshot filename is required",
+        }), 400
+
+    config = load_config()
+    device_dir = settings_archive.device_settings_dir(
+        _settings_archive_root(), link_id)
+    archived_path = device_dir / name
+    if not archived_path.is_file():
+        return jsonify({
+            "status": "rejected",
+            "error": f"snapshot {name!r} not found",
+        }), 404
+
+    # R5.2: write only to a drive bound to the target device, resolving the
+    # binding via the existing drive-to-device resolution.
+    mount_point, reason = _bound_drive_for_link_id(config, link_id)
+    if mount_point is None:
+        return jsonify({"status": "no-drive", "error": reason}), 409
+
+    # Hand off to the DM writer: byte-verbatim, verify-then-sole-slot (R5.3-R5.6).
+    result = settings_writer.restore_version(str(archived_path), mount_point)
+    status_code = 200 if result.status == "written" else 500
+    return jsonify(_write_result_to_dict(result)), status_code
+
+
 @app.route("/api/param-catalog")
 def api_param_catalog():
     """Expose the fixed aux parameter catalog for the Settings mapping UI.
