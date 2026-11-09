@@ -474,6 +474,7 @@ def api_flight_episodes(flight_id):
             "threshold": e.threshold,
             "duration_s": e.duration_s,
             "message": e.message,
+            "unit": e.unit,
         }
         for e in episodes
     ])

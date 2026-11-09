@@ -1179,6 +1179,7 @@ class Episode:
     threshold: float        # the limit that was crossed
     duration_s: float       # seconds from start to end of episode
     message: str = ""
+    unit: str = ""            # display unit for peak/threshold, e.g. "°F", " RPM"
 
 
 def _elapsed_s(t_from: str, t_to: str) -> float:
@@ -1420,6 +1421,7 @@ def detect_episodes(operation_id: int) -> list[Episode]:
                 parameter=param, direction=direction, severity=sev,
                 start_timestamp=e["start"], peak_timestamp=e["peak_ts"],
                 peak_value=peak, threshold=threshold, duration_s=dur, message=msg,
+                unit=unit,
             ))
 
     # CHT (high, caution + redline)

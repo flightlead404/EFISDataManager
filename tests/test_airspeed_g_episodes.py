@@ -109,3 +109,46 @@ def test_neg_g_limit_warning(temp_db, monkeypatch):
     _set(monkeypatch)
     eps = [e for e in analysis.detect_episodes(1) if e.parameter == "G-load (-)"]
     assert eps and any(e.severity == "warning" for e in eps)
+
+
+# ---------------------------------------------------------------------------
+# Episode units: the badge label must use the unit of the parameter that was
+# exceeded (an RPM exceedance was shown as "psi" when the page guessed).
+# ---------------------------------------------------------------------------
+
+def _insert_rpm_tas_g(op_id=1, n=120, rpm=None, tas=None, g=None):
+    conn = database.get_db_connection()
+    conn.execute(
+        "INSERT INTO operations (id, source_filename, start_time, end_time, "
+        "duration_seconds, record_count, date, imported_at) "
+        "VALUES (?,?,?,?,?,?,?,?)",
+        (op_id, "t.csv", "2026-01-01T00:00:00", "2026-01-01T00:02:00",
+         n, n, "2026-01-01", "2026-01-01T00:03:00"))
+    t0 = datetime(2026, 1, 1, 0, 0, 0)
+    for i in range(n):
+        ts = (t0 + timedelta(seconds=i)).isoformat()
+        conn.execute(
+            "INSERT INTO fdl_data (operation_id, timestamp, tick, rpm1, "
+            "true_airspeed, g_load) VALUES (?,?,?,?,?,?)",
+            (op_id, ts, i, rpm[i] if rpm else None,
+             tas[i] if tas else None, g[i] if g else None))
+    conn.commit(); conn.close()
+
+
+def test_episode_carries_unit_for_each_parameter(temp_db, monkeypatch):
+    _insert_rpm_tas_g(rpm=[2900] * 120, tas=[250] * 120, g=[7.0] * 120)
+    _set(monkeypatch, rpm_redline=2700, vne_tas_redline=200, g_pos_limit=6.0)
+    units = {e.parameter: e.unit for e in analysis.detect_episodes(1)}
+    assert units["RPM"] == " RPM"
+    assert units["Vne (TAS)"] == " kt"
+    assert units["G-load (+)"] == "g"
+
+
+def test_episodes_api_returns_unit(temp_db, monkeypatch):
+    from efis_data_manager.dashboard import app as dash_app
+    _insert_rpm_tas_g(rpm=[2900] * 120)
+    _set(monkeypatch, rpm_redline=2700)
+    resp = dash_app.app.test_client().get("/api/flight/1/episodes")
+    assert resp.status_code == 200
+    rpm = [e for e in resp.get_json() if e["parameter"] == "RPM"]
+    assert rpm and rpm[0]["unit"] == " RPM"

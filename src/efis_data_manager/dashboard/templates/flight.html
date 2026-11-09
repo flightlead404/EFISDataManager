@@ -173,7 +173,7 @@ function renderEpisodes() {
         // Concise but unambiguous: names the severity/direction that was
         // violated. e.g. "CHT Caution 417°F", "EGT Redline 1467°F",
         // "Oil Press Low 49psi", "Fuel Press High 37psi". Full sentence on hover.
-        const unit = unitFor(e.parameter);
+        const unit = e.unit !== undefined && e.unit !== '' ? e.unit : unitFor(e.parameter);
         // Temperature params carry caution/redline severity; pressure params are
         // single-severity and distinguished by direction (Low/High).
         const isTemp = (e.parameter === 'CHT' || e.parameter === 'EGT' || e.parameter === 'Oil Temp');
@@ -196,16 +196,19 @@ function renderEpisodes() {
     el.innerHTML = html;
 }
 
+// Fallback only, for an episode payload without a unit: known parameters get
+// their unit; anything else gets none rather than a wrong guess.
 function unitFor(param) {
     if (param === 'CHT' || param === 'EGT' || param === 'Oil Temp') return '°F';
-    return 'psi';
+    if (param === 'Oil Pressure' || param === 'Fuel Pressure') return 'psi';
+    return '';
 }
 
 function jumpToEpisode(idx) {
     const eps = window.flightEpisodes || [];
     const e = eps[idx]; if (!e) return;
     const color = e.severity === 'warning' ? '#ff5252' : '#ffb300';
-    jumpToTimestamp(e.start_timestamp, `${e.parameter} ${e.peak_value.toFixed(0)}${unitFor(e.parameter)}`, color);
+    jumpToTimestamp(e.start_timestamp, `${e.parameter} ${e.peak_value.toFixed(0)}${e.unit || unitFor(e.parameter)}`, color);
 }
 
 // Merge the server-resolved aux parameters into PARAMS. Only mapped channels
