@@ -397,6 +397,45 @@ and warn, rather than silently drop. (TO FLESH OUT — confirm GRT format first.
 
 ## SOMEDAY / UNPRIORITIZED (await "customer demand" — so far ~nobody has used a release)
 
+### SID 345 temperature-units variants (2, 3, 4)  [LOGGED 2026-11-05]
+GRT defines SID 345 (EIS Temperature Units) as 0 F, 1 C, 2 C except CHT,
+3 F except OAT, 4 C except FADEC. The import mapper and percent-power's OAT flag
+treat only `1` as Celsius. Wrong results for 2 (oil temp/EGT limits taken as °F),
+3 (OAT not converted for percent power), 4 (everything taken as °F). Rare: both
+displays on the validated aircraft are 0, and FADEC is unlikely. Documented as a
+known limitation in `.kiro/specs/efis-settings-import/design.md`.
+FIX: turn 345 into a per-quantity unit map (CHT, EGT, oil, OAT); convert each
+imported limit by its own unit (EGT span / cooling rate stay delta conversions);
+percent power takes its OAT unit from the same map; for 4 and any undocumented
+value, warn and skip temperature limits instead of guessing.
+OPEN QUESTIONS FOR GRT: which temps "FADEC" exempts; meaning of SID 1311 (OAT
+units, value -1 on our files); whether FDL CSV temps/OAT follow 345, 1311, or
+SID 160.
+
+### Enforce the analysis data source for FDL + logbook import  [LOGGED 2026-11-06]
+`analysis_data_source` (one Link_ID per aircraft) is stored and selectable in
+Settings but nothing reads it: `_run_archive` / `archive_efis_drive` move and
+import FDL + logbook from ANY resolved drive. Observed 2026-11-06: a Mini A/P
+(Link 2) card's FDL and logbook were imported although Link 1 is the analysis
+source. Declaration-only was deliberate in multi-device-settings and
+settings-management (both list enforcement as deferred).
+FIX: in `_run_archive`, skip FDL + logbook IMPORT when the resolved Link_ID is not
+the aircraft's `analysis_data_source`. Settings/WP/Plan keep archiving per device.
+OPEN: should a non-source device still archive its FDL/logbook as dated files
+(no DB import), or leave them on the card untouched? Risk if unenforced: two
+displays logging the same flight give near-duplicate operations that
+`(timestamp, content_hash)` dedup won't merge.
+
+### Don't re-run the archive after a relabel remount  [LOGGED 2026-11-06]
+After a nav-only sync the DM relabels the volume (e.g. EFIS_MINI2 -> EFISNAV1029),
+the drive remounts under the new name, and the mount hook runs a second full
+archive pass a few seconds later. Harmless when the card matches the archive, but
+if the pilot chose "Skip settings" in the divergence prompt the card still differs
+and the question is asked a second time for one insert.
+FIX: remember per session that a drive (keyed on the `EFIS_DRIVE_ID.json` id,
+which survives the relabel) was just processed, and skip the post-relabel pass
+until the drive is truly ejected.
+
 ### Multi-aircraft support
 Extend multi-device identity beyond the single-aircraft assumption: key devices
 on the FULL Source_Key (Mode_S:Link_ID) so one install can manage drives/settings

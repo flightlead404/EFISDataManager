@@ -419,6 +419,16 @@ whether it is a single-limit tier choice.
   (Req 7.4, 7.5). Round to nearest integer (Req 7.3). Cooling `rate` (SID 150,
   °/min) is a *delta*, so it uses the ratio conversion `ΔF = ΔC * 9/5` (offset
   does not apply to a rate); rounded to nearest integer.
+- **Known limitation — SID 345 has five values, only 0 and 1 are handled
+  (logged 2026-11-05, deferred).** GRT's settings-format doc
+  (`resources/grt/DEMO-settings-format.txt`) defines 345 as: 0 Fahrenheit,
+  1 Celsius, 2 Celsius except CHT, 3 Fahrenheit except OAT, 4 Celsius except
+  FADEC. The mapper (and percent-power's OAT flag via
+  `load_current_settings_sids`) treat only `1` as Celsius, so values 2 and 4 would
+  import oil-temp/EGT limits as °F without conversion, and value 3 would leave
+  OAT unconverted in percent power. Accepted as rare (the validated aircraft is
+  0 on both displays; FADEC especially unlikely). Fix is in BACKLOG.md
+  ("SID 345 temperature-units variants").
 - `speed` kind: round to nearest integer (Req 7.3).
 - `g` kind: round to one decimal place (Req 7.1). Negative-G SIDs (332, 330)
   preserve their sign so `g_neg_caution` / `g_neg_limit` stay negative (Req 6.3).
