@@ -5,6 +5,25 @@ a single release version (git tag + `__version__` + `pyproject.toml`) with
 independent display labels for the menu-bar tool (`MENUBAR_VERSION`) and the
 dashboard (`DASHBOARD_VERSION`).
 
+## v1.7.1
+
+Release version 1.7.1 · menu bar 0.15.0 · dashboard 1.3.1
+
+### Fixes
+
+- **Alert chips on the flight page showed "psi" for every non-temperature
+  parameter.** RPM, Vne and G-load exceedances were labelled psi. Each episode
+  now carries its own unit from the analysis (RPM, kt, g, °F, psi, °/min), and
+  the page uses it instead of guessing from the parameter name.
+
+### Documentation
+
+- Logged a known limitation: GRT's temperature-units setting (SID 345) has five
+  values and only Fahrenheit and Celsius are handled by settings import and
+  percent power. Rare; recorded in the settings-import design and the backlog.
+- Backlog: enforce the analysis data source for FDL/logbook import, and skip the
+  repeat archive pass after a relabel remount.
+
 ## v1.7.0
 
 Release version 1.7.0 · menu bar 0.15.0 · dashboard 1.3.0
